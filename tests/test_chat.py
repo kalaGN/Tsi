@@ -3,10 +3,35 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+from app.application import app as application_app
+from app.services import aliyun_responses
 
 
 client = TestClient(main.app)
 FAKE_API_KEY = "test-only-api-key"
+
+
+def test_main_exports_application():
+    assert main.app is application_app
+
+
+def test_root_behavior_is_preserved():
+    response = client.get("/")
+
+    assert response.status_code == 200
+    assert response.json() == {"Hello": "World"}
+
+
+def test_get_item_endpoint_is_removed():
+    response = client.get("/items/1")
+
+    assert response.status_code == 404
+
+
+def test_put_item_endpoint_is_removed():
+    response = client.put("/items/1", json={"name": "item", "price": 1.0})
+
+    assert response.status_code == 404
 
 
 def install_upstream_transport(monkeypatch, handler):
@@ -16,14 +41,14 @@ def install_upstream_transport(monkeypatch, handler):
     def create_client(**kwargs):
         return real_async_client(transport=transport, **kwargs)
 
-    monkeypatch.setattr(main.httpx, "AsyncClient", create_client)
+    monkeypatch.setattr(aliyun_responses.httpx, "AsyncClient", create_client)
 
 
 def test_chat_forwards_request_and_returns_upstream_json(monkeypatch):
     monkeypatch.setenv("DASHSCOPE_API_KEY", FAKE_API_KEY)
 
     def handler(request: httpx.Request) -> httpx.Response:
-        assert str(request.url) == main.UPSTREAM_RESPONSES_URL
+        assert str(request.url) == aliyun_responses.UPSTREAM_RESPONSES_URL
         assert request.headers["Authorization"] == f"Bearer {FAKE_API_KEY}"
         assert request.headers["Content-Type"] == "application/json"
         assert request.headers["Accept"] == "application/json"

@@ -165,7 +165,7 @@
 验证命令：
 
 ```bash
-python3 -m pytest -q
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
 ### Checkpoint 2: Core implementation
@@ -176,7 +176,7 @@ python3 -m pytest -q
 验证命令：
 
 ```bash
-python3 -m pytest -q
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
 ### Checkpoint 3: Static and documentation verification

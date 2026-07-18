@@ -103,7 +103,7 @@ Accept: application/json
 
 - Python 3.11+
 - FastAPI 0.125.x
-- Pydantic 2.x（由当前 FastAPI 版本使用）
+- Pydantic 1.10.x
 - Uvicorn 0.49.x
 - HTTPX：异步上游 HTTP 调用
 - Pytest：自动化测试
@@ -128,7 +128,7 @@ export DASHSCOPE_API_KEY='replace-with-real-api-key'
 执行测试：
 
 ```bash
-python3 -m pytest -q
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
 语法检查：
@@ -230,7 +230,7 @@ async def create_chat(request: ChatRequest):
 - API Key 仅从 `DASHSCOPE_API_KEY` 读取，仓库中不存在真实密钥。
 - 输入错误、缺少配置、超时、连接失败、鉴权失败、上游错误和非 JSON 响应均按规格映射。
 - 自动化测试不访问真实网络，并覆盖成功及规定的异常路径。
-- `python3 -m pytest -q` 全部通过。
+- `PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q` 全部通过。
 - `python3 -m compileall -q main.py tests` 全部通过。
 - README 包含环境变量、启动命令和本地调用示例。
 

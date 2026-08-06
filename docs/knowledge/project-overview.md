@@ -65,8 +65,8 @@ git diff --check
 - 非空单轮文本输入。
 - 固定 `qwen3-max`。
 - 成功 JSON 原样返回。
-- 本地全屏 TUI、多行输入、非流式响应展示和请求取消。
-- `/clear`、`/quit`、Ctrl+S 和 Ctrl+C；不提供 `/help`、`/chat` TUI 命令。
+- 本地全屏 TUI、中文输入、非流式响应展示和请求取消。
+- `/clear`、`/quit`、Enter 发送和 Esc 退出；不提供 `/help`、`/chat` TUI 命令。
 - API Key 环境变量读取。
 - 上游连接、超时、鉴权、状态码和 JSON 错误分类。
 

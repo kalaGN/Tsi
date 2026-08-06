@@ -2,6 +2,14 @@
 
 ## 安装依赖
 
+项目要求 Python 3.11。先确认当前解释器：
+
+```bash
+python3 --version
+```
+
+当前机器默认 `/usr/bin/python3` 不满足项目环境；请先激活已安装依赖的 Python 3.11 环境。`/Users/wangfei/anaconda3/bin/python3` 可运行当前测试，但其共享全局环境存在 `pip check` 冲突，不应视为最终可复现方案；建议确认后建立项目专用 `.venv`。
+
 ```bash
 python3 -m pip install -r requirements.txt
 ```
@@ -17,7 +25,7 @@ cd /Users/wangfei/study/fastapi/demo
 启动开发服务器：
 
 ```bash
-python3 -m uvicorn main:app --reload
+python3 -m uvicorn main:app --reload --env-file .env
 ```
 
 启动成功后可以访问：
@@ -55,3 +63,14 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 ```
 
 禁用插件自动加载可以避免本机全局安装的第三方 Pytest 插件影响项目测试。
+
+## 提交前检查
+
+```bash
+python3 -m compileall -q main.py app tests
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
+python3 -m pip check
+git diff --check
+```
+
+仓库当前没有配置 Formatter、Lint、类型检查或 CI；不要把不存在的命令当作现有质量门禁。

@@ -62,13 +62,8 @@ def format_response_body(body: Any) -> str:
 class ChatTuiApp(App[None]):
     TITLE = "FastAPI Agent TUI"
     BINDINGS = [
-        Binding("ctrl+s", "submit_prompt", "Send", priority=True),
-        Binding(
-            "ctrl+c",
-            "cancel_or_exit",
-            "Cancel / Exit",
-            priority=True,
-        ),
+        Binding("enter", "submit_prompt", "Send", priority=True),
+        Binding("escape", "exit_app", "Exit", priority=True),
     ]
     CSS = """
     Screen {
@@ -135,7 +130,7 @@ class ChatTuiApp(App[None]):
         yield TextArea(
             id="prompt",
             soft_wrap=True,
-            placeholder="Type a message. Enter: newline, Ctrl+S: send",
+            placeholder="Type a message. Enter: send, Esc: exit",
         )
         yield Static(id="status-bar", markup=False)
         yield Footer(show_command_palette=False)
@@ -224,11 +219,9 @@ class ChatTuiApp(App[None]):
                 self._active_worker = None
                 self.query_one("#prompt", TextArea).focus()
 
-    def action_cancel_or_exit(self) -> None:
-        if self._active_worker is None:
-            self.exit()
-            return
-        self._cancel_active_request(show_message=True)
+    def action_exit_app(self) -> None:
+        self._cancel_active_request(show_message=False)
+        self.exit()
 
     def _cancel_active_request(self, show_message: bool) -> None:
         worker = self._active_worker

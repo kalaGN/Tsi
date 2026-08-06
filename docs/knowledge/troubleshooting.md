@@ -64,7 +64,7 @@ python3 -c 'import textual, dotenv'
 python3 -m app.tui
 ```
 
-项目要求 Python 3.11，并固定 Textual 8.2.8。请在支持现代 ANSI 控制序列的终端中运行，不要通过不分配 TTY 的管道启动全屏界面。若界面可打开但无法提交，使用 `Ctrl+S`；`Enter` 只负责换行。
+项目要求 Python 3.11，并固定 Textual 8.2.8。请在支持现代 ANSI 控制序列的终端中运行，不要通过不分配 TTY 的管道启动全屏界面。若界面可打开但无法提交，确认输入区已聚焦后按 `Enter`。
 
 ## TUI 英文可见但中文输入不可见
 
@@ -76,8 +76,7 @@ python3 -m app.tui
 
 ## TUI 请求卡住或需要退出
 
-- 状态为 `Thinking` 时按 `Ctrl+C` 取消当前请求，界面会恢复为 `Ready`。
-- 空闲时按 `Ctrl+C` 退出。
+- 按 `Esc` 会取消当前请求并退出 TUI。
 - 输入 `/quit` 会先取消运行中请求再退出。
 - TUI 不自动重试；上游最长等待仍受现有 60 秒总超时限制。
 

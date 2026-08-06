@@ -134,7 +134,7 @@ def test_tui_entrypoint_loads_project_env_without_overriding_shell(monkeypatch):
     }
 
 
-def test_enter_adds_newline_and_ctrl_s_submits_multiline_input():
+def test_enter_submits_input():
     async def scenario():
         received_inputs = []
 
@@ -146,18 +146,16 @@ def test_enter_adds_newline_and_ctrl_s_submits_multiline_input():
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.focus()
-            await pilot.press("h", "i", "enter", "t", "h", "e", "r", "e")
+            await pilot.press("h", "e", "l", "l", "o")
 
-            assert prompt.text == "hi\nthere"
-
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
             await app.workers.wait_for_complete()
 
-            assert received_inputs == ["hi\nthere"]
+            assert received_inputs == ["hello"]
             assert prompt.text == ""
             assert app.run_status is RunStatus.READY
             transcript = transcript_text(app)
-            assert "You\nhi\nthere" in transcript
+            assert "You\nhello" in transcript
             assert "Assistant\nanswer" in transcript
 
     asyncio.run(scenario())
@@ -190,7 +188,7 @@ def test_blank_input_is_rejected_without_calling_runner():
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("  \n")
 
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
 
             assert app.run_status is RunStatus.READY
             assert "Input must not be blank" in transcript_text(app)
@@ -211,7 +209,7 @@ def test_help_and_chat_are_sent_as_ordinary_model_input():
             prompt = app.query_one("#prompt", TextArea)
             for text in ("/help", "/chat"):
                 prompt.load_text(text)
-                await pilot.press("ctrl+s")
+                await pilot.press("enter")
                 await app.workers.wait_for_complete()
 
             assert received_inputs == ["/help", "/chat"]
@@ -231,12 +229,12 @@ def test_clear_command_clears_transcript_without_calling_runner():
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("hello")
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
             await app.workers.wait_for_complete()
             assert transcript_text(app)
 
             prompt.load_text(" /clear \n")
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
 
             assert transcript_text(app) == ""
             assert received_inputs == ["hello"]
@@ -261,13 +259,13 @@ def test_thinking_state_blocks_duplicate_submission():
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("first")
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
             await asyncio.wait_for(started.wait(), timeout=1)
 
             assert app.run_status is RunStatus.THINKING
 
             prompt.load_text("second")
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
             assert received_inputs == ["first"]
             assert prompt.text == "second"
 
@@ -295,14 +293,14 @@ def test_runtime_error_is_recoverable_on_next_submission():
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("first")
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
             await app.workers.wait_for_complete()
 
             assert app.run_status is RunStatus.ERROR
             assert "Upstream request timed out" in transcript_text(app)
 
             prompt.load_text("second")
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
             await app.workers.wait_for_complete()
 
             assert app.run_status is RunStatus.READY
@@ -322,7 +320,7 @@ def test_unexpected_error_is_hidden_and_app_remains_available():
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("hello")
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
             await app.workers.wait_for_complete()
 
             transcript = transcript_text(app)
@@ -333,10 +331,11 @@ def test_unexpected_error_is_hidden_and_app_remains_available():
     asyncio.run(scenario())
 
 
-def test_ctrl_c_cancels_active_request_without_writing_late_result():
+def test_escape_cancels_active_request_and_exits():
     async def scenario():
         started = asyncio.Event()
         cancelled = asyncio.Event()
+        exit_called = False
 
         async def fake_runner(input_text: str) -> ChatResult:
             started.set()
@@ -347,20 +346,24 @@ def test_ctrl_c_cancels_active_request_without_writing_late_result():
                 return ChatResult(200, {"output_text": "late result"})
 
         app = ChatTuiApp(chat_runner=fake_runner, api_key_configured=True)
+        original_exit = app.exit
+
+        def record_exit(*args, **kwargs):
+            nonlocal exit_called
+            exit_called = True
+            return original_exit(*args, **kwargs)
+
+        app.exit = record_exit
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("hello")
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
             await asyncio.wait_for(started.wait(), timeout=1)
 
-            await pilot.press("ctrl+c")
+            await pilot.press("escape")
             await asyncio.wait_for(cancelled.wait(), timeout=1)
-            await pilot.pause()
 
-            transcript = transcript_text(app)
-            assert app.run_status is RunStatus.READY
-            assert "Request cancelled" in transcript
-            assert "late result" not in transcript
+        assert exit_called
 
     asyncio.run(scenario())
 
@@ -384,14 +387,14 @@ def test_quit_command_exits_without_calling_runner():
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("/quit")
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
 
         assert exit_called
 
     asyncio.run(scenario())
 
 
-def test_ctrl_c_exits_when_no_request_is_running():
+def test_escape_exits_when_no_request_is_running():
     async def scenario():
         exit_called = False
 
@@ -408,7 +411,7 @@ def test_ctrl_c_exits_when_no_request_is_running():
 
         app.exit = record_exit
         async with app.run_test() as pilot:
-            await pilot.press("ctrl+c")
+            await pilot.press("escape")
 
         assert exit_called
 
@@ -441,11 +444,11 @@ def test_quit_command_cancels_active_request_before_exit():
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("hello")
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
             await asyncio.wait_for(started.wait(), timeout=1)
 
             prompt.load_text("/quit")
-            await pilot.press("ctrl+s")
+            await pilot.press("enter")
 
         assert exit_called
         assert cancelled.is_set()

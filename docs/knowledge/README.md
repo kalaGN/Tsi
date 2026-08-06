@@ -4,10 +4,12 @@
 
 ## Index
 
+- [Project Overview](project-overview.md)：项目目标、技术栈、边界、命令和已确认的基础设施现状。
 - [Architecture](architecture.md)：技术栈、组件职责和请求链路。
 - [API Conventions](api-conventions.md)：接口、校验和错误响应约定。
 - [Domain Glossary](domain-glossary.md)：项目领域术语和固定配置。
 - [Troubleshooting](troubleshooting.md)：常见启动、测试和调用问题。
+- [Repository Audit](repository-audit.md)：文档、工程、安全、可靠性和性能缺口审计。
 
 ## Maintenance
 
@@ -15,3 +17,5 @@
 - 实现、配置或接口发生变化时，同步更新对应知识文档。
 - 临时需求和实施过程放在 `docs/spec/`、`docs/plan/`、`docs/tasks/`，不要混入长期知识。
 - 本目录文件使用稳定名称，不加日期前缀。
+- 新增、删除或重命名知识文件时同步更新本索引和 `AGENTS.md`。
+- 代码与 Knowledge 冲突时，将可验证代码作为当前事实并报告冲突，再同步文档；不得静默修改业务行为。

@@ -52,9 +52,11 @@
 
 ## After Changes
 
+- 代码增加必要注释，用于解释非显而易见的意图、边界、兼容原因和关键取舍；不要逐行复述代码。
 - 新功能与缺陷修复同步覆盖正常、异常和边界测试。
 - 运行真实可用的语法检查、全量测试、依赖检查和 `git diff --check`。
 - 同步更新受影响的 Spec、任务和 Knowledge。
+- Git Commit 使用 `type: 中文描述` 格式，例如 `feat: 增加终端对话入口`。
 - 未经用户明确要求，不创建 Git Commit。
 
 ## Hard Boundaries

@@ -2,13 +2,14 @@
 
 ## Goal
 
-本项目是用于学习和验证 FastAPI 外部模型接口集成的轻量 HTTP 服务。当前核心能力是接收单轮文本，通过阿里云兼容模式 Responses API 调用固定的 `qwen3-max` 模型，并返回上游成功 JSON。
+本项目用于学习和验证 FastAPI、Textual 与外部模型接口集成。当前核心能力是通过 HTTP 或本地全屏 TUI 接收单轮文本，调用阿里云兼容模式 Responses API 的固定 `qwen3-max` 模型。
 
 ## Project Shape
 
-- 单 Git 仓库、单 Python 应用、单进程 FastAPI 服务。
-- 对外协议只有 HTTP/JSON。
-- 没有多模块构建、微服务、Worker、CLI、RPC、GraphQL、消息或定时任务。
+- 单 Git 仓库、单 Python 应用；HTTP 服务和本地 TUI 是两个独立启动入口。
+- HTTP 对外提供 JSON；TUI 只在本地终端运行。
+- Textual Worker 只负责避免单次异步模型请求阻塞界面，不是后台任务系统。
+- 没有多模块构建、微服务、后台 Worker、RPC、GraphQL、消息或定时任务。
 - 没有数据库、缓存、搜索、对象存储和持久化会话。
 
 ## Technology
@@ -23,6 +24,8 @@
 | HTTPX | 0.28.1 | 异步上游 HTTP 调用和测试 Transport |
 | Uvicorn | 0.49.0 | ASGI 开发服务器 |
 | Pytest | 7.4.0 | 自动化测试 |
+| Textual | 8.2.8 | 全屏终端界面、异步 Worker 和无头界面测试 |
+| python-dotenv | 1.2.2 | TUI 启动时加载项目根目录 `.env` |
 
 仓库仅有 `requirements.txt`，没有 lock 文件、`pyproject.toml`、Formatter、Lint、类型检查、构建或打包配置。
 
@@ -31,8 +34,12 @@
 - `main.py`：Uvicorn 兼容入口，仅导出应用对象。
 - `app/application.py`：创建 FastAPI、注册根路由和 Chat Router。
 - `app/routers/chat.py`：`POST /chat`、请求 Schema 和 HTTP 响应。
-- `app/services/aliyun_responses.py`：阿里云请求、超时和错误映射。
+- `app/runtime/chat.py`：HTTP/TUI 共享的单轮用例、结果和错误语义。
+- `app/services/aliyun_responses.py`：阿里云请求、超时、响应解析和 Provider 异常。
+- `app/tui/`：Textual 应用、状态和 `python3 -m app.tui` 入口。
 - `tests/test_chat.py`：HTTP 契约与上游隔离测试。
+- `tests/test_chat_runtime.py`：Runtime 单元测试。
+- `tests/test_tui.py`：Textual 无头交互测试。
 
 ## Confirmed Commands
 
@@ -42,6 +49,7 @@
 python3 --version
 python3 -m pip install -r requirements.txt
 python3 -m uvicorn main:app --reload --env-file .env
+python3 -m app.tui
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 python3 -m compileall -q main.py app tests
 python3 -m pip check
@@ -57,12 +65,14 @@ git diff --check
 - 非空单轮文本输入。
 - 固定 `qwen3-max`。
 - 成功 JSON 原样返回。
+- 本地全屏 TUI、多行输入、非流式响应展示和请求取消。
+- `/clear`、`/quit`、Ctrl+S 和 Ctrl+C；不提供 `/help`、`/chat` TUI 命令。
 - API Key 环境变量读取。
 - 上游连接、超时、鉴权、状态码和 JSON 错误分类。
 
 明确不在当前实现中：
 
-- 流式响应、多轮记忆、工具调用、多 Agent、模型选择和多模态输入。
+- 流式响应、多轮记忆、会话持久化、工具调用、多 Agent、模型选择和多模态输入。
 - 数据持久化、用户认证授权、限流、重试、熔断和任务队列。
 - 容器、反向代理、进程管理、CI/CD 和生产部署配置。
 - 结构化日志、Tracing、指标、告警和正式健康检查。

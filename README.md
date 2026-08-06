@@ -14,7 +14,7 @@ python3 --version
 python3 -m pip install -r requirements.txt
 ```
 
-## 启动项目
+## 启动 HTTP 服务
 
 进入项目目录：
 
@@ -36,9 +36,29 @@ python3 -m uvicorn main:app --reload --env-file .env
 
 按 `Ctrl+C` 停止服务器。
 
+## 启动 TUI
+
+TUI 会从项目根目录 `.env` 加载 `DASHSCOPE_API_KEY`，Shell 中已设置的环境变量优先。无需先启动 Uvicorn：
+
+```bash
+python3 -m app.tui
+```
+
+界面固定使用阿里云 Provider 和 `qwen3-max`，每次提交都是独立的单轮请求。界面内可连续显示多次调用，但历史消息不会再次发送给模型。
+
+编辑和操作：
+
+- `Enter`：输入换行。
+- `Ctrl+S`：提交整个输入区。
+- `/clear`：清空当前界面的对话记录。
+- `/quit`：取消运行中请求并退出。
+- `Ctrl+C`：请求运行中时取消请求；空闲时退出。
+
+TUI 可在输入框中直接使用中文输入法。它没有 `/help` 或 `/chat` 命令；这两个文本会和其他普通输入一样发送给模型。首期不支持流式输出、多轮记忆、会话持久化、工具调用或模型切换。
+
 ## 调用模型接口
 
-启动项目前，设置阿里云 Responses API 的访问密钥：
+调用 HTTP 接口或 TUI 前，设置阿里云 Responses API 的访问密钥：
 
 ```bash
 export DASHSCOPE_API_KEY='replace-with-real-api-key'

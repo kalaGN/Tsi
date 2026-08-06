@@ -2,18 +2,20 @@
 
 ## Project
 
-- 轻量 FastAPI HTTP 服务，对外提供根接口和阿里云 Responses API 代理接口。
+- 轻量单轮模型调用项目，提供 FastAPI HTTP 接口和本地 Textual TUI。
 - Python 3.11；依赖版本以 `requirements.txt` 为准。
-- 当前不是多 Agent 系统，不含数据库、缓存、消息队列、Worker 或持久化。
+- 当前不是多 Agent 系统，不含数据库、缓存、消息队列、后台 Worker 或持久化；Textual Worker 只承担 TUI 异步请求。
 
 ## Architecture
 
 - 启动入口：`main.py`，仅导出 `app.application.app`。
 - 应用组装：`app/application.py`。
 - HTTP 路由与请求校验：`app/routers/`。
-- 外部服务调用与错误映射：`app/services/`。
+- HTTP/TUI 共享单轮用例与中立错误：`app/runtime/`。
+- 外部服务调用与 Provider 错误：`app/services/`。
+- 终端界面与启动入口：`app/tui/`。
 - 测试：`tests/`。
-- 真实依赖方向：`main → application → router → service`。
+- 真实依赖方向：`HTTP/TUI → runtime → service`；HTTP 入口为 `main → application → router`。
 - 详细事实：[架构知识](docs/knowledge/architecture.md)。
 
 ## Environment and Commands
@@ -23,6 +25,7 @@
 - 环境确认：`python3 --version`
 - 安装：`python3 -m pip install -r requirements.txt`
 - 启动：`python3 -m uvicorn main:app --reload --env-file .env`
+- TUI：`python3 -m app.tui`
 - 测试：`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q`
 - 语法检查：`python3 -m compileall -q main.py app tests`
 - 依赖检查：`python3 -m pip check`

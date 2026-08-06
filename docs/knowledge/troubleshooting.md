@@ -25,7 +25,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
 
 ## 启动时未读取 `.env`
 
-应用使用 `os.getenv` 读取配置，Uvicorn 必须显式加载环境文件：
+应用使用 `os.getenv` 读取配置。HTTP 服务由 Uvicorn 显式加载环境文件：
 
 ```bash
 python3 -m uvicorn main:app --reload --env-file .env
@@ -37,9 +37,49 @@ python3 -m uvicorn main:app --reload --env-file .env
 export DASHSCOPE_API_KEY='replace-with-real-api-key'
 ```
 
+TUI 入口会自动加载项目根目录 `.env`，且不会覆盖 Shell 中已存在的变量：
+
+```bash
+python3 -m app.tui
+```
+
 ## `/chat` 返回 503
 
 确认 `DASHSCOPE_API_KEY` 已设置且不是空字符串。如果使用 `.env`，确认启动命令包含 `--env-file .env`。
+
+## TUI 显示 `Key: missing`
+
+- 确认项目根目录存在 `.env`，而不是放在 `app/` 或 `app/tui/`。
+- 确认变量名是 `DASHSCOPE_API_KEY` 且值不是空字符串。
+- 如果 Shell 中已经导出了同名空值，先取消或重新设置；TUI 不会用 `.env` 覆盖显式环境变量。
+- 状态栏只显示配置状态，不会显示密钥内容。
+
+## TUI 无法启动或终端显示异常
+
+先确认解释器和依赖：
+
+```bash
+python3 --version
+python3 -c 'import textual, dotenv'
+python3 -m app.tui
+```
+
+项目要求 Python 3.11，并固定 Textual 8.2.8。请在支持现代 ANSI 控制序列的终端中运行，不要通过不分配 TTY 的管道启动全屏界面。若界面可打开但无法提交，使用 `Ctrl+S`；`Enter` 只负责换行。
+
+## TUI 英文可见但中文输入不可见
+
+项目启动入口会在 Textual 导入前关闭 Kitty 扩展键盘协议，避免“上报所有按键”模式干扰 macOS 中文输入法。正常情况下可以直接在输入框中完成中文组词和输入，不需要额外快捷键。
+
+- 必须使用 `python3 -m app.tui` 启动；不要绕过入口直接运行 `app/tui/application.py`。
+- 修改启动入口后需要退出并重新启动旧的 TUI 进程。
+- 若仍异常，确认终端没有自行强制开启 Kitty 键盘协议，并尝试 iTerm2、Ghostty、Kitty 或 WezTerm。
+
+## TUI 请求卡住或需要退出
+
+- 状态为 `Thinking` 时按 `Ctrl+C` 取消当前请求，界面会恢复为 `Ready`。
+- 空闲时按 `Ctrl+C` 退出。
+- 输入 `/quit` 会先取消运行中请求再退出。
+- TUI 不自动重试；上游最长等待仍受现有 60 秒总超时限制。
 
 ## Pytest 启动时出现 LangSmith 或 Pydantic 错误
 

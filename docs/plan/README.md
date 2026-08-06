@@ -4,6 +4,7 @@
 
 ## Documents
 
+- [TUI 对话入口设计](20260806-TUI对话-设计.md)：定义共享 Chat Runtime、Textual 界面、异步取消、错误映射和测试方案；对应[需求](../spec/20260806-TUI对话-需求.md)和[任务](../tasks/20260806-TUI对话-任务.md)，已完成。
 - [阿里云 Responses API 对接设计](2026-07-18-aliyun-responses-api-plan.md)：初始模型接口接入设计；对应[需求](../spec/2026-07-18-aliyun-responses-api.md)和[任务](../tasks/2026-07-18-aliyun-responses-api-tasks.md)。
 - [Main 模块架构拆分设计](2026-07-18-main-module-refactor-plan.md)：Application、Router、Service 拆分设计；对应[需求](../spec/2026-07-18-main-module-refactor.md)和[任务](../tasks/2026-07-18-main-module-refactor-tasks.md)。
 

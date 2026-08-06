@@ -2,7 +2,7 @@
 
 ## 1. Scope and Facts
 
-本规则适用于当前 FastAPI Demo。项目是单仓库、单进程 HTTP 服务，使用 Application、Router、Service 三类职责；不存在数据库、缓存、消息队列、Worker、认证授权、CI 或部署配置。
+本规则适用于当前 FastAPI Demo。项目是单仓库 Python 应用，提供 FastAPI HTTP 与本地 Textual TUI，使用 Application、Router、Runtime、Service 和 TUI 五类职责；不存在数据库、缓存、消息队列、后台 Worker、认证授权、CI 或部署配置。
 
 事实来源优先级：
 
@@ -40,16 +40,21 @@ Bug 修复遵循：复现 → 失败测试 → 根因分析 → 最小修复 →
 真实依赖方向：
 
 ```text
-main.py
-  -> app.application
-       -> app.routers.chat
-            -> app.services.aliyun_responses
+main.py -> app.application -> app.routers.chat --+
+                                                v
+                                      app.runtime.chat
+                                                v
+                              app.services.aliyun_responses
+                                                ^
+python3 -m app.tui -> app.tui.application ------+
 ```
 
 - `main.py` 只保留兼容启动入口。
 - Application 负责创建 FastAPI 和注册路由，不放外部调用逻辑。
 - Router 负责 HTTP 请求校验、调用用例和响应转换，不实现上游协议细节。
-- Service 负责阿里云请求、超时和错误映射，不依赖 Router 或 Application。
+- Runtime 负责共享单轮用例和中立错误，不依赖 FastAPI 或 Textual。
+- Service 负责阿里云请求、超时、响应解析和 Provider 异常，不依赖 Runtime、Router、TUI 或 Application。
+- TUI 负责输入、展示、状态和取消，不复制上游请求，不依赖 Router 或 Application。
 - 业务逻辑增长前不创建空壳 Repository、Manager、Provider 或依赖注入层。
 - 新抽象必须解决已出现的重复、边界或替换需求，不得为单次调用预设计。
 - 当前无数据访问和事务边界；引入持久化前必须另建 Spec。

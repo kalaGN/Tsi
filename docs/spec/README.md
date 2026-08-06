@@ -4,6 +4,7 @@
 
 ## Active and Historical Specs
 
+- [TUI 对话入口](20260806-TUI对话-需求.md)：参考 Reasonix 的共享运行内核思路，为当前项目增加本地全屏单轮对话 TUI；已完成。
 - [阿里云 Responses API 对接](2026-07-18-aliyun-responses-api.md)：定义 `/chat` 初始契约；对应[设计](../plan/2026-07-18-aliyun-responses-api-plan.md)和[任务](../tasks/2026-07-18-aliyun-responses-api-tasks.md)。其中初始目录结构已被后续重构取代，当前结构以架构 Knowledge 为准。
 - [Main 模块架构拆分](2026-07-18-main-module-refactor.md)：将实现拆为 Application、Router、Service；对应[设计](../plan/2026-07-18-main-module-refactor-plan.md)和[任务](../tasks/2026-07-18-main-module-refactor-tasks.md)。已完成。
 

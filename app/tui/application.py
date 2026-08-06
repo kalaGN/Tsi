@@ -1,3 +1,5 @@
+"""Textual 单轮对话界面、状态切换与请求取消逻辑。"""
+
 import json
 import os
 from collections.abc import Awaitable, Callable
@@ -24,6 +26,8 @@ ChatRunner = Callable[[str], Awaitable[ChatResult]]
 
 
 def format_response_body(body: Any) -> str:
+    """从兼容模式响应中提取正文，未知结构降级为可读 JSON。"""
+
     if isinstance(body, dict):
         output_text = body.get("output_text")
         if isinstance(output_text, str) and output_text:
@@ -60,6 +64,8 @@ def format_response_body(body: Any) -> str:
 
 
 class ChatTuiApp(App[None]):
+    """复用 Chat Runtime 的本地全屏单轮对话界面。"""
+
     TITLE = "FastAPI Agent TUI"
     BINDINGS = [
         Binding("enter", "submit_prompt", "Send", priority=True),
@@ -200,6 +206,7 @@ class ChatTuiApp(App[None]):
         worker = get_current_worker()
         try:
             result = await self.chat_runner(input_text)
+            # 取消会递增代次；即使底层协程晚返回，也不能写回陈旧结果。
             if worker.is_cancelled or generation != self._request_generation:
                 return
             self._write_message("Assistant", format_response_body(result.body))
@@ -212,6 +219,7 @@ class ChatTuiApp(App[None]):
         except Exception:
             if worker.is_cancelled or generation != self._request_generation:
                 return
+            # 未知异常只在界面显示中立文案，避免泄露堆栈或敏感上下文。
             self._write_message("Error", "Unexpected internal error")
             self.run_status = RunStatus.ERROR
         finally:

@@ -1,3 +1,5 @@
+"""HTTP 与 TUI 共享的单轮对话用例和界面无关错误语义。"""
+
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -21,6 +23,8 @@ CHAT_MODEL = UPSTREAM_MODEL
 
 @dataclass(frozen=True)
 class ChatResult:
+    """保留上游成功状态与正文，供不同交互界面自行呈现。"""
+
     upstream_status: int
     body: Any
 
@@ -36,6 +40,8 @@ class ChatErrorCode(str, Enum):
 
 
 class ChatRuntimeError(Exception):
+    """可安全传递到 HTTP 或 TUI 边界的用例错误。"""
+
     def __init__(
         self,
         code: ChatErrorCode,
@@ -59,6 +65,8 @@ ERROR_CODES = {
 
 
 async def run_chat(input_text: str) -> ChatResult:
+    """校验输入、调用 Provider，并统一外部异常的错误语义。"""
+
     if not isinstance(input_text, str) or not input_text.strip():
         raise ChatRuntimeError(
             ChatErrorCode.INVALID_INPUT,

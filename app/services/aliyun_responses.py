@@ -1,3 +1,5 @@
+"""阿里云兼容模式 Responses API 的异步 Provider 适配器。"""
+
 import os
 from typing import Any
 
@@ -52,6 +54,8 @@ class UpstreamInvalidResponseError(AliyunResponsesError):
 
 
 async def request_upstream_response(input_text: str) -> tuple[int, Any]:
+    """调用固定模型并返回成功响应；失败只抛出已脱敏异常。"""
+
     api_key = os.getenv("DASHSCOPE_API_KEY")
     if not api_key or not api_key.strip():
         raise UpstreamConfigurationError
@@ -78,6 +82,7 @@ async def request_upstream_response(input_text: str) -> tuple[int, Any]:
     if response.status_code in (401, 403):
         raise UpstreamAuthenticationError(response.status_code)
     if not response.is_success:
+        # 不携带上游错误正文，避免响应中潜在的内部信息泄露给调用方。
         raise UpstreamResponseError(response.status_code)
 
     try:

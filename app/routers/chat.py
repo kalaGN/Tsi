@@ -1,3 +1,5 @@
+"""HTTP 对话路由及 Runtime 错误到 HTTP 状态码的映射。"""
+
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, StrictStr, validator
@@ -9,6 +11,8 @@ router = APIRouter()
 
 
 class ChatRequest(BaseModel):
+    """对外 HTTP 请求模型，在进入 Runtime 前完成输入校验。"""
+
     input: StrictStr
 
     @validator("input")
@@ -33,6 +37,8 @@ async def create_chat(request: ChatRequest):
 
 
 def _http_status_for_error(error: ChatRuntimeError) -> int:
+    """将界面无关的 Runtime 错误转换为稳定的 HTTP 状态码。"""
+
     fixed_statuses = {
         ChatErrorCode.INVALID_INPUT: 422,
         ChatErrorCode.CONFIGURATION: 503,
@@ -42,6 +48,7 @@ def _http_status_for_error(error: ChatRuntimeError) -> int:
     }
     if error.code in fixed_statuses:
         return fixed_statuses[error.code]
+    # 鉴权和其他上游失败保留原状态码，但错误正文仍由 Runtime 脱敏。
     if error.upstream_status is not None:
         return error.upstream_status
     return 502

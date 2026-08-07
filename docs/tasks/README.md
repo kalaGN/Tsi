@@ -4,6 +4,7 @@
 
 ## Documents
 
+- [多模型 Provider 架构任务](20260807-多模型Provider架构-任务.md)：统一模型接入架构并增加 DeepSeek Provider；对应[需求](../spec/20260807-多模型Provider架构-需求.md)和[设计](../plan/20260807-多模型Provider架构-设计.md)，已完成。
 - [TUI 对话入口任务](20260806-TUI对话-任务.md)：已完成；对应[需求](../spec/20260806-TUI对话-需求.md)和[设计](../plan/20260806-TUI对话-设计.md)。
 - [阿里云 Responses API 对接任务](2026-07-18-aliyun-responses-api-tasks.md)：已完成；对应[需求](../spec/2026-07-18-aliyun-responses-api.md)和[设计](../plan/2026-07-18-aliyun-responses-api-plan.md)。
 - [Main 模块架构拆分任务](2026-07-18-main-module-refactor-tasks.md)：已完成；对应[需求](../spec/2026-07-18-main-module-refactor.md)和[设计](../plan/2026-07-18-main-module-refactor-plan.md)。

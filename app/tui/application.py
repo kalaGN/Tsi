@@ -1,10 +1,7 @@
 """Textual 单轮对话界面、状态切换与请求取消逻辑。"""
 
-import json
-import os
 import time
 from collections.abc import Awaitable, Callable
-from typing import Any
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -14,10 +11,10 @@ from textual.widgets import Footer, RichLog, Static, TextArea
 from textual.worker import Worker, get_current_worker
 
 from app.runtime.chat import (
-    CHAT_MODEL,
-    CHAT_PROVIDER,
     ChatResult,
     ChatRuntimeError,
+    ChatRuntimeInfo,
+    get_chat_runtime_info,
     run_chat,
 )
 from app.tui.state import RunStatus
@@ -25,44 +22,6 @@ from app.tui.state import RunStatus
 
 ChatRunner = Callable[[str], Awaitable[ChatResult]]
 Clock = Callable[[], float]
-
-
-def format_response_body(body: Any) -> str:
-    """从兼容模式响应中提取正文，未知结构降级为可读 JSON。"""
-
-    if isinstance(body, dict):
-        output_text = body.get("output_text")
-        if isinstance(output_text, str) and output_text:
-            return output_text
-
-        output = body.get("output")
-        if isinstance(output, list):
-            direct_fragments = []
-            for item in output:
-                if not isinstance(item, dict):
-                    continue
-                item_text = item.get("text")
-                if isinstance(item_text, str) and item_text:
-                    direct_fragments.append(item_text)
-            if direct_fragments:
-                return "\n".join(direct_fragments)
-
-            nested_fragments = []
-            for item in output:
-                if not isinstance(item, dict):
-                    continue
-                content = item.get("content")
-                if isinstance(content, list):
-                    for content_item in content:
-                        if not isinstance(content_item, dict):
-                            continue
-                        content_text = content_item.get("text")
-                        if isinstance(content_text, str) and content_text:
-                            nested_fragments.append(content_text)
-            if nested_fragments:
-                return "\n".join(nested_fragments)
-
-    return json.dumps(body, ensure_ascii=False, indent=2, default=str)
 
 
 class ChatTuiApp(App[None]):
@@ -111,25 +70,24 @@ class ChatTuiApp(App[None]):
     def __init__(
         self,
         chat_runner: ChatRunner = run_chat,
-        api_key_configured: bool | None = None,
+        runtime_info: ChatRuntimeInfo | None = None,
         clock: Clock = time.monotonic,
     ) -> None:
         super().__init__()
         self.chat_runner = chat_runner
         self.clock = clock
-        self.api_key_configured = (
-            self._has_api_key()
-            if api_key_configured is None
-            else api_key_configured
-        )
+        self._configuration_error: str | None = None
+        if runtime_info is None:
+            try:
+                runtime_info = get_chat_runtime_info()
+            except ChatRuntimeError as exc:
+                # 配置错误不能阻止 TUI 构造，挂载后以安全状态提示用户。
+                self._configuration_error = exc.user_message
+                runtime_info = ChatRuntimeInfo("unknown", "-", False)
+        self.runtime_info = runtime_info
         self._active_worker: Worker[None] | None = None
         self._request_generation = 0
         self._last_escape_at: float | None = None
-
-    @staticmethod
-    def _has_api_key() -> bool:
-        api_key = os.getenv("DASHSCOPE_API_KEY")
-        return bool(api_key and api_key.strip())
 
     def compose(self) -> ComposeResult:
         yield Static(self.TITLE, id="title", markup=False)
@@ -149,7 +107,10 @@ class ChatTuiApp(App[None]):
 
     def on_mount(self) -> None:
         self.query_one("#prompt", TextArea).focus()
-        if not self.api_key_configured:
+        if self._configuration_error is not None:
+            self.run_status = RunStatus.ERROR
+            self._write_message("Error", self._configuration_error)
+        elif not self.runtime_info.api_key_configured:
             self.run_status = RunStatus.ERROR
             self._write_message("Error", "Upstream API key is not configured")
         self._update_status_bar()
@@ -159,9 +120,12 @@ class ChatTuiApp(App[None]):
             self._update_status_bar()
 
     def _update_status_bar(self) -> None:
-        key_status = "configured" if self.api_key_configured else "missing"
+        key_status = (
+            "configured" if self.runtime_info.api_key_configured else "missing"
+        )
         self.query_one("#status-bar", Static).update(
-            f"{CHAT_PROVIDER} | {CHAT_MODEL} | "
+            f"{_provider_display_name(self.runtime_info.provider)} | "
+            f"{self.runtime_info.model} | "
             f"Key: {key_status} | {self.run_status.value}"
         )
 
@@ -221,7 +185,7 @@ class ChatTuiApp(App[None]):
             # 取消会递增代次；即使底层协程晚返回，也不能写回陈旧结果。
             if worker.is_cancelled or generation != self._request_generation:
                 return
-            self._write_message("Assistant", format_response_body(result.body))
+            self._write_message("Assistant", result.output_text)
             self._write_elapsed_time(started_at)
             self.run_status = RunStatus.READY
         except ChatRuntimeError as exc:
@@ -274,3 +238,11 @@ class ChatTuiApp(App[None]):
         if show_message:
             self._write_message("System", "Request cancelled")
         self.query_one("#prompt", TextArea).focus()
+
+
+def _provider_display_name(provider: str) -> str:
+    """保留 DeepSeek 品牌大小写，其余名称使用常规标题格式。"""
+
+    if provider == "deepseek":
+        return "DeepSeek"
+    return provider.title()

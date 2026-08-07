@@ -2,79 +2,93 @@
 
 ## Overview
 
-这是一个基于 Python 3.11 的轻量单轮模型调用项目，同时提供 FastAPI HTTP 和 Textual TUI 两个入口。两个界面共享 Chat Runtime，根目录 `main.py` 仅保留 Uvicorn 兼容入口。
+这是一个基于 Python 3.11 的轻量单轮模型调用项目，同时提供 FastAPI HTTP 和 Textual TUI。两个入口共享 Chat Runtime，Runtime 通过统一 LLM Provider 契约选择阿里云或 DeepSeek；根目录 `main.py` 只保留 Uvicorn 兼容入口。
 
 ## Components
 
-- `main.py`：从 `app.application` 导出 FastAPI 应用，保持 `main:app` 启动方式兼容。
-- `app/application.py`：创建 FastAPI 应用、注册根路由和 Chat Router。
-- `app/routers/chat.py`：声明 `ChatRequest`，处理 `POST /chat` 的 HTTP 输入输出和 Runtime 错误映射。
-- `app/runtime/chat.py`：提供界面无关的单轮 Chat 用例、结果和安全错误语义。
-- `app/services/aliyun_responses.py`：管理阿里云上游配置、异步请求、响应解析和 Provider 异常。
-- `app/tui/__main__.py`：加载项目根目录 `.env` 并启动 Textual 应用。
-- `app/tui/application.py`：处理终端输入、记录展示、运行状态、命令和请求取消。
-- `app/tui/state.py`：定义 `Ready`、`Thinking`、`Error` 状态。
-- `tests/test_chat.py`：使用 FastAPI TestClient 和 HTTPX MockTransport 验证接口行为。
-- `tests/test_chat_runtime.py`：验证共享 Runtime 的结果和错误转换。
-- `tests/test_tui.py`：使用 Textual 无头测试验证 TUI 交互，不访问真实网络。
-- `requirements.txt`：声明运行与测试依赖。
-- `.env`：保存本地 API Key，被 Git 忽略。
-- `docs/`：保存规格、计划、任务、规则和长期知识。
-
-## HTTP Chat Request Flow
-
-```text
-Client
-  -> POST /chat
-  -> app.routers.chat validates ChatRequest
-  -> app.runtime.chat executes the single-turn use case
-  -> app.services.aliyun_responses reads DASHSCOPE_API_KEY
-  -> HTTPX AsyncClient calls Aliyun Responses API (qwen3-max)
-  -> Service validates upstream status and JSON
-  -> Runtime returns ChatResult or a UI-neutral ChatRuntimeError
-  -> Router returns the original success JSON or maps the error to HTTP detail
-```
-
-## TUI Chat Request Flow
-
-```text
-python3 -m app.tui
-  -> app.tui.__main__ loads .env without overriding Shell variables
-  -> ChatTuiApp validates input and starts one async Textual Worker
-  -> app.runtime.chat executes the single-turn use case
-  -> app.services.aliyun_responses calls Aliyun Responses API
-  -> TUI displays extracted response text or formatted JSON
-  -> TUI displays monotonic elapsed time for success or error completion
-  -> Worker completion changes Thinking to Ready or Error
-```
+- `main.py`：从 `app.application` 导出 FastAPI 应用。
+- `app/application.py`：创建 FastAPI、注册根路由和 Chat Router。
+- `app/routers/chat.py`：校验 `POST /chat`，返回统一 `ChatResponse` 并映射 HTTP 错误。
+- `app/runtime/chat.py`：共享单轮用例、统一结果、配置状态和安全错误语义。
+- `app/services/llm/contracts.py`：Provider 协议、内部结果和共享异常。
+- `app/services/llm/factory.py`：解析环境并创建当前 Provider。
+- `app/services/llm/http_client.py`：共享异步 JSON POST、超时和脱敏错误处理。
+- `app/services/llm/aliyun.py`：阿里云 Responses 请求和文本提取。
+- `app/services/llm/deepseek.py`：DeepSeek Chat Completions 请求和文本提取。
+- `app/tui/__main__.py`：加载根目录 `.env` 并启动 Textual。
+- `app/tui/application.py`：终端输入、统一文本展示、状态、耗时和取消。
+- `app/tui/state.py`：定义 `Ready`、`Thinking`、`Error`。
+- `tests/test_llm_providers.py`：Provider、工厂和共享 HTTP Mock 测试。
+- `tests/test_chat_runtime.py`：Runtime 单元测试。
+- `tests/test_chat.py`：HTTP 契约与 Provider 接线测试。
+- `tests/test_tui.py`：Textual 无头交互测试。
 
 ## Dependency Direction
 
 ```text
-main.py -> app.application -> app.routers.chat --+
-                                                |
-                                                v
-                                      app.runtime.chat
-                                                |
-                                                v
-                              app.services.aliyun_responses
-                                                ^
-                                                |
-python3 -m app.tui -> app.tui.application ------+
+main.py -> app.application -> app.routers.chat --------+
+                                                       v
+                                               app.runtime.chat
+                                                       v
+                                            app.services.llm.factory
+                                             /                    \
+                                            v                      v
+                              AliyunResponsesProvider    DeepSeekChatProvider
+                                            \                      /
+                                             +--> shared HTTP ----+
+
+python -m app.tui -> app.tui.application -> app.runtime.chat
 ```
 
-- Application 负责组装，不包含上游调用逻辑。
-- Router 负责 HTTP 契约和 HTTP 错误映射，不实现外部协议细节。
-- TUI 负责终端交互和状态，不导入 Router、FastAPI Application 或 `main.py`。
-- Runtime 负责共享单轮用例，不依赖 FastAPI 或 Textual。
-- Service 接收普通字符串并返回状态码和 JSON 数据，不依赖 Runtime、Router、TUI 或 Application。
+- Router 和 TUI 只依赖 Runtime，不理解外部响应结构。
+- Runtime 只依赖 Provider 契约和工厂，不导入具体 Provider 模块。
+- 工厂只解析配置和创建 Provider，不编排用例。
+- Provider 构造请求并提取文本；共享 HTTP 层处理网络和通用状态错误。
+- Provider 层不依赖 Runtime、Router、TUI 或 Application。
+
+## HTTP Chat Flow
+
+```text
+POST /chat
+  -> ChatRequest validates strict nonblank input
+  -> Runtime creates the environment-selected Provider
+  -> Provider sends its protocol-specific request through shared HTTPX
+  -> Provider validates JSON and extracts output_text
+  -> Runtime removes raw response details from ChatResult
+  -> Router returns 200 {"output_text": "..."}
+```
+
+阿里云响应可从顶层 `output_text`、`output[*].text` 或 `output[*].content[*].text` 提取。DeepSeek 固定从 `choices[0].message.content` 提取。无法提取文本属于无效上游响应并映射为 502。
+
+## TUI Chat Flow
+
+```text
+python -m app.tui
+  -> load .env without overriding Shell variables
+  -> Runtime resolves Provider, model and safe key status
+  -> Textual Worker calls the same run_chat use case
+  -> TUI displays ChatResult.output_text directly
+  -> TUI records monotonic elapsed time and updates state
+```
+
+TUI 不读取 Provider 专属密钥变量，不解析 JSON；状态信息和实际调用共用工厂配置规则。
+
+## Configuration
+
+| Provider | Selector | Key | Optional model | Default |
+| --- | --- | --- | --- | --- |
+| Aliyun | `LLM_PROVIDER=aliyun` | `DASHSCOPE_API_KEY` | `ALIYUN_MODEL` | `qwen3-max` |
+| DeepSeek | `LLM_PROVIDER=deepseek` 或未设置 | `DEEPSEEK_API_KEY` | `DEEPSEEK_MODEL` | `deepseek-v4-flash` |
+
+显式空白或未知 `LLM_PROVIDER` 是配置错误，不静默回退。模型变量空白时使用默认值。上游 URL 固定在相应适配器中，不能通过环境变量覆盖。
 
 ## Design Decisions
 
-- 上游网络 I/O 使用异步 HTTPX 客户端。
-- 模型固定为 `qwen3-max`，调用方不能覆盖。
-- 成功响应作为不透明 JSON 原样返回，不绑定上游字段结构。
-- TUI 展示时优先提取已知文本字段，无法提取时降级为格式化 JSON；这不改变 HTTP 契约。
-- 上游错误先转换为安全 Runtime 错误，再由 HTTP/TUI 边界分别呈现，不透传敏感信息。
-- TUI 使用 Textual async Worker，单实例同时最多一个请求；第一次 Esc 取消请求，1.5 秒内第二次 Esc 退出，并用请求代次阻止陈旧结果写入。
-- 当前不继续拆分 Config、Client、Repository 或 Manager 层；只有职责明显增长时再扩展。
+- HTTP 与 TUI 都只接触统一文本，原始 Provider JSON 只存在于 Provider 调用栈。
+- `/chat` 请求不包含 Provider 或模型；切换由部署环境控制。
+- 使用现有异步 HTTPX，不引入 Provider SDK。
+- 保持连接 10 秒、总计 60 秒超时；不实现自动重试或故障转移。
+- 每次调用创建并关闭 HTTP Client；当前没有性能基线，不增加应用级连接生命周期。
+- 上游错误体、Authorization、密钥和内部堆栈不进入 HTTP/TUI。
+- TUI 同时最多一个请求，第一次 Esc 取消，1.5 秒内第二次 Esc 退出，并用请求代次阻止陈旧结果写回。
+- 当前不增加 Repository、Manager、数据库、缓存或其他无实际职责的层级。

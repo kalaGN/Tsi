@@ -21,8 +21,16 @@ Content-Type: application/json
 ```
 
 - `input` 必须是非空且非纯空白字符串。
-- 成功时原样返回上游 JSON。
-- 模型固定为 `qwen3-max`。
+- Provider 由部署环境中的 `LLM_PROVIDER` 选择，调用方不能在请求中覆盖 Provider 或模型。
+- 成功状态固定为 `200 OK`，阿里云与 DeepSeek 使用同一响应：
+
+```json
+{
+  "output_text": "模型生成的文本"
+}
+```
+
+- 响应不包含上游 `id`、`output`、`choices`、usage、reasoning 或其他原始字段。
 
 ## Error Mapping
 
@@ -33,6 +41,7 @@ Content-Type: application/json
 - 上游鉴权失败：`401` 或 `403`。
 - 上游其他非成功状态：保留状态码，返回安全错误说明。
 - 上游成功但响应不是 JSON：`502 Bad Gateway`。
+- 上游成功但无法提取文本：`502 Bad Gateway`。
 
 错误响应使用 FastAPI 标准结构：
 

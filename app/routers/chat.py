@@ -1,7 +1,6 @@
 """HTTP 对话路由及 Runtime 错误到 HTTP 状态码的映射。"""
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, StrictStr, validator
 
 from app.runtime.chat import ChatErrorCode, ChatRuntimeError, run_chat
@@ -22,18 +21,21 @@ class ChatRequest(BaseModel):
         return value
 
 
-@router.post("/chat")
-async def create_chat(request: ChatRequest):
+class ChatResponse(BaseModel):
+    """屏蔽上游协议差异的稳定成功响应。"""
+
+    output_text: str
+
+
+@router.post("/chat", response_model=ChatResponse)
+async def create_chat(request: ChatRequest) -> ChatResponse:
     try:
         result = await run_chat(request.input)
     except ChatRuntimeError as exc:
         status_code = _http_status_for_error(exc)
         raise HTTPException(status_code=status_code, detail=exc.user_message) from exc
 
-    return JSONResponse(
-        content=result.body,
-        status_code=result.upstream_status,
-    )
+    return ChatResponse(output_text=result.output_text)
 
 
 def _http_status_for_error(error: ChatRuntimeError) -> int:

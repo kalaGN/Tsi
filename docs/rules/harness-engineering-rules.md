@@ -44,7 +44,12 @@ main.py -> app.application -> app.routers.chat --+
                                                 v
                                       app.runtime.chat
                                                 v
-                              app.services.aliyun_responses
+                                  app.services.llm.factory
+                                      /                 \
+                                     v                   v
+                         AliyunResponsesProvider  DeepSeekChatProvider
+                                      \                 /
+                                       +-> shared HTTP -+
                                                 ^
 python3 -m app.tui -> app.tui.application ------+
 ```
@@ -53,8 +58,9 @@ python3 -m app.tui -> app.tui.application ------+
 - Application 负责创建 FastAPI 和注册路由，不放外部调用逻辑。
 - Router 负责 HTTP 请求校验、调用用例和响应转换，不实现上游协议细节。
 - Runtime 负责共享单轮用例和中立错误，不依赖 FastAPI 或 Textual。
-- Service 负责阿里云请求、超时、响应解析和 Provider 异常，不依赖 Runtime、Router、TUI 或 Application。
-- TUI 负责输入、展示、状态和取消，不复制上游请求，不依赖 Router 或 Application。
+- Runtime 只依赖统一 Provider 契约和工厂，不导入具体 Provider 实现。
+- `services.llm` 负责配置解析、共享网络错误、阿里云/DeepSeek 请求和文本提取，不依赖 Runtime、Router、TUI 或 Application。
+- TUI 负责输入、统一文本展示、状态和取消，不读取 Provider 专属密钥或解析上游 JSON，不依赖 Router 或 Application。
 - 业务逻辑增长前不创建空壳 Repository、Manager、Provider 或依赖注入层。
 - 新抽象必须解决已出现的重复、边界或替换需求，不得为单次调用预设计。
 - 当前无数据访问和事务边界；引入持久化前必须另建 Spec。
@@ -71,7 +77,8 @@ python3 -m app.tui -> app.tui.application ------+
 契约规则：
 
 - 请求模型由 Pydantic 校验；`input` 必须是严格字符串且不能全为空白。
-- `/chat` 成功时原样返回上游 JSON 和成功状态码。
+- `/chat` 成功时固定返回 `200` 和 `{"output_text": "..."}`，不得暴露 Provider 原始字段。
+- Provider 和模型只允许通过部署环境选择，未经新 Spec 不向请求体增加选择字段。
 - 错误使用 FastAPI `{"detail": "..."}` 结构；项目没有额外业务码规范。
 - 缺少密钥返回 503，连接失败返回 502，超时返回 504，上游 401/403 保留状态码，其他非成功状态保留状态码并隐藏上游错误体。
 - 项目没有分页、排序、幂等键、API 版本或废弃机制；需要时先定义契约。
@@ -93,7 +100,7 @@ python3 -m app.tui -> app.tui.application ------+
 
 - 测试框架是 Pytest；HTTP 测试使用 FastAPI TestClient，外部 HTTP 使用 HTTPX MockTransport。
 - 新功能至少覆盖正常、输入边界和关键错误路径；Bug 修复必须先有回归测试。
-- 外部服务测试必须 Mock，禁止访问真实阿里云接口或消耗模型额度。
+- 外部服务测试必须 Mock，禁止访问真实阿里云、DeepSeek 接口或消耗模型额度。
 - 测试使用明显假密钥，不使用生产数据；时间、随机和网络行为必须可控。
 - 测试名称描述可观察行为，不绑定无关实现细节。
 - 当前没有覆盖率门槛、Integration 或 E2E 环境，不得宣称已具备。
@@ -101,9 +108,9 @@ python3 -m app.tui -> app.tui.application ------+
 质量门禁：
 
 ```bash
-python3 -m compileall -q main.py app tests
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest -q
-python3 -m pip check
+.venv/bin/python -m compileall -q main.py app tests
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
+.venv/bin/python -m pip check
 git diff --check
 ```
 
@@ -113,7 +120,7 @@ git diff --check
 
 已确认机制：
 
-- `DASHSCOPE_API_KEY` 从环境变量读取。
+- `DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY` 从环境变量读取，`LLM_PROVIDER` 只接受 `aliyun` 或 `deepseek`。
 - `.env` 被 `.gitignore` 排除。
 - 请求输入使用 Pydantic 校验。
 - 上游错误体不直接返回客户端，测试检查假密钥不泄露。
@@ -128,7 +135,7 @@ git diff --check
 
 ## 9. Reliability and Observability
 
-已实现：HTTPX 异步调用、10 秒连接超时、60 秒总超时、连接/超时/上游状态/JSON 解析错误分类。
+已实现：HTTPX 异步调用、10 秒连接超时、60 秒总超时、连接/超时/上游状态/JSON 及文本结构错误分类。
 
 未实现：重试、退避、熔断、请求 ID、Trace、指标、告警、结构化日志、Readiness/Liveness、Graceful Shutdown 自定义处理。
 

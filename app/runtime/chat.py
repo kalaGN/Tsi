@@ -2,31 +2,36 @@
 
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
 
-from app.services.aliyun_responses import (
-    AliyunResponsesError,
-    UpstreamAuthenticationError,
-    UpstreamConfigurationError,
-    UpstreamConnectionError,
-    UpstreamInvalidResponseError,
-    UpstreamResponseError,
-    UpstreamTimeoutError,
-    request_upstream_response,
-    UPSTREAM_MODEL,
+from app.services.llm.contracts import (
+    LlmProvider,
+    LlmProviderError,
+    ProviderAuthenticationError,
+    ProviderConfigurationError,
+    ProviderConnectionError,
+    ProviderInvalidResponseError,
+    ProviderResponseError,
+    ProviderTimeoutError,
 )
-
-
-CHAT_PROVIDER = "Aliyun"
-CHAT_MODEL = UPSTREAM_MODEL
+from app.services.llm.factory import create_provider
 
 
 @dataclass(frozen=True)
 class ChatResult:
-    """保留上游成功状态与正文，供不同交互界面自行呈现。"""
+    """供不同交互界面使用的 Provider 无关文本结果。"""
 
-    upstream_status: int
-    body: Any
+    output_text: str
+    provider: str
+    model: str
+
+
+@dataclass(frozen=True)
+class ChatRuntimeInfo:
+    """TUI 可安全展示的当前模型配置信息。"""
+
+    provider: str
+    model: str
+    api_key_configured: bool
 
 
 class ChatErrorCode(str, Enum):
@@ -55,17 +60,20 @@ class ChatRuntimeError(Exception):
 
 
 ERROR_CODES = {
-    UpstreamConfigurationError: ChatErrorCode.CONFIGURATION,
-    UpstreamTimeoutError: ChatErrorCode.TIMEOUT,
-    UpstreamConnectionError: ChatErrorCode.CONNECTION,
-    UpstreamAuthenticationError: ChatErrorCode.AUTHENTICATION,
-    UpstreamResponseError: ChatErrorCode.UPSTREAM,
-    UpstreamInvalidResponseError: ChatErrorCode.INVALID_RESPONSE,
+    ProviderConfigurationError: ChatErrorCode.CONFIGURATION,
+    ProviderTimeoutError: ChatErrorCode.TIMEOUT,
+    ProviderConnectionError: ChatErrorCode.CONNECTION,
+    ProviderAuthenticationError: ChatErrorCode.AUTHENTICATION,
+    ProviderResponseError: ChatErrorCode.UPSTREAM,
+    ProviderInvalidResponseError: ChatErrorCode.INVALID_RESPONSE,
 }
 
 
-async def run_chat(input_text: str) -> ChatResult:
-    """校验输入、调用 Provider，并统一外部异常的错误语义。"""
+async def run_chat(
+    input_text: str,
+    provider: LlmProvider | None = None,
+) -> ChatResult:
+    """校验输入、调用所选 Provider，并统一外部异常语义。"""
 
     if not isinstance(input_text, str) or not input_text.strip():
         raise ChatRuntimeError(
@@ -74,12 +82,41 @@ async def run_chat(input_text: str) -> ChatResult:
         )
 
     try:
-        status_code, body = await request_upstream_response(input_text)
-    except AliyunResponsesError as exc:
-        raise ChatRuntimeError(
-            ERROR_CODES[type(exc)],
-            exc.user_message,
-            exc.status_code,
-        ) from exc
+        active_provider = create_provider() if provider is None else provider
+        result = await active_provider.generate(input_text)
+    except LlmProviderError as exc:
+        raise _runtime_error(exc) from exc
 
-    return ChatResult(upstream_status=status_code, body=body)
+    return ChatResult(
+        output_text=result.output_text,
+        provider=active_provider.name,
+        model=active_provider.model,
+    )
+
+
+def get_chat_runtime_info() -> ChatRuntimeInfo:
+    """读取与实际调用相同的 Provider 配置，不暴露密钥内容。"""
+
+    try:
+        provider = create_provider()
+    except LlmProviderError as exc:
+        raise _runtime_error(exc) from exc
+
+    return ChatRuntimeInfo(
+        provider=provider.name,
+        model=provider.model,
+        api_key_configured=provider.api_key_configured,
+    )
+
+
+def _runtime_error(error: LlmProviderError) -> ChatRuntimeError:
+    """集中转换 Provider 错误，避免各交互边界重复判断。"""
+
+    for error_type, code in ERROR_CODES.items():
+        if isinstance(error, error_type):
+            return ChatRuntimeError(code, error.user_message, error.status_code)
+    return ChatRuntimeError(
+        ChatErrorCode.UPSTREAM,
+        "Upstream service returned an error",
+        error.status_code,
+    )

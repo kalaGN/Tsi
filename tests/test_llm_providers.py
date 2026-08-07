@@ -1,4 +1,5 @@
 import asyncio
+import json
 
 import httpx
 import pytest
@@ -8,10 +9,13 @@ from app.services.llm.aliyun import (
     AliyunResponsesProvider,
 )
 from app.services.llm.contracts import (
+    ChatMessage,
+    ChatRole,
     ProviderAuthenticationError,
     ProviderConfigurationError,
     ProviderConnectionError,
     ProviderInvalidResponseError,
+    ProviderInvalidRequestError,
     ProviderResponseError,
     ProviderTimeoutError,
 )
@@ -24,6 +28,10 @@ from app.services.llm import http_client
 
 
 FAKE_API_KEY = "test-only-provider-key"
+
+
+def user_messages(content: str = "hello") -> tuple[ChatMessage, ...]:
+    return (ChatMessage(ChatRole.USER, content),)
 
 
 def install_transport(monkeypatch, handler):
@@ -149,7 +157,7 @@ def test_aliyun_sends_expected_request_and_extracts_text(
     install_transport(monkeypatch, handler)
     provider = AliyunResponsesProvider(FAKE_API_KEY, "custom-qwen")
 
-    result = asyncio.run(provider.generate("hello"))
+    result = asyncio.run(provider.generate(user_messages()))
 
     assert result.upstream_status == 200
     assert result.raw_body == body
@@ -177,11 +185,80 @@ def test_deepseek_sends_expected_request_and_extracts_text(monkeypatch):
     install_transport(monkeypatch, handler)
     provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-pro")
 
-    result = asyncio.run(provider.generate("你好"))
+    result = asyncio.run(provider.generate(user_messages("你好")))
 
     assert result.upstream_status == 200
     assert result.raw_body == body
     assert result.output_text == "你好"
+
+
+@pytest.mark.parametrize(
+    ("provider", "expected_field"),
+    [
+        (AliyunResponsesProvider(FAKE_API_KEY, "qwen3-max"), "input"),
+        (
+            DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash"),
+            "messages",
+        ),
+    ],
+)
+def test_provider_sends_ordered_multi_turn_messages(
+    monkeypatch,
+    provider,
+    expected_field,
+):
+    history = (
+        ChatMessage(ChatRole.USER, "first"),
+        ChatMessage(ChatRole.ASSISTANT, "answer"),
+        ChatMessage(ChatRole.USER, "second"),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload[expected_field] == [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "second"},
+        ]
+        if provider.name == "aliyun":
+            return httpx.Response(200, json={"output_text": "ok"})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}}]},
+        )
+
+    install_transport(monkeypatch, handler)
+
+    assert asyncio.run(provider.generate(history)).output_text == "ok"
+
+
+@pytest.mark.parametrize(
+    "messages",
+    [
+        (),
+        (ChatMessage(ChatRole.USER, ""),),
+        (ChatMessage(ChatRole.ASSISTANT, "orphan"),),
+        (
+            ChatMessage(ChatRole.USER, "first"),
+            ChatMessage(ChatRole.USER, "second"),
+            ChatMessage(ChatRole.USER, "third"),
+        ),
+    ],
+)
+def test_provider_rejects_invalid_message_sequence_without_network(
+    monkeypatch,
+    messages,
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("invalid messages must not reach network")
+
+    install_transport(monkeypatch, handler)
+    provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash")
+
+    with pytest.raises(ProviderInvalidRequestError) as captured:
+        asyncio.run(provider.generate(messages))
+
+    assert str(captured.value) == "Conversation messages are invalid"
 
 
 @pytest.mark.parametrize(
@@ -198,7 +275,7 @@ def test_provider_requires_key_before_network_call(monkeypatch, provider):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderConfigurationError) as captured:
-        asyncio.run(provider.generate("hello"))
+        asyncio.run(provider.generate(user_messages()))
 
     assert captured.value.user_message == "Upstream API key is not configured"
 
@@ -217,7 +294,7 @@ def test_provider_maps_timeout(monkeypatch, provider):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderTimeoutError) as captured:
-        asyncio.run(provider.generate("hello"))
+        asyncio.run(provider.generate(user_messages()))
 
     assert captured.value.user_message == "Upstream request timed out"
     assert "secret" not in str(captured.value)
@@ -237,7 +314,7 @@ def test_provider_maps_connection_error(monkeypatch, provider):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderConnectionError) as captured:
-        asyncio.run(provider.generate("hello"))
+        asyncio.run(provider.generate(user_messages()))
 
     assert captured.value.user_message == "Unable to connect to upstream service"
     assert "secret" not in str(captured.value)
@@ -252,7 +329,7 @@ def test_provider_maps_authentication_error(monkeypatch, status_code):
     provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash")
 
     with pytest.raises(ProviderAuthenticationError) as captured:
-        asyncio.run(provider.generate("hello"))
+        asyncio.run(provider.generate(user_messages()))
 
     assert captured.value.status_code == status_code
     assert captured.value.user_message == "Upstream authentication failed"
@@ -269,7 +346,7 @@ def test_deepseek_preserves_other_error_status(monkeypatch, status_code):
     provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash")
 
     with pytest.raises(ProviderResponseError) as captured:
-        asyncio.run(provider.generate("hello"))
+        asyncio.run(provider.generate(user_messages()))
 
     assert captured.value.status_code == status_code
     assert captured.value.user_message == "Upstream service returned an error"
@@ -290,7 +367,7 @@ def test_provider_rejects_non_json_success(monkeypatch, provider):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderInvalidResponseError) as captured:
-        asyncio.run(provider.generate("hello"))
+        asyncio.run(provider.generate(user_messages()))
 
     assert captured.value.user_message == "Upstream service returned invalid JSON"
 
@@ -321,6 +398,6 @@ def test_provider_rejects_success_without_text(monkeypatch, provider, body):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderInvalidResponseError) as captured:
-        asyncio.run(provider.generate("hello"))
+        asyncio.run(provider.generate(user_messages()))
 
     assert captured.value.user_message == "Upstream service returned an invalid response"

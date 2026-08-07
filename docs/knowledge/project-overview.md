@@ -2,14 +2,14 @@
 
 ## Goal
 
-本项目用于学习和验证 FastAPI、Textual 与外部模型接口集成。HTTP 和本地全屏 TUI 接收单轮文本，通过统一 Provider 层调用阿里云 Responses API 或 DeepSeek Chat Completions API。
+本项目用于学习和验证 FastAPI、Textual 与外部模型接口集成。HTTP 提供无状态单轮文本调用，本地全屏 TUI 提供可持久化和恢复的唯一多轮会话；两者通过统一 Provider 层调用阿里云 Responses API 或 DeepSeek Chat Completions API。
 
 ## Project Shape
 
 - 单 Git 仓库、单 Python 应用；HTTP 与 TUI 是两个独立入口。
 - HTTP 对外提供统一 JSON；TUI 只在本地终端运行。
 - Textual Worker 只防止单次异步请求阻塞界面，不是后台任务系统。
-- 没有数据库、缓存、搜索、消息队列、持久化会话、微服务或定时任务。
+- 没有数据库、缓存、搜索、消息队列、多会话管理、微服务或定时任务；TUI 仅用本地 JSON 保存当前会话。
 
 ## Technology
 
@@ -64,7 +64,7 @@ git diff --check
 
 明确不支持：
 
-- 请求级 Provider/模型选择、流式、多轮记忆、持久化、工具调用、多 Agent 和多模态。
+- 请求级 Provider/模型选择、流式、多会话管理、上下文压缩、工具调用、多 Agent 和多模态。
 - 自动重试、降级、负载均衡、熔断、限流、用户认证授权和任务队列。
 - 容器、反向代理、进程管理、CI/CD、结构化日志、Trace、指标、告警和正式健康检查。
 

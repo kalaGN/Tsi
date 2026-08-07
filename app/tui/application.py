@@ -1,4 +1,4 @@
-"""Textual 单轮对话界面、状态切换与请求取消逻辑。"""
+"""Textual 多轮对话界面、状态切换与请求取消逻辑。"""
 
 import time
 from collections.abc import Awaitable, Callable
@@ -15,8 +15,10 @@ from app.runtime.chat import (
     ChatRuntimeError,
     ChatRuntimeInfo,
     get_chat_runtime_info,
-    run_chat,
 )
+from app.runtime.session import ChatSession
+from app.runtime.session_store import SessionStore
+from app.services.llm.contracts import ChatRole
 from app.tui.state import RunStatus
 
 
@@ -25,7 +27,7 @@ Clock = Callable[[], float]
 
 
 class ChatTuiApp(App[None]):
-    """复用 Chat Runtime 的本地全屏单轮对话界面。"""
+    """复用 Chat Runtime 的本地全屏多轮对话界面。"""
 
     TITLE = "FastAPI Agent TUI"
     ESCAPE_CONFIRM_SECONDS = 1.5
@@ -69,14 +71,15 @@ class ChatTuiApp(App[None]):
 
     def __init__(
         self,
-        chat_runner: ChatRunner = run_chat,
+        chat_runner: ChatRunner | None = None,
         runtime_info: ChatRuntimeInfo | None = None,
         clock: Clock = time.monotonic,
+        chat_session: ChatSession | None = None,
     ) -> None:
         super().__init__()
-        self.chat_runner = chat_runner
         self.clock = clock
         self._configuration_error: str | None = None
+        self._history_error: str | None = None
         if runtime_info is None:
             try:
                 runtime_info = get_chat_runtime_info()
@@ -85,6 +88,20 @@ class ChatTuiApp(App[None]):
                 self._configuration_error = exc.user_message
                 runtime_info = ChatRuntimeInfo("unknown", "-", False)
         self.runtime_info = runtime_info
+        if chat_session is None and chat_runner is None:
+            store = SessionStore()
+            try:
+                chat_session = ChatSession.load(store)
+            except ChatRuntimeError as exc:
+                # 保留损坏文件，只允许用户通过 /clear 显式删除。
+                self._history_error = exc.user_message
+                chat_session = ChatSession(store)
+        self.chat_session = chat_session
+        self.chat_runner = (
+            chat_session.send if chat_runner is None and chat_session else chat_runner
+        )
+        if self.chat_runner is None:
+            raise ValueError("chat_runner or chat_session is required")
         self._active_worker: Worker[None] | None = None
         self._request_generation = 0
         self._last_escape_at: float | None = None
@@ -107,12 +124,20 @@ class ChatTuiApp(App[None]):
 
     def on_mount(self) -> None:
         self.query_one("#prompt", TextArea).focus()
+        if self.chat_session is not None:
+            for message in self.chat_session.messages:
+                role = "You" if message.role is ChatRole.USER else "Assistant"
+                self._write_message(role, message.content)
         if self._configuration_error is not None:
             self.run_status = RunStatus.ERROR
             self._write_message("Error", self._configuration_error)
         elif not self.runtime_info.api_key_configured:
             self.run_status = RunStatus.ERROR
             self._write_message("Error", "Upstream API key is not configured")
+        if self._history_error is not None:
+            self.run_status = RunStatus.ERROR
+            self._write_message("Error", self._history_error)
+            self._write_message("System", "Use /clear to reset saved conversation")
         self._update_status_bar()
 
     def watch_run_status(self) -> None:
@@ -150,9 +175,22 @@ class ChatTuiApp(App[None]):
             return
 
         if command == "/clear":
+            try:
+                if self.chat_session is not None:
+                    self.chat_session.clear()
+            except ChatRuntimeError as exc:
+                self._write_message("Error", exc.user_message)
+                self.run_status = RunStatus.ERROR
+                return
+            self._history_error = None
             prompt_widget.load_text("")
             self.query_one("#transcript", RichLog).clear()
             self.run_status = RunStatus.READY
+            return
+
+        if self._history_error is not None:
+            self._write_message("Error", self._history_error)
+            self._write_message("System", "Use /clear to reset saved conversation")
             return
 
         if not input_text.strip():

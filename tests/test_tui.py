@@ -134,6 +134,11 @@ def test_tui_entrypoint_loads_project_env_without_overriding_shell(monkeypatch):
 
     monkeypatch.delenv("TEXTUAL_DISABLE_KITTY_KEY", raising=False)
     monkeypatch.setattr(tui_main, "load_dotenv", fake_load_dotenv)
+    monkeypatch.setattr(
+        tui_main,
+        "configure_model_logging",
+        lambda: observed.setdefault("logging", "configured"),
+    )
     monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
 
     tui_main.main()
@@ -141,6 +146,7 @@ def test_tui_entrypoint_loads_project_env_without_overriding_shell(monkeypatch):
     expected_root = Path(tui_main.__file__).resolve().parents[2]
     assert observed == {
         "dotenv": (expected_root / ".env", False),
+        "logging": "configured",
         "kitty_keyboard_disabled": "1",
         "run": True,
     }

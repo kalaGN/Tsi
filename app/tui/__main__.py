@@ -5,6 +5,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from app.observability.model_logging import configure_model_logging
+
 
 def _create_app():
     """延迟导入 Textual，确保终端兼容配置先于框架初始化生效。"""
@@ -21,6 +23,7 @@ def main() -> None:
     load_dotenv(project_root / ".env", override=False)
     # Report-all-keys 会干扰部分 macOS 中文输入法，因此项目不启用该协议。
     os.environ["TEXTUAL_DISABLE_KITTY_KEY"] = "1"
+    configure_model_logging()
     _create_app().run()
 
 

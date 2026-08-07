@@ -56,6 +56,84 @@ def test_run_chat_returns_normalized_provider_result():
     assert not hasattr(result, "upstream_status")
 
 
+def test_run_chat_logs_input_and_output_around_provider_call(monkeypatch):
+    call_order = []
+    captured_requests = []
+    captured_responses = []
+
+    class OrderedProvider(FakeProvider):
+        async def generate(self, input_text: str) -> ProviderResult:
+            call_order.append("provider")
+            return await super().generate(input_text)
+
+    provider = OrderedProvider(
+        result=ProviderResult(
+            200,
+            {"provider-raw-marker": "must-not-be-logged"},
+            "secret-output",
+        )
+    )
+
+    def capture_log(**fields):
+        call_order.append("request_log")
+        captured_requests.append(fields)
+
+    def capture_response(**fields):
+        call_order.append("response_log")
+        captured_responses.append(fields)
+
+    monkeypatch.setattr(chat, "new_request_id", lambda: "c" * 32)
+    monkeypatch.setattr(chat, "log_model_request", capture_log)
+    monkeypatch.setattr(chat, "log_model_response", capture_response)
+
+    asyncio.run(run_chat("secret-input", provider=provider))
+
+    assert call_order == ["request_log", "provider", "response_log"]
+    assert captured_requests == [
+        {
+            "request_id": "c" * 32,
+            "provider": "fake",
+            "model": "fake-model",
+            "input_chars": len("secret-input"),
+            "input_text": "secret-input",
+        }
+    ]
+    assert captured_responses == [
+        {
+            "request_id": "c" * 32,
+            "provider": "fake",
+            "model": "fake-model",
+            "output_chars": len("secret-output"),
+            "output_text": "secret-output",
+        }
+    ]
+    assert "provider-raw-marker" not in repr(captured_responses)
+
+
+def test_run_chat_logs_only_request_when_provider_fails(monkeypatch):
+    captured_requests = []
+    captured_responses = []
+    provider = FakeProvider(error=ProviderTimeoutError())
+    monkeypatch.setattr(chat, "new_request_id", lambda: "d" * 32)
+    monkeypatch.setattr(
+        chat,
+        "log_model_request",
+        lambda **fields: captured_requests.append(fields),
+    )
+    monkeypatch.setattr(
+        chat,
+        "log_model_response",
+        lambda **fields: captured_responses.append(fields),
+    )
+
+    with pytest.raises(ChatRuntimeError):
+        asyncio.run(run_chat("hello", provider=provider))
+
+    assert len(captured_requests) == 1
+    assert captured_requests[0]["request_id"] == "d" * 32
+    assert captured_responses == []
+
+
 def test_run_chat_rejects_blank_input_without_calling_provider():
     provider = FakeProvider(
         result=ProviderResult(200, {}, "should not be returned")
@@ -134,16 +212,31 @@ def test_run_chat_maps_provider_errors(
 
 
 def test_run_chat_maps_factory_configuration_error(monkeypatch):
+    captured_requests = []
+    captured_responses = []
+
     def fail_to_create_provider():
         raise ProviderConfigurationError("Unsupported LLM provider configuration")
 
     monkeypatch.setattr(chat, "create_provider", fail_to_create_provider)
+    monkeypatch.setattr(
+        chat,
+        "log_model_request",
+        lambda **fields: captured_requests.append(fields),
+    )
+    monkeypatch.setattr(
+        chat,
+        "log_model_response",
+        lambda **fields: captured_responses.append(fields),
+    )
 
     with pytest.raises(ChatRuntimeError) as captured:
         asyncio.run(run_chat("hello"))
 
     assert captured.value.code is ChatErrorCode.CONFIGURATION
     assert captured.value.user_message == "Unsupported LLM provider configuration"
+    assert captured_requests == []
+    assert captured_responses == []
 
 
 def test_runtime_info_uses_selected_provider(monkeypatch):

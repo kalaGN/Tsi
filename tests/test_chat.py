@@ -3,6 +3,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
+from app import application
 from app.application import app as application_app
 from app.services.llm import http_client
 from app.services.llm.aliyun import ALIYUN_RESPONSES_URL
@@ -39,6 +40,20 @@ def install_upstream_transport(monkeypatch, handler):
 
 def test_main_exports_application():
     assert main.app is application_app
+
+
+def test_create_app_configures_model_logging(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        application,
+        "configure_model_logging",
+        lambda: calls.append("configured"),
+    )
+
+    created_app = application.create_app()
+
+    assert created_app is not None
+    assert calls == ["configured"]
 
 
 def test_root_behavior_is_preserved():

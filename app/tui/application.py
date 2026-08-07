@@ -2,6 +2,7 @@
 
 import json
 import os
+import time
 from collections.abc import Awaitable, Callable
 from typing import Any
 
@@ -23,6 +24,7 @@ from app.tui.state import RunStatus
 
 
 ChatRunner = Callable[[str], Awaitable[ChatResult]]
+Clock = Callable[[], float]
 
 
 def format_response_body(body: Any) -> str:
@@ -67,9 +69,10 @@ class ChatTuiApp(App[None]):
     """复用 Chat Runtime 的本地全屏单轮对话界面。"""
 
     TITLE = "FastAPI Agent TUI"
+    ESCAPE_CONFIRM_SECONDS = 1.5
     BINDINGS = [
         Binding("enter", "submit_prompt", "Send", priority=True),
-        Binding("escape", "exit_app", "Exit", priority=True),
+        Binding("escape", "confirm_exit", "Exit (x2)", priority=True),
     ]
     CSS = """
     Screen {
@@ -109,9 +112,11 @@ class ChatTuiApp(App[None]):
         self,
         chat_runner: ChatRunner = run_chat,
         api_key_configured: bool | None = None,
+        clock: Clock = time.monotonic,
     ) -> None:
         super().__init__()
         self.chat_runner = chat_runner
+        self.clock = clock
         self.api_key_configured = (
             self._has_api_key()
             if api_key_configured is None
@@ -119,6 +124,7 @@ class ChatTuiApp(App[None]):
         )
         self._active_worker: Worker[None] | None = None
         self._request_generation = 0
+        self._last_escape_at: float | None = None
 
     @staticmethod
     def _has_api_key() -> bool:
@@ -136,7 +142,7 @@ class ChatTuiApp(App[None]):
         yield TextArea(
             id="prompt",
             soft_wrap=True,
-            placeholder="Type a message. Enter: send, Esc: exit",
+            placeholder="Type a message. Enter: send, Esc x2: exit",
         )
         yield Static(id="status-bar", markup=False)
         yield Footer(show_command_palette=False)
@@ -189,20 +195,26 @@ class ChatTuiApp(App[None]):
             self._write_message("System", "Input must not be blank")
             return
 
+        started_at = self.clock()
         prompt_widget.load_text("")
         self._write_message("You", input_text)
         self.run_status = RunStatus.THINKING
         self._request_generation += 1
         generation = self._request_generation
         self._active_worker = self.run_worker(
-            self._run_prompt(input_text, generation),
+            self._run_prompt(input_text, generation, started_at),
             name="chat-request",
             group="chat",
             exclusive=True,
             exit_on_error=False,
         )
 
-    async def _run_prompt(self, input_text: str, generation: int) -> None:
+    async def _run_prompt(
+        self,
+        input_text: str,
+        generation: int,
+        started_at: float,
+    ) -> None:
         worker = get_current_worker()
         try:
             result = await self.chat_runner(input_text)
@@ -210,26 +222,45 @@ class ChatTuiApp(App[None]):
             if worker.is_cancelled or generation != self._request_generation:
                 return
             self._write_message("Assistant", format_response_body(result.body))
+            self._write_elapsed_time(started_at)
             self.run_status = RunStatus.READY
         except ChatRuntimeError as exc:
             if worker.is_cancelled or generation != self._request_generation:
                 return
             self._write_message("Error", exc.user_message)
+            self._write_elapsed_time(started_at)
             self.run_status = RunStatus.ERROR
         except Exception:
             if worker.is_cancelled or generation != self._request_generation:
                 return
             # 未知异常只在界面显示中立文案，避免泄露堆栈或敏感上下文。
             self._write_message("Error", "Unexpected internal error")
+            self._write_elapsed_time(started_at)
             self.run_status = RunStatus.ERROR
         finally:
             if generation == self._request_generation:
                 self._active_worker = None
                 self.query_one("#prompt", TextArea).focus()
 
-    def action_exit_app(self) -> None:
+    def _write_elapsed_time(self, started_at: float) -> None:
+        """在请求结果后显示不受系统时间调整影响的单轮耗时。"""
+
+        elapsed = self.clock() - started_at
+        self._write_message("System", f"耗时：{elapsed:.2f} 秒")
+
+    def action_confirm_exit(self) -> None:
+        now = self.clock()
+        if self._last_escape_at is not None:
+            elapsed = now - self._last_escape_at
+            if 0 <= elapsed <= self.ESCAPE_CONFIRM_SECONDS:
+                self._last_escape_at = None
+                self._cancel_active_request(show_message=False)
+                self.exit()
+                return
+
+        self._last_escape_at = now
         self._cancel_active_request(show_message=False)
-        self.exit()
+        self._write_message("System", "再次按 Esc 退出")
 
     def _cancel_active_request(self, show_message: bool) -> None:
         worker = self._active_worker

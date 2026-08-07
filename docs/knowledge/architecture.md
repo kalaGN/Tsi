@@ -44,6 +44,7 @@ python3 -m app.tui
   -> app.runtime.chat executes the single-turn use case
   -> app.services.aliyun_responses calls Aliyun Responses API
   -> TUI displays extracted response text or formatted JSON
+  -> TUI displays monotonic elapsed time for success or error completion
   -> Worker completion changes Thinking to Ready or Error
 ```
 
@@ -75,5 +76,5 @@ python3 -m app.tui -> app.tui.application ------+
 - 成功响应作为不透明 JSON 原样返回，不绑定上游字段结构。
 - TUI 展示时优先提取已知文本字段，无法提取时降级为格式化 JSON；这不改变 HTTP 契约。
 - 上游错误先转换为安全 Runtime 错误，再由 HTTP/TUI 边界分别呈现，不透传敏感信息。
-- TUI 使用 Textual async Worker，单实例同时最多一个请求；Esc 退出时取消请求，并用请求代次阻止陈旧结果写入。
+- TUI 使用 Textual async Worker，单实例同时最多一个请求；第一次 Esc 取消请求，1.5 秒内第二次 Esc 退出，并用请求代次阻止陈旧结果写入。
 - 当前不继续拆分 Config、Client、Repository 或 Manager 层；只有职责明显增长时再扩展。

@@ -137,12 +137,17 @@ def test_tui_entrypoint_loads_project_env_without_overriding_shell(monkeypatch):
 def test_enter_submits_input():
     async def scenario():
         received_inputs = []
+        clock_values = iter([10.0, 11.234])
 
         async def fake_runner(input_text: str) -> ChatResult:
             received_inputs.append(input_text)
             return ChatResult(200, {"output_text": "answer"})
 
-        app = ChatTuiApp(chat_runner=fake_runner, api_key_configured=True)
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            api_key_configured=True,
+            clock=lambda: next(clock_values),
+        )
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.focus()
@@ -157,6 +162,36 @@ def test_enter_submits_input():
             transcript = transcript_text(app)
             assert "You\nhello" in transcript
             assert "Assistant\nanswer" in transcript
+            assert "System\n耗时：1.23 秒" in transcript
+
+    asyncio.run(scenario())
+
+
+def test_runtime_error_displays_request_duration():
+    async def scenario():
+        clock_values = iter([20.0, 22.5])
+
+        async def fake_runner(input_text: str) -> ChatResult:
+            raise ChatRuntimeError(
+                ChatErrorCode.TIMEOUT,
+                "Upstream request timed out",
+            )
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            api_key_configured=True,
+            clock=lambda: next(clock_values),
+        )
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("hello")
+
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+
+            transcript = transcript_text(app)
+            assert "Error\nUpstream request timed out" in transcript
+            assert "System\n耗时：2.50 秒" in transcript
 
     asyncio.run(scenario())
 
@@ -331,11 +366,12 @@ def test_unexpected_error_is_hidden_and_app_remains_available():
     asyncio.run(scenario())
 
 
-def test_escape_cancels_active_request_and_exits():
+def test_double_escape_cancels_active_request_then_exits():
     async def scenario():
         started = asyncio.Event()
         cancelled = asyncio.Event()
         exit_called = False
+        clock_values = iter([10.0, 10.2, 10.3])
 
         async def fake_runner(input_text: str) -> ChatResult:
             started.set()
@@ -345,7 +381,11 @@ def test_escape_cancels_active_request_and_exits():
                 cancelled.set()
                 return ChatResult(200, {"output_text": "late result"})
 
-        app = ChatTuiApp(chat_runner=fake_runner, api_key_configured=True)
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            api_key_configured=True,
+            clock=lambda: next(clock_values),
+        )
         original_exit = app.exit
 
         def record_exit(*args, **kwargs):
@@ -356,14 +396,22 @@ def test_escape_cancels_active_request_and_exits():
         app.exit = record_exit
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
+            transcript_widget = app.query_one("#transcript", RichLog)
             prompt.load_text("hello")
             await pilot.press("enter")
             await asyncio.wait_for(started.wait(), timeout=1)
 
             await pilot.press("escape")
             await asyncio.wait_for(cancelled.wait(), timeout=1)
+            assert not exit_called
+            assert "System\n再次按 Esc 退出" in transcript_text(app)
+            assert "耗时：" not in transcript_text(app)
+
+            await pilot.press("escape")
 
         assert exit_called
+        transcript = "\n".join(line.text for line in transcript_widget.lines)
+        assert "耗时：" not in transcript
 
     asyncio.run(scenario())
 
@@ -394,14 +442,19 @@ def test_quit_command_exits_without_calling_runner():
     asyncio.run(scenario())
 
 
-def test_escape_exits_when_no_request_is_running():
+def test_double_escape_exits_when_no_request_is_running():
     async def scenario():
         exit_called = False
 
         async def fake_runner(input_text: str) -> ChatResult:
             raise AssertionError("runner should not be called")
 
-        app = ChatTuiApp(chat_runner=fake_runner, api_key_configured=True)
+        clock_values = iter([10.0, 10.5])
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            api_key_configured=True,
+            clock=lambda: next(clock_values),
+        )
         original_exit = app.exit
 
         def record_exit(*args, **kwargs):
@@ -411,6 +464,43 @@ def test_escape_exits_when_no_request_is_running():
 
         app.exit = record_exit
         async with app.run_test() as pilot:
+            await pilot.press("escape")
+            assert not exit_called
+            assert "再次按 Esc 退出" in transcript_text(app)
+
+            await pilot.press("escape")
+
+        assert exit_called
+
+    asyncio.run(scenario())
+
+
+def test_escape_confirmation_expires_after_timeout():
+    async def scenario():
+        exit_called = False
+        clock_values = iter([10.0, 12.0, 12.5])
+
+        async def fake_runner(input_text: str) -> ChatResult:
+            raise AssertionError("runner should not be called")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            api_key_configured=True,
+            clock=lambda: next(clock_values),
+        )
+        original_exit = app.exit
+
+        def record_exit(*args, **kwargs):
+            nonlocal exit_called
+            exit_called = True
+            return original_exit(*args, **kwargs)
+
+        app.exit = record_exit
+        async with app.run_test() as pilot:
+            await pilot.press("escape")
+            await pilot.press("escape")
+            assert not exit_called
+
             await pilot.press("escape")
 
         assert exit_called

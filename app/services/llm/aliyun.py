@@ -1,12 +1,14 @@
 """阿里云兼容模式 Responses API Provider。"""
 
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Sequence
 
 from app.services.llm.contracts import (
+    ChatMessage,
     ProviderConfigurationError,
     ProviderInvalidResponseError,
     ProviderResult,
+    validate_provider_messages,
 )
 from app.services.llm.http_client import post_json
 
@@ -30,14 +32,29 @@ class AliyunResponsesProvider:
     def api_key_configured(self) -> bool:
         return bool(self.api_key.strip())
 
-    async def generate(self, input_text: str) -> ProviderResult:
+    async def generate(
+        self,
+        messages: Sequence[ChatMessage],
+    ) -> ProviderResult:
         if not self.api_key_configured:
             raise ProviderConfigurationError("Upstream API key is not configured")
+        validated_messages = validate_provider_messages(messages)
+
+        # 单轮保留原有 string 请求，只在确有历史时切换消息数组。
+        if len(validated_messages) == 1:
+            provider_input: str | list[dict[str, str]] = (
+                validated_messages[0].content
+            )
+        else:
+            provider_input = [
+                {"role": message.role.value, "content": message.content}
+                for message in validated_messages
+            ]
 
         status_code, body = await post_json(
             ALIYUN_RESPONSES_URL,
             self.api_key,
-            {"model": self.model, "input": input_text},
+            {"model": self.model, "input": provider_input},
         )
         return ProviderResult(
             upstream_status=status_code,

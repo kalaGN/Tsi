@@ -2,7 +2,7 @@
 
 ## Overview
 
-这是一个基于 Python 3.11 的轻量单轮模型调用项目，同时提供 FastAPI HTTP 和 Textual TUI。两个入口共享 Chat Runtime，Runtime 通过统一 LLM Provider 契约选择阿里云或 DeepSeek；根目录 `main.py` 只保留 Uvicorn 兼容入口。
+这是一个基于 Python 3.11 的轻量模型调用项目，同时提供无状态 FastAPI HTTP 和可恢复单会话的 Textual TUI。两个入口共享 Chat Runtime，Runtime 通过统一 LLM Provider 契约选择阿里云或 DeepSeek；根目录 `main.py` 只保留 Uvicorn 兼容入口。
 
 ## Components
 
@@ -10,8 +10,10 @@
 - `app/application.py`：创建 FastAPI、注册根路由和 Chat Router。
 - `app/observability/model_logging.py`：配置模型请求 JSON 日志、stderr 输出和本地转储文件。
 - `app/routers/chat.py`：校验 `POST /chat`，返回统一 `ChatResponse` 并映射 HTTP 错误。
-- `app/runtime/chat.py`：共享单轮用例、统一结果、配置状态和安全错误语义。
-- `app/services/llm/contracts.py`：Provider 协议、内部结果和共享异常。
+- `app/runtime/chat.py`：无状态单轮入口、有序消息调用、统一结果和安全错误语义。
+- `app/runtime/session.py`：串行化 TUI 发送，只提交 Provider 和持久化均成功的完整轮次。
+- `app/runtime/session_store.py`：版本化 JSON 会话校验、原子保存、恢复与清理。
+- `app/services/llm/contracts.py`：中立角色/消息、Provider 协议、内部结果和共享异常。
 - `app/services/llm/factory.py`：解析环境并创建当前 Provider。
 - `app/services/llm/http_client.py`：共享异步 JSON POST、超时和脱敏错误处理。
 - `app/services/llm/aliyun.py`：阿里云 Responses 请求和文本提取。
@@ -77,12 +79,15 @@ POST /chat
 python -m app.tui
   -> load .env without overriding Shell variables
   -> Runtime resolves Provider, model and safe key status
-  -> Textual Worker calls the same run_chat use case
+  -> load data/chat-session.json and restore complete turns
+  -> Textual Worker calls ChatSession.send
+  -> Runtime sends committed history plus the current user message
+  -> persist the new complete turn atomically
   -> TUI displays ChatResult.output_text directly
   -> TUI records monotonic elapsed time and updates state
 ```
 
-TUI 不读取 Provider 专属密钥变量，不解析 JSON；状态信息和实际调用共用工厂配置规则。
+TUI 不读取 Provider 专属密钥变量，不解析 Provider JSON；状态信息和实际调用共用工厂配置规则。HTTP `/chat` 不加载或修改 TUI 会话文件。
 
 ## Configuration
 
@@ -105,4 +110,6 @@ TUI 不读取 Provider 专属密钥变量，不解析 JSON；状态信息和实�
 - 输入和输出以明文进入 stderr 和本地文件；仍不记录环境 API Key、Provider 原始响应、耗时或异常。
 - 日志双写 stderr 和 UTF-8 `logs/model-calls.log`，单文件 10 MiB，保留 5 个备份；文件不可用时降级为 stderr。
 - TUI 同时最多一个请求，第一次 Esc 取消，1.5 秒内第二次 Esc 退出，并用请求代次阻止陈旧结果写回。
+- TUI 使用唯一 `data/chat-session.json` 保存完整轮次；启动恢复，`/clear` 删除，损坏历史不自动覆盖。
+- 会话使用标准库 UTF-8 JSON 和同目录原子替换，不引入数据库或新依赖；历史明文且没有长度裁剪。
 - 当前不增加 Repository、Manager、数据库、缓存或其他无实际职责的层级。

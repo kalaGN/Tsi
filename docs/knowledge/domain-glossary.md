@@ -10,7 +10,7 @@ https://llm-h2k07hgnp4aylibi.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/res
 
 ## Chat Completions API
 
-DeepSeek 提供的对话接口。本项目调用固定地址 `https://api.deepseek.com/chat/completions`，将单轮输入映射为一个 `user` message，并使用非流式响应。
+DeepSeek 提供的对话接口。本项目调用固定地址 `https://api.deepseek.com/chat/completions`，将有序中立消息映射为 `messages`，并使用非流式响应。
 
 ## Provider
 

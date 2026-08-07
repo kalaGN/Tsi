@@ -4,6 +4,7 @@
 
 ## Active and Historical Specs
 
+- [当前对话上下文](20260807-当前对话上下文-需求.md)：参考 Reasonix Session 模型，为 TUI 增加可持久化和恢复的唯一多轮会话；已完成。
 - [模型输入输出日志](20260807-模型调用日志-需求.md)：在关联的请求和成功响应 JSON 中记录完整明文；已完成。
 - [多模型 Provider 架构](20260807-多模型Provider架构-需求.md)：重构模型接入边界并增加 DeepSeek 官方 Chat Completions Provider；已完成。
 - [TUI 对话入口](20260806-TUI对话-需求.md)：参考 Reasonix 的共享运行内核思路，为当前项目增加本地全屏单轮对话 TUI；已完成。

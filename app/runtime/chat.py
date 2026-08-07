@@ -1,7 +1,8 @@
-"""HTTP 与 TUI 共享的单轮对话用例和界面无关错误语义。"""
+"""HTTP 与 TUI 共享的模型调用和界面无关错误语义。"""
 
 from dataclasses import dataclass
 from enum import Enum
+from typing import Sequence
 
 from app.observability.model_logging import (
     log_model_request,
@@ -9,12 +10,15 @@ from app.observability.model_logging import (
     new_request_id,
 )
 from app.services.llm.contracts import (
+    ChatMessage,
+    ChatRole,
     LlmProvider,
     LlmProviderError,
     ProviderAuthenticationError,
     ProviderConfigurationError,
     ProviderConnectionError,
     ProviderInvalidResponseError,
+    ProviderInvalidRequestError,
     ProviderResponseError,
     ProviderTimeoutError,
 )
@@ -47,6 +51,7 @@ class ChatErrorCode(str, Enum):
     AUTHENTICATION = "authentication"
     UPSTREAM = "upstream"
     INVALID_RESPONSE = "invalid_response"
+    STORAGE = "storage"
 
 
 class ChatRuntimeError(Exception):
@@ -65,6 +70,7 @@ class ChatRuntimeError(Exception):
 
 
 ERROR_CODES = {
+    ProviderInvalidRequestError: ChatErrorCode.INVALID_INPUT,
     ProviderConfigurationError: ChatErrorCode.CONFIGURATION,
     ProviderTimeoutError: ChatErrorCode.TIMEOUT,
     ProviderConnectionError: ChatErrorCode.CONNECTION,
@@ -86,6 +92,19 @@ async def run_chat(
             "Input must not be blank",
         )
 
+    return await run_chat_messages(
+        (ChatMessage(ChatRole.USER, input_text),),
+        provider=provider,
+    )
+
+
+async def run_chat_messages(
+    messages: Sequence[ChatMessage],
+    provider: LlmProvider | None = None,
+) -> ChatResult:
+    """调用有序对话，日志仍只记录当前最后一条 user 输入。"""
+
+    current_input = messages[-1].content if messages else ""
     try:
         active_provider = create_provider() if provider is None else provider
         request_id = new_request_id()
@@ -95,10 +114,10 @@ async def run_chat(
             request_id=request_id,
             provider=provider_name,
             model=model,
-            input_chars=len(input_text),
-            input_text=input_text,
+            input_chars=len(current_input),
+            input_text=current_input,
         )
-        result = await active_provider.generate(input_text)
+        result = await active_provider.generate(messages)
         log_model_response(
             request_id=request_id,
             provider=provider_name,

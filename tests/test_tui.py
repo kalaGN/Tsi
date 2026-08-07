@@ -9,6 +9,9 @@ from app.runtime.chat import (
     ChatRuntimeError,
     ChatRuntimeInfo,
 )
+from app.runtime.session import ChatSession
+from app.runtime.session_store import SessionStore
+from app.services.llm.contracts import ChatMessage, ChatRole
 from app.tui import __main__ as tui_main
 from app.tui import application as tui_application
 from app.tui.application import ChatTuiApp
@@ -291,6 +294,80 @@ def test_clear_command_clears_transcript_without_calling_runner():
 
             assert transcript_text(app) == ""
             assert received_inputs == ["hello"]
+            assert app.run_status is RunStatus.READY
+
+    asyncio.run(scenario())
+
+
+def test_tui_restores_saved_conversation_on_mount(tmp_path):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        store.save(
+            (
+                ChatMessage(ChatRole.USER, "上次的问题"),
+                ChatMessage(ChatRole.ASSISTANT, "上次的回答"),
+            )
+        )
+        app = ChatTuiApp(
+            chat_session=ChatSession.load(store),
+            runtime_info=ALIYUN_INFO,
+        )
+
+        async with app.run_test():
+            transcript = transcript_text(app)
+            assert "You\n上次的问题" in transcript
+            assert "Assistant\n上次的回答" in transcript
+
+    asyncio.run(scenario())
+
+
+def test_clear_command_removes_saved_conversation(tmp_path):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        store.save(
+            (
+                ChatMessage(ChatRole.USER, "question"),
+                ChatMessage(ChatRole.ASSISTANT, "answer"),
+            )
+        )
+        app = ChatTuiApp(
+            chat_session=ChatSession.load(store),
+            runtime_info=ALIYUN_INFO,
+        )
+
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("/clear")
+            await pilot.press("enter")
+
+            assert transcript_text(app) == ""
+            assert app.chat_session.messages == ()
+            assert not store.path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_corrupt_history_requires_explicit_clear(tmp_path, monkeypatch):
+    async def scenario():
+        path = tmp_path / "chat-session.json"
+        path.write_text("not-json", encoding="utf-8")
+        store = SessionStore(path)
+        monkeypatch.setattr(tui_application, "SessionStore", lambda: store)
+        app = ChatTuiApp(runtime_info=ALIYUN_INFO)
+
+        async with app.run_test() as pilot:
+            assert app.run_status is RunStatus.ERROR
+            assert "Unable to load saved conversation" in transcript_text(app)
+
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("must not overwrite")
+            await pilot.press("enter")
+            assert path.read_text(encoding="utf-8") == "not-json"
+
+            prompt.load_text("/clear")
+            await pilot.press("enter")
+            assert not path.exists()
+            assert transcript_text(app) == ""
             assert app.run_status is RunStatus.READY
 
     asyncio.run(scenario())

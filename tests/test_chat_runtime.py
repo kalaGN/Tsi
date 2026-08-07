@@ -8,8 +8,11 @@ from app.runtime.chat import (
     ChatRuntimeError,
     get_chat_runtime_info,
     run_chat,
+    run_chat_messages,
 )
 from app.services.llm.contracts import (
+    ChatMessage,
+    ChatRole,
     ProviderAuthenticationError,
     ProviderConfigurationError,
     ProviderConnectionError,
@@ -30,8 +33,8 @@ class FakeProvider:
         self.error = error
         self.received_inputs = []
 
-    async def generate(self, input_text: str) -> ProviderResult:
-        self.received_inputs.append(input_text)
+    async def generate(self, messages) -> ProviderResult:
+        self.received_inputs.append(tuple(messages))
         if self.error is not None:
             raise self.error
         return self.result
@@ -48,7 +51,9 @@ def test_run_chat_returns_normalized_provider_result():
 
     result = asyncio.run(run_chat("hello", provider=provider))
 
-    assert provider.received_inputs == ["hello"]
+    assert provider.received_inputs == [
+        (ChatMessage(ChatRole.USER, "hello"),)
+    ]
     assert result.output_text == "hello"
     assert result.provider == "fake"
     assert result.model == "fake-model"
@@ -62,9 +67,9 @@ def test_run_chat_logs_input_and_output_around_provider_call(monkeypatch):
     captured_responses = []
 
     class OrderedProvider(FakeProvider):
-        async def generate(self, input_text: str) -> ProviderResult:
+        async def generate(self, messages) -> ProviderResult:
             call_order.append("provider")
-            return await super().generate(input_text)
+            return await super().generate(messages)
 
     provider = OrderedProvider(
         result=ProviderResult(
@@ -132,6 +137,29 @@ def test_run_chat_logs_only_request_when_provider_fails(monkeypatch):
     assert len(captured_requests) == 1
     assert captured_requests[0]["request_id"] == "d" * 32
     assert captured_responses == []
+
+
+def test_multi_turn_runtime_logs_only_current_user_input(monkeypatch):
+    captured_requests = []
+    provider = FakeProvider(result=ProviderResult(200, {}, "answer-2"))
+    monkeypatch.setattr(chat, "new_request_id", lambda: "e" * 32)
+    monkeypatch.setattr(
+        chat,
+        "log_model_request",
+        lambda **fields: captured_requests.append(fields),
+    )
+    monkeypatch.setattr(chat, "log_model_response", lambda **fields: None)
+    messages = (
+        ChatMessage(ChatRole.USER, "first"),
+        ChatMessage(ChatRole.ASSISTANT, "answer-1"),
+        ChatMessage(ChatRole.USER, "second"),
+    )
+
+    asyncio.run(run_chat_messages(messages, provider=provider))
+
+    assert captured_requests[0]["input_text"] == "second"
+    assert captured_requests[0]["input_chars"] == len("second")
+    assert "first" not in repr(captured_requests)
 
 
 def test_run_chat_rejects_blank_input_without_calling_provider():

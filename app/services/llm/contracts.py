@@ -1,7 +1,23 @@
 """模型 Provider 的稳定契约和不泄漏上游细节的共享异常。"""
 
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from enum import Enum
+from typing import Any, Protocol, Sequence
+
+
+class ChatRole(str, Enum):
+    """当前文本对话支持的 Provider 中立角色。"""
+
+    USER = "user"
+    ASSISTANT = "assistant"
+
+
+@dataclass(frozen=True)
+class ChatMessage:
+    """不携带 Provider 私有字段的单条文本消息。"""
+
+    role: ChatRole
+    content: str
 
 
 @dataclass(frozen=True)
@@ -27,7 +43,7 @@ class ProviderConfig:
 
 
 class LlmProvider(Protocol):
-    """Runtime 所依赖的最小单轮模型能力。"""
+    """Runtime 所依赖的最小有序消息模型能力。"""
 
     name: str
     model: str
@@ -36,7 +52,10 @@ class LlmProvider(Protocol):
     def api_key_configured(self) -> bool:
         ...
 
-    async def generate(self, input_text: str) -> ProviderResult:
+    async def generate(
+        self,
+        messages: Sequence[ChatMessage],
+    ) -> ProviderResult:
         ...
 
 
@@ -51,6 +70,13 @@ class LlmProviderError(Exception):
 
 class ProviderConfigurationError(LlmProviderError):
     pass
+
+
+class ProviderInvalidRequestError(LlmProviderError):
+    """内部消息序列违反 Provider 请求契约。"""
+
+    def __init__(self) -> None:
+        super().__init__("Conversation messages are invalid")
 
 
 class ProviderTimeoutError(LlmProviderError):
@@ -79,3 +105,24 @@ class ProviderInvalidResponseError(LlmProviderError):
         message: str = "Upstream service returned invalid JSON",
     ) -> None:
         super().__init__(message)
+
+
+def validate_provider_messages(
+    messages: Sequence[ChatMessage],
+) -> tuple[ChatMessage, ...]:
+    """验证待发送序列是以 user 结束的交替对话。"""
+
+    normalized = tuple(messages)
+    if not normalized or len(normalized) % 2 == 0:
+        raise ProviderInvalidRequestError()
+
+    for index, message in enumerate(normalized):
+        expected_role = ChatRole.USER if index % 2 == 0 else ChatRole.ASSISTANT
+        if (
+            not isinstance(message, ChatMessage)
+            or message.role is not expected_role
+            or not isinstance(message.content, str)
+            or not message.content.strip()
+        ):
+            raise ProviderInvalidRequestError()
+    return normalized

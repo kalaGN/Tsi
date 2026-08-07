@@ -135,6 +135,31 @@ def test_chat_defaults_to_deepseek_and_returns_only_normalized_text(monkeypatch)
     assert "usage" not in response.text
 
 
+def test_chat_requests_remain_stateless(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", FAKE_API_KEY)
+    captured_messages = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_messages.append(request.read().decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "answer"}}]},
+        )
+
+    install_upstream_transport(monkeypatch, handler)
+
+    assert client.post("/chat", json={"input": "first"}).status_code == 200
+    assert client.post("/chat", json={"input": "second"}).status_code == 200
+
+    assert '"messages":[{"role":"user","content":"first"}]' in (
+        captured_messages[0]
+    )
+    assert '"messages":[{"role":"user","content":"second"}]' in (
+        captured_messages[1]
+    )
+    assert "first" not in captured_messages[1]
+
+
 @pytest.mark.parametrize(
     "payload",
     [

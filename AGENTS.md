@@ -2,16 +2,16 @@
 
 ## Project
 
-- 轻量单轮模型调用项目，提供 FastAPI HTTP 接口和本地 Textual TUI。
+- 轻量模型调用项目，提供无状态 FastAPI HTTP 接口和可恢复单会话的本地 Textual TUI。
 - Python 3.11；依赖版本以 `requirements.txt` 为准。
-- 当前不是多 Agent 系统，不含数据库、缓存、消息队列、后台 Worker 或持久化；Textual Worker 只承担 TUI 异步请求。
+- 当前不是多 Agent 系统，不含数据库、缓存、消息队列或后台 Worker；TUI 仅用本地 JSON 持久化唯一当前会话，Textual Worker 只承担异步请求。
 
 ## Architecture
 
 - 启动入口：`main.py`，仅导出 `app.application.app`。
 - 应用组装：`app/application.py`。
 - HTTP 路由与请求校验：`app/routers/`。
-- HTTP/TUI 共享单轮用例与中立错误：`app/runtime/`。
+- HTTP/TUI 共享模型调用与中立错误，TUI Session 及存储也位于：`app/runtime/`。
 - 多模型配置、协议适配和 Provider 错误：`app/services/llm/`。
 - 终端界面与启动入口：`app/tui/`。
 - 测试：`tests/`。

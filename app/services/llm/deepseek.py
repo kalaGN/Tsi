@@ -1,12 +1,14 @@
 """DeepSeek 官方 Chat Completions API Provider。"""
 
 from dataclasses import dataclass, field
-from typing import Any, ClassVar
+from typing import Any, ClassVar, Sequence
 
 from app.services.llm.contracts import (
+    ChatMessage,
     ProviderConfigurationError,
     ProviderInvalidResponseError,
     ProviderResult,
+    validate_provider_messages,
 )
 from app.services.llm.http_client import post_json
 
@@ -17,7 +19,7 @@ DEEPSEEK_DEFAULT_MODEL = "deepseek-v4-flash"
 
 @dataclass(frozen=True)
 class DeepSeekChatProvider:
-    """将单轮文本映射为 DeepSeek Chat Completions 请求。"""
+    """将中立消息映射为 DeepSeek Chat Completions 请求。"""
 
     api_key: str = field(repr=False)
     model: str = DEEPSEEK_DEFAULT_MODEL
@@ -27,16 +29,23 @@ class DeepSeekChatProvider:
     def api_key_configured(self) -> bool:
         return bool(self.api_key.strip())
 
-    async def generate(self, input_text: str) -> ProviderResult:
+    async def generate(
+        self,
+        messages: Sequence[ChatMessage],
+    ) -> ProviderResult:
         if not self.api_key_configured:
             raise ProviderConfigurationError("Upstream API key is not configured")
+        validated_messages = validate_provider_messages(messages)
 
         status_code, body = await post_json(
             DEEPSEEK_CHAT_COMPLETIONS_URL,
             self.api_key,
             {
                 "model": self.model,
-                "messages": [{"role": "user", "content": input_text}],
+                "messages": [
+                    {"role": message.role.value, "content": message.content}
+                    for message in validated_messages
+                ],
                 "stream": False,
             },
         )

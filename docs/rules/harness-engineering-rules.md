@@ -57,13 +57,13 @@ python3 -m app.tui -> app.tui.application ------+
 - `main.py` 只保留兼容启动入口。
 - Application 负责创建 FastAPI 和注册路由，不放外部调用逻辑。
 - Router 负责 HTTP 请求校验、调用用例和响应转换，不实现上游协议细节。
-- Runtime 负责共享单轮用例和中立错误，不依赖 FastAPI 或 Textual。
+- Runtime 负责共享模型调用、TUI 单会话与中立错误，不依赖 FastAPI 或 Textual。
 - Runtime 只依赖统一 Provider 契约和工厂，不导入具体 Provider 实现。
 - `services.llm` 负责配置解析、共享网络错误、阿里云/DeepSeek 请求和文本提取，不依赖 Runtime、Router、TUI 或 Application。
 - TUI 负责输入、统一文本展示、状态和取消，不读取 Provider 专属密钥或解析上游 JSON，不依赖 Router 或 Application。
 - 业务逻辑增长前不创建空壳 Repository、Manager、Provider 或依赖注入层。
 - 新抽象必须解决已出现的重复、边界或替换需求，不得为单次调用预设计。
-- 当前无数据访问和事务边界；引入持久化前必须另建 Spec。
+- 当前仅有 `data/chat-session.json` 的本地会话持久化，无数据库或事务边界；扩展持久化前必须另建 Spec。
 - 网络 I/O 使用异步接口；同步根路由不承担阻塞工作。
 
 ## 5. HTTP Contract

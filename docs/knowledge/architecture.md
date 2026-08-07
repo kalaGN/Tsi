@@ -8,6 +8,7 @@
 
 - `main.py`：从 `app.application` 导出 FastAPI 应用。
 - `app/application.py`：创建 FastAPI、注册根路由和 Chat Router。
+- `app/observability/model_logging.py`：配置模型请求 JSON 日志、stderr 输出和本地转储文件。
 - `app/routers/chat.py`：校验 `POST /chat`，返回统一 `ChatResponse` 并映射 HTTP 错误。
 - `app/runtime/chat.py`：共享单轮用例、统一结果、配置状态和安全错误语义。
 - `app/services/llm/contracts.py`：Provider 协议、内部结果和共享异常。
@@ -20,6 +21,7 @@
 - `app/tui/state.py`：定义 `Ready`、`Thinking`、`Error`。
 - `tests/test_llm_providers.py`：Provider、工厂和共享 HTTP Mock 测试。
 - `tests/test_chat_runtime.py`：Runtime 单元测试。
+- `tests/test_model_logging.py`：日志格式、幂等、转储和失败降级测试。
 - `tests/test_chat.py`：HTTP 契约与 Provider 接线测试。
 - `tests/test_tui.py`：Textual 无头交互测试。
 
@@ -27,17 +29,23 @@
 
 ```text
 main.py -> app.application -> app.routers.chat --------+
+                    |                                  |
+                    +-> configure model logging        |
                                                        v
                                                app.runtime.chat
-                                                       v
-                                            app.services.llm.factory
-                                             /                    \
-                                            v                      v
-                              AliyunResponsesProvider    DeepSeekChatProvider
-                                            \                      /
-                                             +--> shared HTTP ----+
+                                                  /           \
+                         llm_request/response JSON             Provider call
+                                           |                         |
+                                           v                         v
+                              app.observability          app.services.llm.factory
+                                                                    /          \
+                                                                   v            v
+                                                   AliyunResponsesProvider  DeepSeekChatProvider
+                                                                   \            /
+                                                                    +-> shared HTTP
 
-python -m app.tui -> app.tui.application -> app.runtime.chat
+python -m app.tui -> configure model logging -> app.tui.application
+                                                   -> app.runtime.chat
 ```
 
 - Router 和 TUI 只依赖 Runtime，不理解外部响应结构。
@@ -45,6 +53,7 @@ python -m app.tui -> app.tui.application -> app.runtime.chat
 - 工厂只解析配置和创建 Provider，不编排用例。
 - Provider 构造请求并提取文本；共享 HTTP 层处理网络和通用状态错误。
 - Provider 层不依赖 Runtime、Router、TUI 或 Application。
+- HTTP/TUI 启动入口幂等配置日志；Runtime 在 Provider 调用前记录输入，并在成功返回后用同一 request ID 记录统一输出。
 
 ## HTTP Chat Flow
 
@@ -52,8 +61,10 @@ python -m app.tui -> app.tui.application -> app.runtime.chat
 POST /chat
   -> ChatRequest validates strict nonblank input
   -> Runtime creates the environment-selected Provider
+  -> Runtime writes llm_request with complete input_text
   -> Provider sends its protocol-specific request through shared HTTPX
   -> Provider validates JSON and extracts output_text
+  -> Runtime writes llm_response with complete output_text
   -> Runtime removes raw response details from ChatResult
   -> Router returns 200 {"output_text": "..."}
 ```
@@ -90,5 +101,8 @@ TUI 不读取 Provider 专属密钥变量，不解析 JSON；状态信息和实�
 - 保持连接 10 秒、总计 60 秒超时；不实现自动重试或故障转移。
 - 每次调用创建并关闭 HTTP Client；当前没有性能基线，不增加应用级连接生命周期。
 - 上游错误体、Authorization、密钥和内部堆栈不进入 HTTP/TUI。
+- 模型日志为单行 JSON；`llm_request` 包含完整输入，`llm_response` 包含完整统一输出，并用自生 request ID 关联。
+- 输入和输出以明文进入 stderr 和本地文件；仍不记录环境 API Key、Provider 原始响应、耗时或异常。
+- 日志双写 stderr 和 UTF-8 `logs/model-calls.log`，单文件 10 MiB，保留 5 个备份；文件不可用时降级为 stderr。
 - TUI 同时最多一个请求，第一次 Esc 取消，1.5 秒内第二次 Esc 退出，并用请求代次阻止陈旧结果写回。
 - 当前不增加 Repository、Manager、数据库、缓存或其他无实际职责的层级。

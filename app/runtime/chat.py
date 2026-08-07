@@ -3,6 +3,11 @@
 from dataclasses import dataclass
 from enum import Enum
 
+from app.observability.model_logging import (
+    log_model_request,
+    log_model_response,
+    new_request_id,
+)
 from app.services.llm.contracts import (
     LlmProvider,
     LlmProviderError,
@@ -83,14 +88,31 @@ async def run_chat(
 
     try:
         active_provider = create_provider() if provider is None else provider
+        request_id = new_request_id()
+        provider_name = active_provider.name
+        model = active_provider.model
+        log_model_request(
+            request_id=request_id,
+            provider=provider_name,
+            model=model,
+            input_chars=len(input_text),
+            input_text=input_text,
+        )
         result = await active_provider.generate(input_text)
+        log_model_response(
+            request_id=request_id,
+            provider=provider_name,
+            model=model,
+            output_chars=len(result.output_text),
+            output_text=result.output_text,
+        )
     except LlmProviderError as exc:
         raise _runtime_error(exc) from exc
 
     return ChatResult(
         output_text=result.output_text,
-        provider=active_provider.name,
-        model=active_provider.model,
+        provider=provider_name,
+        model=model,
     )
 
 

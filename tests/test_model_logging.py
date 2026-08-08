@@ -167,3 +167,189 @@ def test_request_id_is_uuid_hex():
 
     assert len(request_id) == 32
     assert int(request_id, 16) >= 0
+
+
+def test_http_log_events_use_exact_whitelist_and_single_line_json(tmp_path):
+    stream = io.StringIO()
+    log_path = tmp_path / "model-calls.log"
+    model_logging.configure_model_logging(stream=stream, log_path=log_path)
+
+    request_body = {
+        "model": "deepseek-v4-flash",
+        "messages": [{"role": "user", "content": "你好"}],
+        "stream": False,
+    }
+    timeout = {"connect_seconds": 10.0, "total_seconds": 60.0}
+
+    model_logging.log_model_http_request(
+        request_id="a" * 32,
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        method="POST",
+        url="https://api.deepseek.com/chat/completions",
+        request_body=request_body,
+        timeout=timeout,
+    )
+    model_logging.log_model_http_response(
+        request_id="a" * 32,
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        status_code=200,
+        duration_ms=12.34,
+        response_content_type="application/json",
+    )
+    model_logging.log_model_http_error(
+        request_id="b" * 32,
+        provider="aliyun",
+        model="qwen3-max",
+        error_type="timeout",
+        duration_ms=9999.5,
+    )
+
+    stream_lines = stream.getvalue().splitlines()
+    file_lines = log_path.read_text(encoding="utf-8").splitlines()
+    assert file_lines == stream_lines
+    assert len(stream_lines) == 3
+
+    request_event = json.loads(stream_lines[0])
+    assert set(request_event) == {
+        "timestamp",
+        "level",
+        "event",
+        "request_id",
+        "provider",
+        "model",
+        "method",
+        "url",
+        "headers",
+        "request_body",
+        "timeout",
+    }
+    assert request_event["level"] == "INFO"
+    assert request_event["event"] == "llm_http_request"
+    assert request_event["method"] == "POST"
+    assert request_event["url"] == "https://api.deepseek.com/chat/completions"
+    assert request_event["headers"] == {
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "Authorization": "Bearer [REDACTED]",
+    }
+    assert request_event["request_body"] == request_body
+    assert request_event["timeout"] == timeout
+
+    response_event = json.loads(stream_lines[1])
+    assert set(response_event) == {
+        "timestamp",
+        "level",
+        "event",
+        "request_id",
+        "provider",
+        "model",
+        "status_code",
+        "duration_ms",
+        "response_content_type",
+    }
+    assert response_event["event"] == "llm_http_response"
+    assert response_event["status_code"] == 200
+    assert response_event["duration_ms"] == 12.34
+    assert response_event["response_content_type"] == "application/json"
+    assert response_event["request_id"] == request_event["request_id"]
+
+    error_event = json.loads(stream_lines[2])
+    assert set(error_event) == {
+        "timestamp",
+        "level",
+        "event",
+        "request_id",
+        "provider",
+        "model",
+        "error_type",
+        "duration_ms",
+    }
+    assert error_event["event"] == "llm_http_error"
+    assert error_event["error_type"] == "timeout"
+    assert error_event["duration_ms"] == 9999.5
+
+
+def test_http_request_body_preserves_multi_turn_chinese_newlines_and_quotes(
+    tmp_path,
+):
+    stream = io.StringIO()
+    model_logging.configure_model_logging(
+        stream=stream,
+        log_path=tmp_path / "model-calls.log",
+    )
+    body = {
+        "model": "deepseek-v4-flash",
+        "messages": [
+            {"role": "user", "content": '第一问\n带 "引号"'},
+            {"role": "assistant", "content": "第一答"},
+            {"role": "user", "content": "第二问"},
+        ],
+        "stream": False,
+    }
+
+    model_logging.log_model_http_request(
+        request_id="c" * 32,
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        method="POST",
+        url="https://api.deepseek.com/chat/completions",
+        request_body=body,
+        timeout={"connect_seconds": 10.0, "total_seconds": 60.0},
+    )
+
+    lines = stream.getvalue().splitlines()
+    assert len(lines) == 1
+    line = lines[0]
+    assert "\n" not in line
+    event = json.loads(line)
+    assert event["request_body"] == body
+    assert event["request_body"]["messages"][0]["content"] == '第一问\n带 "引号"'
+
+
+def test_http_log_events_never_leak_api_key_or_raw_details(tmp_path):
+    stream = io.StringIO()
+    model_logging.configure_model_logging(
+        stream=stream,
+        log_path=tmp_path / "model-calls.log",
+    )
+    secret_key = "sk-test-secret-key-must-not-leak"
+
+    model_logging.log_model_http_request(
+        request_id="d" * 32,
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        method="POST",
+        url="https://api.deepseek.com/chat/completions",
+        request_body={"model": "deepseek-v4-flash", "messages": []},
+        timeout={"connect_seconds": 10.0, "total_seconds": 60.0},
+    )
+    model_logging.log_model_http_response(
+        request_id="d" * 32,
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        status_code=500,
+        duration_ms=1.0,
+        response_content_type="application/json",
+    )
+    model_logging.log_model_http_error(
+        request_id="e" * 32,
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        error_type="connection",
+        duration_ms=2.0,
+    )
+
+    text = stream.getvalue()
+    assert secret_key not in text
+    assert "Bearer [REDACTED]" in text
+
+    response_event = json.loads(text.splitlines()[1])
+    assert "raw_body" not in response_event
+    assert "body" not in response_event
+
+    error_event = json.loads(text.splitlines()[2])
+    serialized = json.dumps(error_event, ensure_ascii=False)
+    assert "exception" not in serialized.lower()
+    assert "traceback" not in serialized.lower()

@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from threading import Lock
-from typing import TextIO
+from typing import Any, Mapping, TextIO
 from uuid import uuid4
 
 
@@ -19,6 +19,12 @@ DEFAULT_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "model-calls.l
 
 _HANDLER_MARKER = "_model_log_handler_kind"
 _CONFIGURATION_LOCK = Lock()
+# 日志层用固定脱敏值重建请求 Header，从数据流上阻止真实 API Key 进入 Logger。
+_REDACTED_REQUEST_HEADERS = {
+    "Accept": "application/json",
+    "Content-Type": "application/json",
+    "Authorization": "Bearer [REDACTED]",
+}
 _EVENT_FIELDS = {
     "llm_request": (
         "request_id",
@@ -33,6 +39,31 @@ _EVENT_FIELDS = {
         "model",
         "output_chars",
         "output_text",
+    ),
+    "llm_http_request": (
+        "request_id",
+        "provider",
+        "model",
+        "method",
+        "url",
+        "headers",
+        "request_body",
+        "timeout",
+    ),
+    "llm_http_response": (
+        "request_id",
+        "provider",
+        "model",
+        "status_code",
+        "duration_ms",
+        "response_content_type",
+    ),
+    "llm_http_error": (
+        "request_id",
+        "provider",
+        "model",
+        "error_type",
+        "duration_ms",
     ),
 }
 
@@ -155,6 +186,82 @@ def log_model_response(
             "model": model,
             "output_chars": output_chars,
             "output_text": output_text,
+        },
+    )
+
+
+def log_model_http_request(
+    *,
+    request_id: str,
+    provider: str,
+    model: str,
+    method: str,
+    url: str,
+    request_body: Mapping[str, Any],
+    timeout: Mapping[str, float],
+) -> None:
+    """记录外部 HTTP 请求边界；Header 用固定脱敏值重建，不接收真实 Authorization。"""
+
+    logging.getLogger(LOGGER_NAME).info(
+        "llm_http_request",
+        extra={
+            "event": "llm_http_request",
+            "request_id": request_id,
+            "provider": provider,
+            "model": model,
+            "method": method,
+            "url": url,
+            "headers": dict(_REDACTED_REQUEST_HEADERS),
+            "request_body": request_body,
+            "timeout": timeout,
+        },
+    )
+
+
+def log_model_http_response(
+    *,
+    request_id: str,
+    provider: str,
+    model: str,
+    status_code: int,
+    duration_ms: float,
+    response_content_type: str | None,
+) -> None:
+    """记录外部 HTTP 响应状态、Content-Type 和耗时，不记录原始响应体。"""
+
+    logging.getLogger(LOGGER_NAME).info(
+        "llm_http_response",
+        extra={
+            "event": "llm_http_response",
+            "request_id": request_id,
+            "provider": provider,
+            "model": model,
+            "status_code": status_code,
+            "duration_ms": duration_ms,
+            "response_content_type": response_content_type,
+        },
+    )
+
+
+def log_model_http_error(
+    *,
+    request_id: str,
+    provider: str,
+    model: str,
+    error_type: str,
+    duration_ms: float,
+) -> None:
+    """记录超时或连接失败的有限分类和耗时，不记录异常原文或堆栈。"""
+
+    logging.getLogger(LOGGER_NAME).info(
+        "llm_http_error",
+        extra={
+            "event": "llm_http_error",
+            "request_id": request_id,
+            "provider": provider,
+            "model": model,
+            "error_type": error_type,
+            "duration_ms": duration_ms,
         },
     )
 

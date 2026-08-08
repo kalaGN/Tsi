@@ -4,6 +4,7 @@
 
 ## Active and Historical Specs
 
+- [外部模型请求日志](20260808-外部模型请求日志-需求.md)：记录实际外部 HTTP 请求、脱敏 Header、完整 JSON Body、状态、耗时和有限失败分类；已完成。
 - [当前对话上下文](20260807-当前对话上下文-需求.md)：参考 Reasonix Session 模型，为 TUI 增加可持久化和恢复的唯一多轮会话；已完成。
 - [模型输入输出日志](20260807-模型调用日志-需求.md)：在关联的请求和成功响应 JSON 中记录完整明文；已完成。
 - [多模型 Provider 架构](20260807-多模型Provider架构-需求.md)：重构模型接入边界并增加 DeepSeek 官方 Chat Completions Provider；已完成。

@@ -23,7 +23,7 @@ class RecordingProvider:
         self.error = error
         self.calls = []
 
-    async def generate(self, messages):
+    async def generate(self, messages, *, request_id):
         self.calls.append(tuple(messages))
         if self.error is not None:
             raise self.error
@@ -95,7 +95,7 @@ def test_chat_session_cancellation_does_not_commit(tmp_path):
         started = asyncio.Event()
 
         class BlockingProvider(RecordingProvider):
-            async def generate(self, messages):
+            async def generate(self, messages, *, request_id):
                 self.calls.append(tuple(messages))
                 started.set()
                 await asyncio.Event().wait()
@@ -122,7 +122,7 @@ def test_chat_session_does_not_commit_when_provider_swallows_cancellation(
         started = asyncio.Event()
 
         class CancellationSwallowingProvider(RecordingProvider):
-            async def generate(self, messages):
+            async def generate(self, messages, *, request_id):
                 self.calls.append(tuple(messages))
                 started.set()
                 try:

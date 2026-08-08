@@ -55,6 +55,8 @@ class LlmProvider(Protocol):
     async def generate(
         self,
         messages: Sequence[ChatMessage],
+        *,
+        request_id: str,
     ) -> ProviderResult:
         ...
 

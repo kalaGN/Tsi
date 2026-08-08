@@ -95,17 +95,30 @@ data/chat-session.json
 
 ## 模型请求日志
 
-HTTP 和 TUI 每次模型调用会写入关联的 `llm_request` 和 `llm_response` 单行 JSON 日志。日志同时输出到 stderr 和：
+HTTP 和 TUI 每次模型调用都会在 stderr 和本地文件写入同一 request ID 关联的单行 JSON 事件：
 
 ```text
 logs/model-calls.log
 ```
 
-`llm_request` 包含完整输入正文，`llm_response` 包含完整模型回答，两者使用同一 request ID。日志不记录环境 API Key、Provider 原始响应或异常原文。
+成功调用按固定顺序产生四条可关联事件：
 
-> 隐私警告：输入和输出以完整明文同时写入 stderr 和本地文件。不要在提问中粘贴密码、Token、个人隐私或其他不应持久化的数据。具有本地文件读取权限的用户或进程可以读取日志内容。
+```text
+llm_request -> llm_http_request -> llm_http_response -> llm_response
+```
 
-单文件转储阈值为 10 MiB，保留 5 个备份；`logs/` 已被 Git 忽略。由于正文不截断，单条超大记录可令当前文件暂时超过该阈值。本期不记录耗时或失败事件。
+- `llm_request`：Runtime 视角的当前输入正文（仅最后一条 user 消息）。
+- `llm_http_request`：真实外部 HTTP 边界，记录实际 Provider URL、`POST`、脱敏 Header（`Authorization` 固定写为 `Bearer [REDACTED]`）、完整 JSON 请求体和 `connect_seconds=10 / total_seconds=60` 超时。完整请求体包含 DeepSeek 的 `messages` 或阿里云的 `input`，多轮历史以明文按上游顺序完整保留。
+- `llm_http_response`：外部 HTTP 收到响应后立即记录，包含状态码（含非 2xx）、Content-Type 和单调时钟耗时 `duration_ms`，不记录原始响应体。
+- `llm_response`：成功统一输出文本。
+
+连接超时或网络失败时，`llm_http_request` 后写一条 `llm_http_error`，仅包含 `timeout` 或 `connection` 安全分类和耗时，不记录异常类名、异常原文或 Traceback。非 2xx 已收到响应，只写 `llm_http_response`，不再写 `llm_http_error`。
+
+日志不记录环境 API Key、真实 `Authorization`、Provider 原始响应体、Cookie 或异常原文。
+
+> 隐私警告：输入、输出和完整请求体都以明文同时写入 stderr 和本地文件，且多轮历史会在每次调用时重复落盘。不要在提问中粘贴密码、Token、个人隐私或其他不应持久化的数据。具有本地文件读取权限的用户或进程可以读取日志内容。
+
+单文件转储阈值为 10 MiB，保留 5 个备份；`logs/` 已被 Git 忽略。由于正文不截断，单条超大记录可令当前文件暂时超过该阈值。日志失败不影响模型请求本身。
 
 ## 运行测试
 

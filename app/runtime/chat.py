@@ -117,7 +117,7 @@ async def run_chat_messages(
             input_chars=len(current_input),
             input_text=current_input,
         )
-        result = await active_provider.generate(messages)
+        result = await active_provider.generate(messages, request_id=request_id)
         log_model_response(
             request_id=request_id,
             provider=provider_name,

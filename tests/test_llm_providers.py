@@ -1,9 +1,12 @@
 import asyncio
+import io
 import json
+import logging
 
 import httpx
 import pytest
 
+from app.observability import model_logging
 from app.services.llm.aliyun import (
     ALIYUN_RESPONSES_URL,
     AliyunResponsesProvider,
@@ -11,6 +14,7 @@ from app.services.llm.aliyun import (
 from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
+    LlmProviderError,
     ProviderAuthenticationError,
     ProviderConfigurationError,
     ProviderConnectionError,
@@ -25,9 +29,11 @@ from app.services.llm.deepseek import (
 )
 from app.services.llm.factory import create_provider, resolve_provider_config
 from app.services.llm import http_client
+from app.services.llm.http_client import post_json
 
 
 FAKE_API_KEY = "test-only-provider-key"
+REQUEST_ID = "0123456789abcdef0123456789abcdef"
 
 
 def user_messages(content: str = "hello") -> tuple[ChatMessage, ...]:
@@ -157,7 +163,7 @@ def test_aliyun_sends_expected_request_and_extracts_text(
     install_transport(monkeypatch, handler)
     provider = AliyunResponsesProvider(FAKE_API_KEY, "custom-qwen")
 
-    result = asyncio.run(provider.generate(user_messages()))
+    result = asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
 
     assert result.upstream_status == 200
     assert result.raw_body == body
@@ -185,7 +191,7 @@ def test_deepseek_sends_expected_request_and_extracts_text(monkeypatch):
     install_transport(monkeypatch, handler)
     provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-pro")
 
-    result = asyncio.run(provider.generate(user_messages("你好")))
+    result = asyncio.run(provider.generate(user_messages("你好"), request_id=REQUEST_ID))
 
     assert result.upstream_status == 200
     assert result.raw_body == body
@@ -229,7 +235,7 @@ def test_provider_sends_ordered_multi_turn_messages(
 
     install_transport(monkeypatch, handler)
 
-    assert asyncio.run(provider.generate(history)).output_text == "ok"
+    assert asyncio.run(provider.generate(history, request_id=REQUEST_ID)).output_text == "ok"
 
 
 @pytest.mark.parametrize(
@@ -256,7 +262,7 @@ def test_provider_rejects_invalid_message_sequence_without_network(
     provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash")
 
     with pytest.raises(ProviderInvalidRequestError) as captured:
-        asyncio.run(provider.generate(messages))
+        asyncio.run(provider.generate(messages, request_id=REQUEST_ID))
 
     assert str(captured.value) == "Conversation messages are invalid"
 
@@ -275,7 +281,7 @@ def test_provider_requires_key_before_network_call(monkeypatch, provider):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderConfigurationError) as captured:
-        asyncio.run(provider.generate(user_messages()))
+        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
 
     assert captured.value.user_message == "Upstream API key is not configured"
 
@@ -294,7 +300,7 @@ def test_provider_maps_timeout(monkeypatch, provider):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderTimeoutError) as captured:
-        asyncio.run(provider.generate(user_messages()))
+        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
 
     assert captured.value.user_message == "Upstream request timed out"
     assert "secret" not in str(captured.value)
@@ -314,7 +320,7 @@ def test_provider_maps_connection_error(monkeypatch, provider):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderConnectionError) as captured:
-        asyncio.run(provider.generate(user_messages()))
+        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
 
     assert captured.value.user_message == "Unable to connect to upstream service"
     assert "secret" not in str(captured.value)
@@ -329,7 +335,7 @@ def test_provider_maps_authentication_error(monkeypatch, status_code):
     provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash")
 
     with pytest.raises(ProviderAuthenticationError) as captured:
-        asyncio.run(provider.generate(user_messages()))
+        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
 
     assert captured.value.status_code == status_code
     assert captured.value.user_message == "Upstream authentication failed"
@@ -346,7 +352,7 @@ def test_deepseek_preserves_other_error_status(monkeypatch, status_code):
     provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash")
 
     with pytest.raises(ProviderResponseError) as captured:
-        asyncio.run(provider.generate(user_messages()))
+        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
 
     assert captured.value.status_code == status_code
     assert captured.value.user_message == "Upstream service returned an error"
@@ -367,7 +373,7 @@ def test_provider_rejects_non_json_success(monkeypatch, provider):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderInvalidResponseError) as captured:
-        asyncio.run(provider.generate(user_messages()))
+        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
 
     assert captured.value.user_message == "Upstream service returned invalid JSON"
 
@@ -398,6 +404,292 @@ def test_provider_rejects_success_without_text(monkeypatch, provider, body):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderInvalidResponseError) as captured:
-        asyncio.run(provider.generate(user_messages()))
+        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
 
     assert captured.value.user_message == "Upstream service returned an invalid response"
+
+
+@pytest.fixture
+def captured_model_events(tmp_path):
+    """配置模型日志到内存流，返回解析事件并在测试后还原 Logger。"""
+
+    stream = io.StringIO()
+    log_path = tmp_path / "model-calls.log"
+    logger = logging.getLogger(model_logging.LOGGER_NAME)
+    original_handlers = list(logger.handlers)
+    original_level = logger.level
+    original_propagate = logger.propagate
+    for handler in original_handlers:
+        logger.removeHandler(handler)
+    model_logging.configure_model_logging(stream=stream, log_path=log_path)
+
+    def read_events():
+        return [json.loads(line) for line in stream.getvalue().splitlines()]
+
+    yield read_events
+
+    for handler in list(logger.handlers):
+        logger.removeHandler(handler)
+        handler.close()
+    for handler in original_handlers:
+        logger.addHandler(handler)
+    logger.setLevel(original_level)
+    logger.propagate = original_propagate
+
+
+def _deepseek_ok_body() -> dict:
+    return {"choices": [{"message": {"content": "ok"}}]}
+
+
+def test_post_json_logs_request_and_response_with_controllable_clock(
+    monkeypatch, captured_model_events
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_deepseek_ok_body())
+
+    install_transport(monkeypatch, handler)
+    ticks = iter([100.0, 100.25])
+
+    status, body = asyncio.run(
+        post_json(
+            DEEPSEEK_CHAT_COMPLETIONS_URL,
+            FAKE_API_KEY,
+            {"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+            request_id=REQUEST_ID,
+            provider="deepseek",
+            model="m",
+            clock=lambda: next(ticks),
+        )
+    )
+
+    assert status == 200
+    assert body == _deepseek_ok_body()
+    events = captured_model_events()
+    assert [event["event"] for event in events] == [
+        "llm_http_request",
+        "llm_http_response",
+    ]
+
+    request_event = events[0]
+    assert request_event["request_body"] == {
+        "model": "m",
+        "messages": [{"role": "user", "content": "hi"}],
+    }
+    assert request_event["method"] == "POST"
+    assert request_event["url"] == DEEPSEEK_CHAT_COMPLETIONS_URL
+    assert request_event["timeout"] == {
+        "connect_seconds": 10.0,
+        "total_seconds": 60.0,
+    }
+    assert request_event["headers"]["Authorization"] == "Bearer [REDACTED]"
+
+    response_event = events[1]
+    assert response_event["status_code"] == 200
+    assert response_event["duration_ms"] == 250.0
+    assert response_event["response_content_type"] == "application/json"
+
+
+@pytest.mark.parametrize("status_code", [401, 403, 500])
+def test_post_json_logs_response_without_error_event_for_non_2xx(
+    monkeypatch, captured_model_events, status_code
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status_code, json={"error": "secret upstream body"})
+
+    install_transport(monkeypatch, handler)
+    ticks = iter([0.0, 1.5])
+
+    with pytest.raises(LlmProviderError):
+        asyncio.run(
+            post_json(
+                DEEPSEEK_CHAT_COMPLETIONS_URL,
+                FAKE_API_KEY,
+                {"model": "m", "messages": []},
+                request_id=REQUEST_ID,
+                provider="deepseek",
+                model="m",
+                clock=lambda: next(ticks),
+            )
+        )
+
+    events = captured_model_events()
+    assert [event["event"] for event in events] == [
+        "llm_http_request",
+        "llm_http_response",
+    ]
+    assert events[1]["status_code"] == status_code
+    assert events[1]["duration_ms"] == 1500.0
+
+
+def test_post_json_logs_timeout_error_with_controllable_clock(
+    monkeypatch, captured_model_events
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("secret timeout detail", request=request)
+
+    install_transport(monkeypatch, handler)
+    ticks = iter([10.0, 10.5])
+
+    with pytest.raises(ProviderTimeoutError):
+        asyncio.run(
+            post_json(
+                DEEPSEEK_CHAT_COMPLETIONS_URL,
+                FAKE_API_KEY,
+                {"model": "m", "messages": []},
+                request_id=REQUEST_ID,
+                provider="deepseek",
+                model="m",
+                clock=lambda: next(ticks),
+            )
+        )
+
+    events = captured_model_events()
+    assert [event["event"] for event in events] == [
+        "llm_http_request",
+        "llm_http_error",
+    ]
+    error_event = events[1]
+    assert error_event["error_type"] == "timeout"
+    assert error_event["duration_ms"] == 500.0
+    assert "secret" not in json.dumps(error_event, ensure_ascii=False)
+
+
+def test_post_json_logs_connection_error_with_controllable_clock(
+    monkeypatch, captured_model_events
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("secret connection detail", request=request)
+
+    install_transport(monkeypatch, handler)
+    ticks = iter([20.0, 20.75])
+
+    with pytest.raises(ProviderConnectionError):
+        asyncio.run(
+            post_json(
+                DEEPSEEK_CHAT_COMPLETIONS_URL,
+                FAKE_API_KEY,
+                {"model": "m", "messages": []},
+                request_id=REQUEST_ID,
+                provider="deepseek",
+                model="m",
+                clock=lambda: next(ticks),
+            )
+        )
+
+    events = captured_model_events()
+    assert [event["event"] for event in events] == [
+        "llm_http_request",
+        "llm_http_error",
+    ]
+    error_event = events[1]
+    assert error_event["error_type"] == "connection"
+    assert error_event["duration_ms"] == 750.0
+    assert "secret" not in json.dumps(error_event, ensure_ascii=False)
+
+
+def test_post_json_log_events_redact_authorization_and_keep_payload(
+    monkeypatch, captured_model_events
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Authorization"] == f"Bearer {FAKE_API_KEY}"
+        return httpx.Response(200, json=_deepseek_ok_body())
+
+    install_transport(monkeypatch, handler)
+
+    asyncio.run(
+        post_json(
+            DEEPSEEK_CHAT_COMPLETIONS_URL,
+            FAKE_API_KEY,
+            {"model": "m", "messages": [{"role": "user", "content": "hi"}]},
+            request_id=REQUEST_ID,
+            provider="deepseek",
+            model="m",
+        )
+    )
+
+    log_text = json.dumps(captured_model_events(), ensure_ascii=False)
+    assert FAKE_API_KEY not in log_text
+    assert "Bearer [REDACTED]" in log_text
+
+
+def test_deepseek_logged_request_body_equals_actual_payload_for_single_and_multi_turn(
+    monkeypatch, captured_model_events
+):
+    captured_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_payloads.append(json.loads(request.content))
+        return httpx.Response(200, json=_deepseek_ok_body())
+
+    install_transport(monkeypatch, handler)
+    provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-pro")
+
+    asyncio.run(
+        provider.generate(user_messages("第一问"), request_id=REQUEST_ID)
+    )
+    history = (
+        ChatMessage(ChatRole.USER, "第一问"),
+        ChatMessage(ChatRole.ASSISTANT, "第一答"),
+        ChatMessage(ChatRole.USER, "第二问"),
+    )
+    asyncio.run(provider.generate(history, request_id=REQUEST_ID))
+
+    request_events = [
+        event
+        for event in captured_model_events()
+        if event["event"] == "llm_http_request"
+    ]
+    assert len(request_events) == 2
+    assert request_events[0]["request_body"] == captured_payloads[0]
+    assert request_events[1]["request_body"] == captured_payloads[1]
+    assert request_events[1]["request_body"]["messages"] == [
+        {"role": "user", "content": "第一问"},
+        {"role": "assistant", "content": "第一答"},
+        {"role": "user", "content": "第二问"},
+    ]
+    for event in request_events:
+        assert event["provider"] == "deepseek"
+        assert event["model"] == "deepseek-v4-pro"
+        assert event["request_id"] == REQUEST_ID
+
+
+def test_aliyun_logged_request_body_equals_actual_payload_for_single_and_multi_turn(
+    monkeypatch, captured_model_events
+):
+    captured_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"output_text": "ok"})
+
+    install_transport(monkeypatch, handler)
+    provider = AliyunResponsesProvider(FAKE_API_KEY, "custom-qwen")
+
+    asyncio.run(provider.generate(user_messages("hello"), request_id=REQUEST_ID))
+    history = (
+        ChatMessage(ChatRole.USER, "first"),
+        ChatMessage(ChatRole.ASSISTANT, "answer"),
+        ChatMessage(ChatRole.USER, "second"),
+    )
+    asyncio.run(provider.generate(history, request_id=REQUEST_ID))
+
+    request_events = [
+        event
+        for event in captured_model_events()
+        if event["event"] == "llm_http_request"
+    ]
+    assert len(request_events) == 2
+    assert request_events[0]["request_body"] == captured_payloads[0]
+    # 单轮 input 保留为字符串。
+    assert request_events[0]["request_body"]["input"] == "hello"
+    assert request_events[1]["request_body"] == captured_payloads[1]
+    # 多轮 input 完整保留有序历史数组。
+    assert request_events[1]["request_body"]["input"] == [
+        {"role": "user", "content": "first"},
+        {"role": "assistant", "content": "answer"},
+        {"role": "user", "content": "second"},
+    ]
+    for event in request_events:
+        assert event["provider"] == "aliyun"
+        assert event["model"] == "custom-qwen"
+        assert event["request_id"] == REQUEST_ID

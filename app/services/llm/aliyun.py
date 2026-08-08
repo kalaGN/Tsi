@@ -35,6 +35,8 @@ class AliyunResponsesProvider:
     async def generate(
         self,
         messages: Sequence[ChatMessage],
+        *,
+        request_id: str,
     ) -> ProviderResult:
         if not self.api_key_configured:
             raise ProviderConfigurationError("Upstream API key is not configured")
@@ -55,6 +57,9 @@ class AliyunResponsesProvider:
             ALIYUN_RESPONSES_URL,
             self.api_key,
             {"model": self.model, "input": provider_input},
+            request_id=request_id,
+            provider=self.name,
+            model=self.model,
         )
         return ProviderResult(
             upstream_status=status_code,

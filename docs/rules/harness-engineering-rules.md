@@ -2,7 +2,7 @@
 
 ## 1. Scope and Facts
 
-本规则适用于当前 FastAPI Demo。项目是单仓库 Python 应用，提供 FastAPI HTTP 与本地 Textual TUI，使用 Application、Router、Runtime、Service 和 TUI 五类职责；不存在数据库、缓存、消息队列、后台 Worker、认证授权、CI 或部署配置。
+本规则适用于当前 FastAPI Demo。项目是单仓库 Python 应用，提供 FastAPI HTTP 与本地 Textual TUI，使用 Application、Router、Runtime、Service、Tool 和 TUI 职责；不存在数据库、缓存、消息队列、后台 Worker、认证授权、CI 或部署配置。
 
 事实来源优先级：
 
@@ -43,7 +43,11 @@ Bug 修复遵循：复现 → 失败测试 → 根因分析 → 最小修复 →
 main.py -> app.application -> app.routers.chat --+
                                                 v
                                       app.runtime.chat
-                                                v
+                                       /                \
+                                      v                  v
+                         app.runtime.tool_loop       root tools/
+                                      |
+                                      v
                                   app.services.llm.factory
                                       /                 \
                                      v                   v
@@ -58,13 +62,15 @@ python3 -m app.tui -> app.tui.application ------+
 - Application 负责创建 FastAPI 和注册路由，不放外部调用逻辑。
 - Router 负责 HTTP 请求校验、调用用例和响应转换，不实现上游协议细节。
 - Runtime 负责共享模型调用、TUI 单会话与中立错误，不依赖 FastAPI 或 Textual。
-- Runtime 只依赖统一 Provider 契约和工厂，不导入具体 Provider 实现。
+- Runtime 通过有界循环编排 Provider Turn 与根目录工具 Registry，不导入具体 Provider 实现。
+- 根目录 `tools/` 只提供显式注册的只读工具，不依赖 Runtime、FastAPI、Textual 或具体 Provider。
 - `services.llm` 负责配置解析、共享网络错误、阿里云/DeepSeek 请求和文本提取，不依赖 Runtime、Router、TUI 或 Application。
 - TUI 负责输入、统一文本展示、状态和取消，不读取 Provider 专属密钥或解析上游 JSON，不依赖 Router 或 Application。
 - 业务逻辑增长前不创建空壳 Repository、Manager、Provider 或依赖注入层。
 - 新抽象必须解决已出现的重复、边界或替换需求，不得为单次调用预设计。
 - 当前仅有 `data/chat-session.json` 的本地会话持久化，无数据库或事务边界；扩展持久化前必须另建 Spec。
 - 网络 I/O 使用异步接口；同步根路由不承担阻塞工作。
+- 第一版工具自动执行，但必须无副作用；增加写操作、MCP、动态插件或权限机制前另建 Spec。
 
 ## 5. HTTP Contract
 
@@ -94,7 +100,7 @@ python3 -m app.tui -> app.tui.application ------+
 - 配置从环境变量读取；不得在源码中提供真实密钥默认值。
 - 不复制现有工具能力，不进行无关格式化。
 - 仓库未配置 Formatter、Lint 或静态类型工具；新增前需确认依赖和门禁方案。
-- 当前没有业务日志实现；增加日志时必须结构化、可诊断且脱敏。
+- 模型和工具调用使用既有结构化 JSON 日志；新增事件必须使用字段白名单、可关联且脱敏。
 
 ## 7. Testing
 
@@ -108,7 +114,7 @@ python3 -m app.tui -> app.tui.application ------+
 质量门禁：
 
 ```bash
-.venv/bin/python -m compileall -q main.py app tests
+.venv/bin/python -m compileall -q main.py app tools tests
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 .venv/bin/python -m pip check
 git diff --check
@@ -135,9 +141,9 @@ git diff --check
 
 ## 9. Reliability and Observability
 
-已实现：HTTPX 异步调用、10 秒连接超时、60 秒总超时、连接/超时/上游状态/JSON 及文本结构错误分类。
+已实现：HTTPX 异步调用、10 秒连接超时、60 秒总超时、连接/超时/上游状态/JSON 及文本结构错误分类、request ID、结构化模型/HTTP/工具事件和本地日志轮转。
 
-未实现：重试、退避、熔断、请求 ID、Trace、指标、告警、结构化日志、Readiness/Liveness、Graceful Shutdown 自定义处理。
+未实现：重试、退避、熔断、Trace、指标、告警、远程日志采集、Readiness/Liveness、Graceful Shutdown 自定义处理。
 
 - 不得把缺失机制描述为已接入。
 - 新增重试前必须确认幂等性和放大风险。

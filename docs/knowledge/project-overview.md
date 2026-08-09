@@ -2,7 +2,7 @@
 
 ## Goal
 
-本项目用于学习和验证 FastAPI、Textual 与外部模型接口集成。HTTP 提供无状态单轮文本调用，本地全屏 TUI 提供可持久化和恢复的唯一多轮会话；两者通过统一 Provider 层调用阿里云 Responses API 或 DeepSeek Chat Completions API。
+本项目用于学习和验证 FastAPI、Textual、外部模型接口与受控 Function Calling。HTTP 提供无状态文本调用，本地全屏 TUI 提供可持久化和恢复的唯一多轮会话；两者通过统一 Runtime 调用阿里云 Responses API 或 DeepSeek Chat Completions API，并自动执行根目录白名单只读工具。
 
 ## Project Shape
 
@@ -34,7 +34,9 @@
 - `app/application.py`：FastAPI 应用组装。
 - `app/routers/chat.py`：`POST /chat` 请求与统一响应。
 - `app/runtime/chat.py`：HTTP/TUI 共享用例、结果和错误语义。
+- `app/runtime/tool_loop.py`：有界模型步骤和串行工具执行编排。
 - `app/services/llm/`：配置工厂、共享网络边界、阿里云与 DeepSeek Provider。
+- `tools/`：Provider 中立工具契约、Registry 和 `get_current_time`。
 - `app/tui/`：Textual 应用、状态和模块启动入口。
 - `tests/test_llm_providers.py`：Provider 协议与错误测试。
 - `tests/test_chat.py`、`tests/test_chat_runtime.py`、`tests/test_tui.py`：对应交互边界测试。
@@ -47,7 +49,7 @@
 .venv/bin/python -m uvicorn main:app --reload --env-file .env
 .venv/bin/python -m app.tui
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
-.venv/bin/python -m compileall -q main.py app tests
+.venv/bin/python -m compileall -q main.py app tools tests
 .venv/bin/python -m pip check
 git diff --check
 ```
@@ -61,12 +63,14 @@ git diff --check
 - HTTP 固定返回 `{"output_text": "..."}`，TUI 展示同一文本。
 - 中文输入、耗时统计、请求取消、`/clear`、`/quit`、Enter 和双击 Esc。
 - 环境变量密钥、固定上游 URL、显式超时和脱敏错误分类。
+- 自动执行显式注册的只读当前时间工具，并限制模型步骤、每步调用数和载荷大小。
+- request ID 关联的结构化模型、HTTP 和工具日志。
 
 明确不支持：
 
-- 请求级 Provider/模型选择、流式、多会话管理、上下文压缩、工具调用、多 Agent 和多模态。
+- 请求级 Provider/模型选择、流式、多会话管理、上下文压缩、写操作工具、MCP、动态插件、多 Agent 和多模态。
 - 自动重试、降级、负载均衡、熔断、限流、用户认证授权和任务队列。
-- 容器、反向代理、进程管理、CI/CD、结构化日志、Trace、指标、告警和正式健康检查。
+- 容器、反向代理、进程管理、CI/CD、Trace、指标、告警、远程日志采集和正式健康检查。
 
 ## Dependency Changes
 

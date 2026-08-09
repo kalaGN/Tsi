@@ -47,6 +47,7 @@ def _http_status_for_error(error: ChatRuntimeError) -> int:
         ChatErrorCode.TIMEOUT: 504,
         ChatErrorCode.CONNECTION: 502,
         ChatErrorCode.INVALID_RESPONSE: 502,
+        ChatErrorCode.TOOL_LIMIT: 502,
     }
     if error.code in fixed_statuses:
         return fixed_statuses[error.code]

@@ -42,6 +42,7 @@ Content-Type: application/json
 - 上游其他非成功状态：保留状态码，返回安全错误说明。
 - 上游成功但响应不是 JSON：`502 Bad Gateway`。
 - 上游成功但无法提取文本：`502 Bad Gateway`。
+- 工具步骤、每步调用数或参数大小超过固定边界：`502 Bad Gateway`。
 
 错误响应使用 FastAPI 标准结构：
 

@@ -9,6 +9,7 @@ from app.observability.model_logging import (
     log_model_response,
     new_request_id,
 )
+from app.runtime.tool_loop import ToolLoopLimitError, run_tool_loop
 from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
@@ -23,6 +24,7 @@ from app.services.llm.contracts import (
     ProviderTimeoutError,
 )
 from app.services.llm.factory import create_provider
+from tools import ToolRegistry, create_default_registry
 
 
 @dataclass(frozen=True)
@@ -52,6 +54,7 @@ class ChatErrorCode(str, Enum):
     UPSTREAM = "upstream"
     INVALID_RESPONSE = "invalid_response"
     STORAGE = "storage"
+    TOOL_LIMIT = "tool_limit"
 
 
 class ChatRuntimeError(Exception):
@@ -83,6 +86,7 @@ ERROR_CODES = {
 async def run_chat(
     input_text: str,
     provider: LlmProvider | None = None,
+    registry: ToolRegistry | None = None,
 ) -> ChatResult:
     """校验输入、调用所选 Provider，并统一外部异常语义。"""
 
@@ -95,18 +99,21 @@ async def run_chat(
     return await run_chat_messages(
         (ChatMessage(ChatRole.USER, input_text),),
         provider=provider,
+        registry=registry,
     )
 
 
 async def run_chat_messages(
     messages: Sequence[ChatMessage],
     provider: LlmProvider | None = None,
+    registry: ToolRegistry | None = None,
 ) -> ChatResult:
     """调用有序对话，日志仍只记录当前最后一条 user 输入。"""
 
     current_input = messages[-1].content if messages else ""
     try:
         active_provider = create_provider() if provider is None else provider
+        active_registry = create_default_registry() if registry is None else registry
         request_id = new_request_id()
         provider_name = active_provider.name
         model = active_provider.model
@@ -117,19 +124,38 @@ async def run_chat_messages(
             input_chars=len(current_input),
             input_text=current_input,
         )
-        result = await active_provider.generate(messages, request_id=request_id)
+        turn = active_provider.create_turn(
+            messages,
+            active_registry.definitions,
+            request_id=request_id,
+        )
+        step = await run_tool_loop(
+            turn,
+            active_registry,
+            request_id=request_id,
+        )
+        output_text = step.output_text
+        if output_text is None:
+            raise ProviderInvalidResponseError(
+                "Upstream service returned an invalid response"
+            )
         log_model_response(
             request_id=request_id,
             provider=provider_name,
             model=model,
-            output_chars=len(result.output_text),
-            output_text=result.output_text,
+            output_chars=len(output_text),
+            output_text=output_text,
         )
+    except ToolLoopLimitError as exc:
+        raise ChatRuntimeError(
+            ChatErrorCode.TOOL_LIMIT,
+            "Tool call limit exceeded",
+        ) from exc
     except LlmProviderError as exc:
         raise _runtime_error(exc) from exc
 
     return ChatResult(
-        output_text=result.output_text,
+        output_text=output_text,
         provider=provider_name,
         model=model,
     )

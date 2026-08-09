@@ -1,6 +1,6 @@
 # FastAPI Demo
 
-这是一个轻量大模型调用项目，同时提供无状态 FastAPI HTTP 接口和可恢复上下文的 Textual TUI，支持阿里云 Responses API 与 DeepSeek Chat Completions API。
+这是一个轻量大模型调用项目，同时提供无状态 FastAPI HTTP 接口和可恢复上下文的 Textual TUI，支持阿里云 Responses API、DeepSeek Chat Completions API，以及受限的本地只读工具调用。
 
 ## 安装依赖
 
@@ -64,6 +64,22 @@ curl --location 'http://127.0.0.1:8000/chat' \
 
 接口不再返回阿里云或 DeepSeek 的原始响应字段。
 
+## 工具调用
+
+HTTP 与 TUI 会把根目录 `tools/` 中显式注册的只读工具提供给模型。模型请求工具时，Runtime 自动执行并把结果回传同一个 Provider，直到模型给出最终文本；用户无需输入工具命令或逐次确认。
+
+第一版只包含：
+
+- `get_current_time(timezone)`：获取指定 IANA 时区（例如 `Asia/Shanghai`）的当前 ISO 8601 时间。
+
+安全和成本边界：
+
+- 工具必须在代码中显式注册；模型不能执行任意 Shell、Python、文件路径、URL 或动态模块。
+- 只允许无副作用工具，不支持文件写入、数据库写入、MCP 或动态插件。
+- 每个用户请求最多 5 个模型步骤，每步最多 4 个工具调用。
+- 单次参数最多 8 KiB、结果最多 32 KiB，均按 UTF-8 字节数计算。
+- 多个工具按模型返回顺序串行执行；达到上限时 `/chat` 返回安全的 502。
+
 ## 启动 TUI
 
 TUI 会从项目根目录 `.env` 加载配置，Shell 中已设置的环境变量优先。无需先启动 Uvicorn：
@@ -79,7 +95,7 @@ TUI 会把已成功的 user/assistant 轮次作为后续请求上下文。成功
 - `/clear`：清空界面、模型上下文和本地持久化历史。
 - `/quit`：取消运行中请求并退出。
 
-TUI 支持直接使用中文输入法。`/help` 和 `/chat` 不是本地命令，会作为普通文本发送给模型。当前不支持流式输出、多会话管理、历史搜索、上下文压缩、工具调用或请求级模型切换。
+TUI 支持直接使用中文输入法。`/help` 和 `/chat` 不是本地命令，会作为普通文本发送给模型。当前不支持流式输出、多会话管理、历史搜索、上下文压缩、写操作工具或请求级模型切换。
 
 ## TUI 会话历史
 
@@ -91,6 +107,8 @@ data/chat-session.json
 
 重新启动 TUI 会自动恢复该文件中的界面消息和模型上下文。如果文件损坏，TUI 不会静默覆盖；输入 `/clear` 可明确删除并重置会话。
 
+工具调用和工具结果只在当前请求内使用，不写入会话文件；一次工具循环完整成功后，只保存用户输入和模型最终回答。
+
 > 隐私警告：会话文件以明文保存输入和回答。`data/` 已被 Git 忽略，但具有本地文件读取权限的用户或进程仍可读取其内容。
 
 ## 模型请求日志
@@ -101,7 +119,7 @@ HTTP 和 TUI 每次模型调用都会在 stderr 和本地文件写入同一 requ
 logs/model-calls.log
 ```
 
-成功调用按固定顺序产生四条可关联事件：
+不需要工具时，成功调用按固定顺序产生四条可关联事件：
 
 ```text
 llm_request -> llm_http_request -> llm_http_response -> llm_response
@@ -111,6 +129,13 @@ llm_request -> llm_http_request -> llm_http_response -> llm_response
 - `llm_http_request`：真实外部 HTTP 边界，记录实际 Provider URL、`POST`、脱敏 Header（`Authorization` 固定写为 `Bearer [REDACTED]`）、完整 JSON 请求体和 `connect_seconds=10 / total_seconds=60` 超时。完整请求体包含 DeepSeek 的 `messages` 或阿里云的 `input`，多轮历史以明文按上游顺序完整保留。
 - `llm_http_response`：外部 HTTP 收到响应后立即记录，包含状态码（含非 2xx）、Content-Type 和单调时钟耗时 `duration_ms`，不记录原始响应体。
 - `llm_response`：成功统一输出文本。
+
+需要工具时，同一个 request ID 下会出现多组 `llm_http_request/llm_http_response`，并在工具执行处插入：
+
+- `llm_tool_call`：call ID、工具名和参数字符数。
+- `llm_tool_result`：call ID、成功/错误状态、耗时和输出字符数。
+
+专用工具事件不重复保存完整参数或结果；实际回传模型的完整工具结果会出现在下一次 `llm_http_request.request_body` 中，因此仍属于下述明文日志风险范围。
 
 连接超时或网络失败时，`llm_http_request` 后写一条 `llm_http_error`，仅包含 `timeout` 或 `connection` 安全分类和耗时，不记录异常类名、异常原文或 Traceback。非 2xx 已收到响应，只写 `llm_http_response`，不再写 `llm_http_error`。
 
@@ -131,7 +156,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 ## 提交前检查
 
 ```bash
-.venv/bin/python -m compileall -q main.py app tests
+.venv/bin/python -m compileall -q main.py app tools tests
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 .venv/bin/python -m pip check
 git diff --check

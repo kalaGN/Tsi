@@ -12,10 +12,11 @@
 - 应用组装：`app/application.py`。
 - HTTP 路由与请求校验：`app/routers/`。
 - HTTP/TUI 共享模型调用与中立错误，TUI Session 及存储也位于：`app/runtime/`。
+- 根目录只读工具契约、Registry 和内置工具：`tools/`。
 - 多模型配置、协议适配和 Provider 错误：`app/services/llm/`。
 - 终端界面与启动入口：`app/tui/`。
 - 测试：`tests/`。
-- 真实依赖方向：`HTTP/TUI → runtime → services.llm → Aliyun/DeepSeek`；HTTP 入口为 `main → application → router`。
+- 真实依赖方向：`HTTP/TUI → runtime → tools + services.llm → Aliyun/DeepSeek`；HTTP 入口为 `main → application → router`。
 - 详细事实：[架构知识](docs/knowledge/architecture.md)。
 
 ## Environment and Commands
@@ -27,7 +28,7 @@
 - 启动：`.venv/bin/python -m uvicorn main:app --reload --env-file .env`
 - TUI：`.venv/bin/python -m app.tui`
 - 测试：`PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q`
-- 语法检查：`.venv/bin/python -m compileall -q main.py app tests`
+- 语法检查：`.venv/bin/python -m compileall -q main.py app tools tests`
 - 依赖检查：`.venv/bin/python -m pip check`
 - 差异检查：`git diff --check`
 
@@ -63,6 +64,7 @@
 
 - 不擅自改变 `/chat` 请求、成功响应或错误映射等公开契约。
 - `/chat` 当前成功响应固定为 `{"output_text": "..."}`，Router 和 TUI 不得解析或暴露 Provider 原始响应。
+- 工具只能从根目录 `tools/` 显式注册；第一版仅允许自动执行无副作用工具，禁止任意 Shell、动态 import、文件或数据库写操作。
 - 密钥仅从环境变量读取；禁止进入代码、文档、日志、测试或 Git。
 - 不无需求增加层级、服务、基础设施或第三方依赖。
 - 自动化测试禁止调用真实付费或生产外部服务。

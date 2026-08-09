@@ -2,7 +2,9 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Protocol, Sequence
+from typing import Protocol, Sequence
+
+from tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 
 class ChatRole(str, Enum):
@@ -21,12 +23,12 @@ class ChatMessage:
 
 
 @dataclass(frozen=True)
-class ProviderResult:
-    """保留内部协议结果，并向 Runtime 提供统一文本。"""
+class ModelStep:
+    """一次模型步骤的中立文本或工具调用结果。"""
 
     upstream_status: int
-    raw_body: Any
-    output_text: str
+    output_text: str | None
+    tool_calls: tuple[ToolCall, ...]
 
 
 @dataclass(frozen=True)
@@ -42,8 +44,18 @@ class ProviderConfig:
         return bool(self.api_key)
 
 
+class LlmTurn(Protocol):
+    """封装单个用户请求内的 Provider 私有续接状态。"""
+
+    async def next(
+        self,
+        tool_results: Sequence[ToolResult] = (),
+    ) -> ModelStep:
+        ...
+
+
 class LlmProvider(Protocol):
-    """Runtime 所依赖的最小有序消息模型能力。"""
+    """Runtime 所依赖的有序消息和短生命周期 Turn 能力。"""
 
     name: str
     model: str
@@ -52,12 +64,13 @@ class LlmProvider(Protocol):
     def api_key_configured(self) -> bool:
         ...
 
-    async def generate(
+    def create_turn(
         self,
         messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition],
         *,
         request_id: str,
-    ) -> ProviderResult:
+    ) -> LlmTurn:
         ...
 
 

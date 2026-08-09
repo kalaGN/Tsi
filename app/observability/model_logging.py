@@ -65,6 +65,20 @@ _EVENT_FIELDS = {
         "error_type",
         "duration_ms",
     ),
+    "llm_tool_call": (
+        "request_id",
+        "call_id",
+        "tool_name",
+        "arguments_chars",
+    ),
+    "llm_tool_result": (
+        "request_id",
+        "call_id",
+        "tool_name",
+        "status",
+        "duration_ms",
+        "output_chars",
+    ),
 }
 
 
@@ -262,6 +276,52 @@ def log_model_http_error(
             "model": model,
             "error_type": error_type,
             "duration_ms": duration_ms,
+        },
+    )
+
+
+def log_model_tool_call(
+    *,
+    request_id: str,
+    call_id: str,
+    tool_name: str,
+    arguments_chars: int,
+) -> None:
+    """记录一次白名单工具调用的关联元数据，不重复记录完整参数。"""
+
+    logging.getLogger(LOGGER_NAME).info(
+        "llm_tool_call",
+        extra={
+            "event": "llm_tool_call",
+            "request_id": request_id,
+            "call_id": call_id,
+            "tool_name": tool_name,
+            "arguments_chars": arguments_chars,
+        },
+    )
+
+
+def log_model_tool_result(
+    *,
+    request_id: str,
+    call_id: str,
+    tool_name: str,
+    status: str,
+    duration_ms: float,
+    output_chars: int,
+) -> None:
+    """记录工具结果状态和耗时，不记录结果正文或异常详情。"""
+
+    logging.getLogger(LOGGER_NAME).info(
+        "llm_tool_result",
+        extra={
+            "event": "llm_tool_result",
+            "request_id": request_id,
+            "call_id": call_id,
+            "tool_name": tool_name,
+            "status": status,
+            "duration_ms": duration_ms,
+            "output_chars": output_chars,
         },
     )
 

@@ -353,3 +353,63 @@ def test_http_log_events_never_leak_api_key_or_raw_details(tmp_path):
     serialized = json.dumps(error_event, ensure_ascii=False)
     assert "exception" not in serialized.lower()
     assert "traceback" not in serialized.lower()
+
+
+def test_tool_events_use_metadata_only_whitelist(tmp_path):
+    stream = io.StringIO()
+    model_logging.configure_model_logging(
+        stream=stream,
+        log_path=tmp_path / "model-calls.log",
+    )
+
+    model_logging.log_model_tool_call(
+        request_id="f" * 32,
+        call_id="call-time-1",
+        tool_name="get_current_time",
+        arguments_chars=28,
+    )
+    model_logging.log_model_tool_result(
+        request_id="f" * 32,
+        call_id="call-time-1",
+        tool_name="get_current_time",
+        status="success",
+        duration_ms=1.25,
+        output_chars=91,
+    )
+
+    call_event, result_event = map(
+        json.loads,
+        stream.getvalue().splitlines(),
+    )
+    assert set(call_event) == {
+        "timestamp",
+        "level",
+        "event",
+        "request_id",
+        "call_id",
+        "tool_name",
+        "arguments_chars",
+    }
+    assert call_event["event"] == "llm_tool_call"
+    assert call_event["call_id"] == "call-time-1"
+    assert call_event["arguments_chars"] == 28
+
+    assert set(result_event) == {
+        "timestamp",
+        "level",
+        "event",
+        "request_id",
+        "call_id",
+        "tool_name",
+        "status",
+        "duration_ms",
+        "output_chars",
+    }
+    assert result_event["event"] == "llm_tool_result"
+    assert result_event["status"] == "success"
+    assert result_event["duration_ms"] == 1.25
+    assert result_event["output_chars"] == 91
+    serialized = json.dumps([call_event, result_event], ensure_ascii=False)
+    assert "Asia/Shanghai" not in serialized
+    assert "output_text" not in serialized
+    assert "exception" not in serialized.lower()

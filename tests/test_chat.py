@@ -1,3 +1,5 @@
+import json
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -5,6 +7,8 @@ from fastapi.testclient import TestClient
 import main
 from app import application
 from app.application import app as application_app
+from app.routers import chat as chat_router
+from app.runtime.chat import ChatErrorCode, ChatRuntimeError
 from app.services.llm import http_client
 from app.services.llm.aliyun import ALIYUN_RESPONSES_URL
 from app.services.llm.deepseek import DEEPSEEK_CHAT_COMPLETIONS_URL
@@ -80,7 +84,10 @@ def test_chat_supports_explicit_aliyun_and_returns_only_normalized_text(monkeypa
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == ALIYUN_RESPONSES_URL
         assert request.headers["Authorization"] == f"Bearer {FAKE_API_KEY}"
-        assert request.content == b'{"model":"qwen3-max","input":"hello"}'
+        payload = json.loads(request.content)
+        assert payload["input"] == [{"role": "user", "content": "hello"}]
+        assert payload["tools"][0]["name"] == "get_current_time"
+        assert payload["tool_choice"] == "auto"
         return httpx.Response(
             200,
             json={
@@ -104,10 +111,11 @@ def test_chat_defaults_to_deepseek_and_returns_only_normalized_text(monkeypatch)
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == DEEPSEEK_CHAT_COMPLETIONS_URL
         assert request.headers["Authorization"] == f"Bearer {FAKE_API_KEY}"
-        assert request.content == (
-            b'{"model":"deepseek-v4-flash","messages":'
-            b'[{"role":"user","content":"hello"}],"stream":false}'
-        )
+        payload = json.loads(request.content)
+        assert payload["messages"] == [{"role": "user", "content": "hello"}]
+        assert payload["tools"][0]["function"]["name"] == "get_current_time"
+        assert payload["tool_choice"] == "auto"
+        assert payload["stream"] is False
         return httpx.Response(
             200,
             json={
@@ -158,6 +166,106 @@ def test_chat_requests_remain_stateless(monkeypatch):
         captured_messages[1]
     )
     assert "first" not in captured_messages[1]
+
+
+def test_chat_executes_deepseek_readonly_tool_and_returns_final_text(monkeypatch):
+    monkeypatch.setenv("DEEPSEEK_API_KEY", FAKE_API_KEY)
+    payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        if len(payloads) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "time-call-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_current_time",
+                                            "arguments": '{"timezone":"Asia/Shanghai"}',
+                                        },
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "上海时间已获取"}}]},
+        )
+
+    install_upstream_transport(monkeypatch, handler)
+
+    response = client.post("/chat", json={"input": "上海现在几点？"})
+
+    assert response.status_code == 200
+    assert response.json() == {"output_text": "上海时间已获取"}
+    tool_message = payloads[1]["messages"][-1]
+    assert tool_message["role"] == "tool"
+    assert tool_message["tool_call_id"] == "time-call-1"
+    tool_output = json.loads(tool_message["content"])
+    assert tool_output["ok"] is True
+    assert tool_output["data"]["timezone"] == "Asia/Shanghai"
+
+
+def test_chat_executes_aliyun_readonly_tool_and_returns_final_text(monkeypatch):
+    monkeypatch.setenv("LLM_PROVIDER", "aliyun")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", FAKE_API_KEY)
+    payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        if len(payloads) == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "name": "get_current_time",
+                            "arguments": '{"timezone":"UTC"}',
+                            "call_id": "time-call-2",
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(200, json={"output_text": "UTC 时间已获取"})
+
+    install_upstream_transport(monkeypatch, handler)
+
+    response = client.post("/chat", json={"input": "UTC 现在几点？"})
+
+    assert response.status_code == 200
+    assert response.json() == {"output_text": "UTC 时间已获取"}
+    call_item, output_item = payloads[1]["input"][-2:]
+    assert call_item["type"] == "function_call"
+    assert output_item["type"] == "function_call_output"
+    assert call_item["call_id"] == output_item["call_id"] == "time-call-2"
+    assert json.loads(output_item["output"])["data"]["timezone"] == "UTC"
+
+
+def test_chat_maps_tool_limit_to_safe_502(monkeypatch):
+    async def fail_with_tool_limit(input_text):
+        raise ChatRuntimeError(
+            ChatErrorCode.TOOL_LIMIT,
+            "Tool call limit exceeded",
+        )
+
+    monkeypatch.setattr(chat_router, "run_chat", fail_with_tool_limit)
+
+    response = client.post("/chat", json={"input": "loop"})
+
+    assert response.status_code == 502
+    assert response.json() == {"detail": "Tool call limit exceeded"}
 
 
 @pytest.mark.parametrize(

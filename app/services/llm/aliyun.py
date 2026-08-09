@@ -5,12 +5,14 @@ from typing import Any, ClassVar, Sequence
 
 from app.services.llm.contracts import (
     ChatMessage,
+    ModelStep,
     ProviderConfigurationError,
     ProviderInvalidResponseError,
-    ProviderResult,
+    ProviderInvalidRequestError,
     validate_provider_messages,
 )
 from app.services.llm.http_client import post_json
+from tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 
 ALIYUN_RESPONSES_URL = (
@@ -32,40 +34,112 @@ class AliyunResponsesProvider:
     def api_key_configured(self) -> bool:
         return bool(self.api_key.strip())
 
-    async def generate(
+    def create_turn(
         self,
         messages: Sequence[ChatMessage],
+        tools: Sequence[ToolDefinition],
         *,
         request_id: str,
-    ) -> ProviderResult:
+    ) -> "AliyunTurn":
         if not self.api_key_configured:
             raise ProviderConfigurationError("Upstream API key is not configured")
         validated_messages = validate_provider_messages(messages)
-
-        # 单轮保留原有 string 请求，只在确有历史时切换消息数组。
-        if len(validated_messages) == 1:
-            provider_input: str | list[dict[str, str]] = (
-                validated_messages[0].content
-            )
-        else:
-            provider_input = [
+        return AliyunTurn(
+            api_key=self.api_key,
+            model=self.model,
+            input_items=[
                 {"role": message.role.value, "content": message.content}
                 for message in validated_messages
-            ]
+            ],
+            tools=tuple(tools),
+            request_id=request_id,
+        )
+
+
+class AliyunTurn:
+    """维护 Responses input 项，并成对续接 Function Call 与结果。"""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        model: str,
+        input_items: list[dict[str, Any]],
+        tools: tuple[ToolDefinition, ...],
+        request_id: str,
+    ) -> None:
+        self._api_key = api_key
+        self._model = model
+        self._input_items = input_items
+        self._tools = tools
+        self._request_id = request_id
+        self._pending_calls: tuple[ToolCall, ...] = ()
+        self._completed = False
+
+    async def next(
+        self,
+        tool_results: Sequence[ToolResult] = (),
+    ) -> ModelStep:
+        if self._completed:
+            raise ProviderInvalidRequestError()
+        self._append_call_result_pairs(tuple(tool_results))
+
+        payload: dict[str, Any] = {
+            "model": self._model,
+            "input": self._input_items,
+        }
+        if self._tools:
+            payload["tools"] = [_aliyun_tool(tool) for tool in self._tools]
+            payload["tool_choice"] = "auto"
 
         status_code, body = await post_json(
             ALIYUN_RESPONSES_URL,
-            self.api_key,
-            {"model": self.model, "input": provider_input},
-            request_id=request_id,
-            provider=self.name,
-            model=self.model,
+            self._api_key,
+            payload,
+            request_id=self._request_id,
+            provider=AliyunResponsesProvider.name,
+            model=self._model,
         )
-        return ProviderResult(
-            upstream_status=status_code,
-            raw_body=body,
-            output_text=_extract_output_text(body),
-        )
+        calls = _extract_function_calls(body)
+        if calls:
+            self._pending_calls = calls
+            return ModelStep(status_code, _optional_output_text(body), calls)
+
+        output_text = _extract_output_text(body)
+        self._completed = True
+        return ModelStep(status_code, output_text, ())
+
+    def _append_call_result_pairs(
+        self,
+        results: tuple[ToolResult, ...],
+    ) -> None:
+        if not self._pending_calls:
+            if results:
+                raise ProviderInvalidRequestError()
+            return
+        if len(results) != len(self._pending_calls) or any(
+            result.call_id != call.call_id
+            for call, result in zip(self._pending_calls, results)
+        ):
+            raise ProviderInvalidRequestError()
+
+        for call, result in zip(self._pending_calls, results):
+            self._input_items.append(
+                {
+                    "type": "function_call",
+                    "name": call.name,
+                    "arguments": call.arguments_json,
+                    "call_id": call.call_id,
+                }
+            )
+            self._input_items.append(
+                {
+                    "type": "function_call_output",
+                    "call_id": result.call_id,
+                    "output": result.output,
+                }
+            )
+        self._pending_calls = ()
 
 
 def _extract_output_text(body: Any) -> str:
@@ -107,6 +181,51 @@ def _extract_output_text(body: Any) -> str:
         return "\n".join(nested_fragments)
 
     raise _invalid_structure()
+
+
+def _extract_function_calls(body: Any) -> tuple[ToolCall, ...]:
+    if not isinstance(body, dict):
+        raise _invalid_structure()
+    output = body.get("output")
+    if output is None:
+        return ()
+    if not isinstance(output, list):
+        raise _invalid_structure()
+
+    calls: list[ToolCall] = []
+    call_ids: set[str] = set()
+    for item in output:
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            continue
+        call_id = item.get("call_id")
+        name = item.get("name")
+        arguments = item.get("arguments")
+        if (
+            not isinstance(call_id, str)
+            or not call_id
+            or call_id in call_ids
+            or not isinstance(name, str)
+            or not name
+            or not isinstance(arguments, str)
+        ):
+            raise _invalid_structure()
+        call_ids.add(call_id)
+        calls.append(ToolCall(call_id, name, arguments))
+    return tuple(calls)
+
+
+def _optional_output_text(body: Any) -> str | None:
+    output_text = body.get("output_text") if isinstance(body, dict) else None
+    return output_text if isinstance(output_text, str) and output_text else None
+
+
+def _aliyun_tool(definition: ToolDefinition) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "name": definition.name,
+        "description": definition.description,
+        "parameters": dict(definition.parameters),
+    }
 
 
 def _invalid_structure() -> ProviderInvalidResponseError:

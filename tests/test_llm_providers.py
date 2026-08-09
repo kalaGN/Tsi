@@ -30,10 +30,20 @@ from app.services.llm.deepseek import (
 from app.services.llm.factory import create_provider, resolve_provider_config
 from app.services.llm import http_client
 from app.services.llm.http_client import post_json
+from tools.contracts import ToolDefinition, ToolResult
 
 
 FAKE_API_KEY = "test-only-provider-key"
 REQUEST_ID = "0123456789abcdef0123456789abcdef"
+TIME_TOOL = ToolDefinition(
+    name="get_current_time",
+    description="Get current time for a timezone",
+    parameters={
+        "type": "object",
+        "properties": {"timezone": {"type": "string"}},
+        "required": ["timezone"],
+    },
+)
 
 
 def user_messages(content: str = "hello") -> tuple[ChatMessage, ...]:
@@ -50,6 +60,13 @@ def install_transport(monkeypatch, handler):
         return real_async_client(transport=transport, **kwargs)
 
     monkeypatch.setattr(http_client.httpx, "AsyncClient", create_client)
+
+
+async def run_provider_once(provider, messages):
+    """通过最终 Turn 契约执行一次不带工具的模型步骤。"""
+
+    turn = provider.create_turn(messages, (), request_id=REQUEST_ID)
+    return await turn.next()
 
 
 def test_factory_defaults_to_deepseek_without_provider_setting():
@@ -157,17 +174,136 @@ def test_aliyun_sends_expected_request_and_extracts_text(
         assert request.headers["Authorization"] == f"Bearer {FAKE_API_KEY}"
         assert request.headers["Content-Type"] == "application/json"
         assert request.headers["Accept"] == "application/json"
-        assert request.content == b'{"model":"custom-qwen","input":"hello"}'
+        assert request.content == (
+            b'{"model":"custom-qwen","input":'
+            b'[{"role":"user","content":"hello"}]}'
+        )
         return httpx.Response(200, json=body)
 
     install_transport(monkeypatch, handler)
     provider = AliyunResponsesProvider(FAKE_API_KEY, "custom-qwen")
 
-    result = asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
+    result = asyncio.run(run_provider_once(provider, user_messages()))
 
     assert result.upstream_status == 200
-    assert result.raw_body == body
     assert result.output_text == expected_text
+
+
+def test_aliyun_turn_declares_flat_tools_and_uses_array_input(monkeypatch):
+    captured_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_payloads.append(json.loads(request.content))
+        return httpx.Response(200, json={"output_text": "ok"})
+
+    install_transport(monkeypatch, handler)
+    turn = AliyunResponsesProvider(FAKE_API_KEY, "custom-qwen").create_turn(
+        user_messages("hello"),
+        (TIME_TOOL,),
+        request_id=REQUEST_ID,
+    )
+
+    step = asyncio.run(turn.next())
+
+    assert step.output_text == "ok"
+    assert step.tool_calls == ()
+    assert captured_payloads == [
+        {
+            "model": "custom-qwen",
+            "input": [{"role": "user", "content": "hello"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "get_current_time",
+                    "description": "Get current time for a timezone",
+                    "parameters": TIME_TOOL.parameters,
+                }
+            ],
+            "tool_choice": "auto",
+        }
+    ]
+
+
+def test_aliyun_turn_appends_each_function_call_next_to_its_output(
+    monkeypatch,
+    captured_model_events,
+):
+    captured_payloads = []
+    responses = iter(
+        [
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "get_current_time",
+                        "arguments": '{"timezone":"Asia/Shanghai"}',
+                        "call_id": "call-1",
+                    },
+                    {
+                        "type": "function_call",
+                        "name": "get_current_time",
+                        "arguments": '{"timezone":"UTC"}',
+                        "call_id": "call-2",
+                    },
+                ]
+            },
+            {"output_text": "done"},
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_payloads.append(json.loads(request.content))
+        return httpx.Response(200, json=next(responses))
+
+    install_transport(monkeypatch, handler)
+    turn = AliyunResponsesProvider(FAKE_API_KEY).create_turn(
+        user_messages(),
+        (TIME_TOOL,),
+        request_id=REQUEST_ID,
+    )
+
+    first_step = asyncio.run(turn.next())
+    final_step = asyncio.run(
+        turn.next(
+            (
+                ToolResult("call-1", '{"ok":true,"data":"first"}'),
+                ToolResult("call-2", '{"ok":true,"data":"second"}'),
+            )
+        )
+    )
+
+    assert [call.call_id for call in first_step.tool_calls] == ["call-1", "call-2"]
+    assert final_step.output_text == "done"
+    assert captured_payloads[1]["input"][-4:] == [
+        {
+            "type": "function_call",
+            "name": "get_current_time",
+            "arguments": '{"timezone":"Asia/Shanghai"}',
+            "call_id": "call-1",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call-1",
+            "output": '{"ok":true,"data":"first"}',
+        },
+        {
+            "type": "function_call",
+            "name": "get_current_time",
+            "arguments": '{"timezone":"UTC"}',
+            "call_id": "call-2",
+        },
+        {
+            "type": "function_call_output",
+            "call_id": "call-2",
+            "output": '{"ok":true,"data":"second"}',
+        },
+    ]
+    request_bodies = [
+        event["request_body"]
+        for event in captured_model_events()
+        if event["event"] == "llm_http_request"
+    ]
+    assert request_bodies == captured_payloads
 
 
 def test_deepseek_sends_expected_request_and_extracts_text(monkeypatch):
@@ -191,11 +327,247 @@ def test_deepseek_sends_expected_request_and_extracts_text(monkeypatch):
     install_transport(monkeypatch, handler)
     provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-pro")
 
-    result = asyncio.run(provider.generate(user_messages("你好"), request_id=REQUEST_ID))
+    result = asyncio.run(run_provider_once(provider, user_messages("你好")))
 
     assert result.upstream_status == 200
-    assert result.raw_body == body
     assert result.output_text == "你好"
+
+
+def test_deepseek_turn_declares_tools_and_returns_direct_text(monkeypatch):
+    captured_payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {"message": {"role": "assistant", "content": "ok"}}
+                ]
+            },
+        )
+
+    install_transport(monkeypatch, handler)
+    turn = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-pro").create_turn(
+        user_messages("hello"),
+        (TIME_TOOL,),
+        request_id=REQUEST_ID,
+    )
+
+    step = asyncio.run(turn.next())
+
+    assert step.output_text == "ok"
+    assert step.tool_calls == ()
+    assert captured_payloads == [
+        {
+            "model": "deepseek-v4-pro",
+            "messages": [{"role": "user", "content": "hello"}],
+            "stream": False,
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_current_time",
+                        "description": "Get current time for a timezone",
+                        "parameters": TIME_TOOL.parameters,
+                    },
+                }
+            ],
+            "tool_choice": "auto",
+        }
+    ]
+
+
+def test_deepseek_turn_continues_with_assistant_and_ordered_tool_results(
+    monkeypatch,
+    captured_model_events,
+):
+    captured_payloads = []
+    responses = iter(
+        [
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "role": "assistant",
+                            "content": "checking",
+                            "reasoning_content": "must be returned",
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "get_current_time",
+                                        "arguments": '{"timezone":"Asia/Shanghai"}',
+                                    },
+                                },
+                                {
+                                    "id": "call-2",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "get_current_time",
+                                        "arguments": '{"timezone":"UTC"}',
+                                    },
+                                },
+                            ],
+                        }
+                    }
+                ]
+            },
+            {
+                "choices": [
+                    {"message": {"role": "assistant", "content": "done"}}
+                ]
+            },
+        ]
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured_payloads.append(json.loads(request.content))
+        return httpx.Response(200, json=next(responses))
+
+    install_transport(monkeypatch, handler)
+    turn = DeepSeekChatProvider(FAKE_API_KEY).create_turn(
+        user_messages(),
+        (TIME_TOOL,),
+        request_id=REQUEST_ID,
+    )
+
+    first_step = asyncio.run(turn.next())
+    final_step = asyncio.run(
+        turn.next(
+            (
+                ToolResult("call-1", '{"ok":true,"data":"first"}'),
+                ToolResult("call-2", '{"ok":true,"data":"second"}'),
+            )
+        )
+    )
+
+    assert [call.call_id for call in first_step.tool_calls] == ["call-1", "call-2"]
+    assert first_step.output_text == "checking"
+    assert final_step.output_text == "done"
+    continued_messages = captured_payloads[1]["messages"]
+    assert continued_messages[-3] == {
+        "role": "assistant",
+        "content": "checking",
+        "reasoning_content": "must be returned",
+        "tool_calls": [
+            {
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "get_current_time",
+                    "arguments": '{"timezone":"Asia/Shanghai"}',
+                },
+            },
+            {
+                "id": "call-2",
+                "type": "function",
+                "function": {
+                    "name": "get_current_time",
+                    "arguments": '{"timezone":"UTC"}',
+                },
+            },
+        ],
+    }
+    assert continued_messages[-2:] == [
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": '{"ok":true,"data":"first"}',
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-2",
+            "content": '{"ok":true,"data":"second"}',
+        },
+    ]
+    request_bodies = [
+        event["request_body"]
+        for event in captured_model_events()
+        if event["event"] == "llm_http_request"
+    ]
+    assert request_bodies == captured_payloads
+
+
+def test_deepseek_turn_rejects_mismatched_tool_result_before_second_request(
+    monkeypatch,
+):
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "call-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "get_current_time",
+                                        "arguments": "{}",
+                                    },
+                                }
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+
+    install_transport(monkeypatch, handler)
+    turn = DeepSeekChatProvider(FAKE_API_KEY).create_turn(
+        user_messages(),
+        (TIME_TOOL,),
+        request_id=REQUEST_ID,
+    )
+    asyncio.run(turn.next())
+
+    with pytest.raises(ProviderInvalidRequestError):
+        asyncio.run(turn.next((ToolResult("wrong-id", "{}"),)))
+
+    assert request_count == 1
+
+
+@pytest.mark.parametrize(
+    ("provider", "body"),
+    [
+        (
+            DeepSeekChatProvider(FAKE_API_KEY),
+            {"choices": [{"message": {"tool_calls": "invalid"}}]},
+        ),
+        (
+            AliyunResponsesProvider(FAKE_API_KEY),
+            {
+                "output": [
+                    {
+                        "type": "function_call",
+                        "name": "get_current_time",
+                        "arguments": "{}",
+                    }
+                ]
+            },
+        ),
+    ],
+)
+def test_provider_turn_rejects_malformed_tool_call(monkeypatch, provider, body):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=body)
+
+    install_transport(monkeypatch, handler)
+    turn = provider.create_turn(
+        user_messages(),
+        (TIME_TOOL,),
+        request_id=REQUEST_ID,
+    )
+
+    with pytest.raises(ProviderInvalidResponseError):
+        asyncio.run(turn.next())
 
 
 @pytest.mark.parametrize(
@@ -235,7 +607,7 @@ def test_provider_sends_ordered_multi_turn_messages(
 
     install_transport(monkeypatch, handler)
 
-    assert asyncio.run(provider.generate(history, request_id=REQUEST_ID)).output_text == "ok"
+    assert asyncio.run(run_provider_once(provider, history)).output_text == "ok"
 
 
 @pytest.mark.parametrize(
@@ -262,7 +634,7 @@ def test_provider_rejects_invalid_message_sequence_without_network(
     provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash")
 
     with pytest.raises(ProviderInvalidRequestError) as captured:
-        asyncio.run(provider.generate(messages, request_id=REQUEST_ID))
+        asyncio.run(run_provider_once(provider, messages))
 
     assert str(captured.value) == "Conversation messages are invalid"
 
@@ -281,7 +653,7 @@ def test_provider_requires_key_before_network_call(monkeypatch, provider):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderConfigurationError) as captured:
-        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
+        asyncio.run(run_provider_once(provider, user_messages()))
 
     assert captured.value.user_message == "Upstream API key is not configured"
 
@@ -300,7 +672,7 @@ def test_provider_maps_timeout(monkeypatch, provider):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderTimeoutError) as captured:
-        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
+        asyncio.run(run_provider_once(provider, user_messages()))
 
     assert captured.value.user_message == "Upstream request timed out"
     assert "secret" not in str(captured.value)
@@ -320,7 +692,7 @@ def test_provider_maps_connection_error(monkeypatch, provider):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderConnectionError) as captured:
-        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
+        asyncio.run(run_provider_once(provider, user_messages()))
 
     assert captured.value.user_message == "Unable to connect to upstream service"
     assert "secret" not in str(captured.value)
@@ -335,7 +707,7 @@ def test_provider_maps_authentication_error(monkeypatch, status_code):
     provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash")
 
     with pytest.raises(ProviderAuthenticationError) as captured:
-        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
+        asyncio.run(run_provider_once(provider, user_messages()))
 
     assert captured.value.status_code == status_code
     assert captured.value.user_message == "Upstream authentication failed"
@@ -352,7 +724,7 @@ def test_deepseek_preserves_other_error_status(monkeypatch, status_code):
     provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash")
 
     with pytest.raises(ProviderResponseError) as captured:
-        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
+        asyncio.run(run_provider_once(provider, user_messages()))
 
     assert captured.value.status_code == status_code
     assert captured.value.user_message == "Upstream service returned an error"
@@ -373,7 +745,7 @@ def test_provider_rejects_non_json_success(monkeypatch, provider):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderInvalidResponseError) as captured:
-        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
+        asyncio.run(run_provider_once(provider, user_messages()))
 
     assert captured.value.user_message == "Upstream service returned invalid JSON"
 
@@ -404,7 +776,7 @@ def test_provider_rejects_success_without_text(monkeypatch, provider, body):
     install_transport(monkeypatch, handler)
 
     with pytest.raises(ProviderInvalidResponseError) as captured:
-        asyncio.run(provider.generate(user_messages(), request_id=REQUEST_ID))
+        asyncio.run(run_provider_once(provider, user_messages()))
 
     assert captured.value.user_message == "Upstream service returned an invalid response"
 
@@ -624,15 +996,13 @@ def test_deepseek_logged_request_body_equals_actual_payload_for_single_and_multi
     install_transport(monkeypatch, handler)
     provider = DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-pro")
 
-    asyncio.run(
-        provider.generate(user_messages("第一问"), request_id=REQUEST_ID)
-    )
+    asyncio.run(run_provider_once(provider, user_messages("第一问")))
     history = (
         ChatMessage(ChatRole.USER, "第一问"),
         ChatMessage(ChatRole.ASSISTANT, "第一答"),
         ChatMessage(ChatRole.USER, "第二问"),
     )
-    asyncio.run(provider.generate(history, request_id=REQUEST_ID))
+    asyncio.run(run_provider_once(provider, history))
 
     request_events = [
         event
@@ -665,13 +1035,13 @@ def test_aliyun_logged_request_body_equals_actual_payload_for_single_and_multi_t
     install_transport(monkeypatch, handler)
     provider = AliyunResponsesProvider(FAKE_API_KEY, "custom-qwen")
 
-    asyncio.run(provider.generate(user_messages("hello"), request_id=REQUEST_ID))
+    asyncio.run(run_provider_once(provider, user_messages("hello")))
     history = (
         ChatMessage(ChatRole.USER, "first"),
         ChatMessage(ChatRole.ASSISTANT, "answer"),
         ChatMessage(ChatRole.USER, "second"),
     )
-    asyncio.run(provider.generate(history, request_id=REQUEST_ID))
+    asyncio.run(run_provider_once(provider, history))
 
     request_events = [
         event
@@ -680,8 +1050,10 @@ def test_aliyun_logged_request_body_equals_actual_payload_for_single_and_multi_t
     ]
     assert len(request_events) == 2
     assert request_events[0]["request_body"] == captured_payloads[0]
-    # 单轮 input 保留为字符串。
-    assert request_events[0]["request_body"]["input"] == "hello"
+    # Turn 统一使用数组 input，便于后续追加 Function Call。
+    assert request_events[0]["request_body"]["input"] == [
+        {"role": "user", "content": "hello"}
+    ]
     assert request_events[1]["request_body"] == captured_payloads[1]
     # 多轮 input 完整保留有序历史数组。
     assert request_events[1]["request_body"]["input"] == [

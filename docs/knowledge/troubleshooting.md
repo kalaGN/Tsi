@@ -114,7 +114,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 
 ```bash
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
-.venv/bin/python -m compileall -q main.py app tests
+.venv/bin/python -m compileall -q main.py app tools tests
 .venv/bin/python -m pip check
 git diff --check
 git status --short

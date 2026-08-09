@@ -19,12 +19,12 @@ from app.services.llm import http_client
 from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
+    ModelStep,
     ProviderAuthenticationError,
     ProviderConfigurationError,
     ProviderConnectionError,
     ProviderInvalidResponseError,
     ProviderResponseError,
-    ProviderResult,
     ProviderTimeoutError,
 )
 from app.services.llm.deepseek import DeepSeekChatProvider
@@ -35,25 +35,36 @@ class FakeProvider:
     model = "fake-model"
     api_key_configured = True
 
-    def __init__(self, result=None, error=None):
+    def __init__(self, result=None, error=None, on_next=None):
         self.result = result
         self.error = error
+        self.on_next = on_next
         self.received_inputs = []
+        self.received_tools = []
+        self.request_ids = []
 
-    async def generate(self, messages, *, request_id) -> ProviderResult:
+    def create_turn(self, messages, tools, *, request_id):
         self.received_inputs.append(tuple(messages))
-        if self.error is not None:
-            raise self.error
-        return self.result
+        self.received_tools.append(tuple(tools))
+        self.request_ids.append(request_id)
+        return FakeTurn(self)
+
+
+class FakeTurn:
+    def __init__(self, provider):
+        self.provider = provider
+
+    async def next(self, tool_results=()):
+        if self.provider.on_next is not None:
+            self.provider.on_next()
+        if self.provider.error is not None:
+            raise self.provider.error
+        return self.provider.result
 
 
 def test_run_chat_returns_normalized_provider_result():
     provider = FakeProvider(
-        result=ProviderResult(
-            upstream_status=201,
-            raw_body={"id": "response-1", "secret-shape": True},
-            output_text="hello",
-        )
+        result=ModelStep(upstream_status=201, output_text="hello", tool_calls=())
     )
 
     result = asyncio.run(run_chat("hello", provider=provider))
@@ -73,17 +84,9 @@ def test_run_chat_logs_input_and_output_around_provider_call(monkeypatch):
     captured_requests = []
     captured_responses = []
 
-    class OrderedProvider(FakeProvider):
-        async def generate(self, messages, *, request_id) -> ProviderResult:
-            call_order.append("provider")
-            return await super().generate(messages, request_id=request_id)
-
-    provider = OrderedProvider(
-        result=ProviderResult(
-            200,
-            {"provider-raw-marker": "must-not-be-logged"},
-            "secret-output",
-        )
+    provider = FakeProvider(
+        result=ModelStep(200, "secret-output", ()),
+        on_next=lambda: call_order.append("provider"),
     )
 
     def capture_log(**fields):
@@ -119,7 +122,6 @@ def test_run_chat_logs_input_and_output_around_provider_call(monkeypatch):
             "output_text": "secret-output",
         }
     ]
-    assert "provider-raw-marker" not in repr(captured_responses)
 
 
 def test_run_chat_logs_only_request_when_provider_fails(monkeypatch):
@@ -148,7 +150,7 @@ def test_run_chat_logs_only_request_when_provider_fails(monkeypatch):
 
 def test_multi_turn_runtime_logs_only_current_user_input(monkeypatch):
     captured_requests = []
-    provider = FakeProvider(result=ProviderResult(200, {}, "answer-2"))
+    provider = FakeProvider(result=ModelStep(200, "answer-2", ()))
     monkeypatch.setattr(chat, "new_request_id", lambda: "e" * 32)
     monkeypatch.setattr(
         chat,
@@ -171,7 +173,7 @@ def test_multi_turn_runtime_logs_only_current_user_input(monkeypatch):
 
 def test_run_chat_rejects_blank_input_without_calling_provider():
     provider = FakeProvider(
-        result=ProviderResult(200, {}, "should not be returned")
+        result=ModelStep(200, "should not be returned", ())
     )
 
     with pytest.raises(ChatRuntimeError) as captured:
@@ -349,3 +351,91 @@ def test_run_chat_emits_four_correlated_events_with_real_http_boundary(
         assert event["request_id"] == shared_id
         assert event["provider"] == "deepseek"
         assert event["model"] == "deepseek-v4-flash"
+
+
+def test_run_chat_emits_correlated_events_for_complete_tool_loop(
+    monkeypatch,
+    tmp_path,
+):
+    request_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal request_count
+        request_count += 1
+        if request_count == 1:
+            return httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "tool_calls": [
+                                    {
+                                        "id": "time-call",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "get_current_time",
+                                            "arguments": '{"timezone":"UTC"}',
+                                        },
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "final"}}]},
+        )
+
+    real_async_client = httpx.AsyncClient
+    transport = httpx.MockTransport(handler)
+    monkeypatch.setattr(
+        http_client.httpx,
+        "AsyncClient",
+        lambda **kwargs: real_async_client(transport=transport, **kwargs),
+    )
+
+    stream = io.StringIO()
+    logger = logging.getLogger(model_logging.LOGGER_NAME)
+    original_handlers = list(logger.handlers)
+    original_level = logger.level
+    original_propagate = logger.propagate
+    for log_handler in original_handlers:
+        logger.removeHandler(log_handler)
+    model_logging.configure_model_logging(
+        stream=stream,
+        log_path=tmp_path / "tool.log",
+    )
+
+    try:
+        result = asyncio.run(
+            run_chat(
+                "time?",
+                provider=DeepSeekChatProvider("test-only-key"),
+            )
+        )
+    finally:
+        for log_handler in list(logger.handlers):
+            logger.removeHandler(log_handler)
+            log_handler.close()
+        for log_handler in original_handlers:
+            logger.addHandler(log_handler)
+        logger.setLevel(original_level)
+        logger.propagate = original_propagate
+
+    events = [json.loads(line) for line in stream.getvalue().splitlines()]
+    assert result.output_text == "final"
+    assert [event["event"] for event in events] == [
+        "llm_request",
+        "llm_http_request",
+        "llm_http_response",
+        "llm_tool_call",
+        "llm_tool_result",
+        "llm_http_request",
+        "llm_http_response",
+        "llm_response",
+    ]
+    assert {event["request_id"] for event in events} == {events[0]["request_id"]}
+    assert events[3]["call_id"] == events[4]["call_id"] == "time-call"

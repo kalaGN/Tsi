@@ -8,9 +8,10 @@ from app.runtime.session_store import SessionStore, SessionStoreError
 from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
-    ProviderResult,
+    ModelStep,
     ProviderTimeoutError,
 )
+from tools.contracts import ToolCall
 
 
 class RecordingProvider:
@@ -23,12 +24,23 @@ class RecordingProvider:
         self.error = error
         self.calls = []
 
-    async def generate(self, messages, *, request_id):
+    def create_turn(self, messages, tools, *, request_id):
         self.calls.append(tuple(messages))
+        return RecordingTurn(self)
+
+    async def next_step(self, tool_results=()):
         if self.error is not None:
             raise self.error
         answer = next(self.answers)
-        return ProviderResult(200, {}, answer)
+        return ModelStep(200, answer, ())
+
+
+class RecordingTurn:
+    def __init__(self, provider):
+        self.provider = provider
+
+    async def next(self, tool_results=()):
+        return await self.provider.next_step(tool_results)
 
 
 def test_chat_session_persists_turns_and_restores_history(tmp_path):
@@ -95,8 +107,7 @@ def test_chat_session_cancellation_does_not_commit(tmp_path):
         started = asyncio.Event()
 
         class BlockingProvider(RecordingProvider):
-            async def generate(self, messages, *, request_id):
-                self.calls.append(tuple(messages))
+            async def next_step(self, tool_results=()):
                 started.set()
                 await asyncio.Event().wait()
 
@@ -122,13 +133,12 @@ def test_chat_session_does_not_commit_when_provider_swallows_cancellation(
         started = asyncio.Event()
 
         class CancellationSwallowingProvider(RecordingProvider):
-            async def generate(self, messages, *, request_id):
-                self.calls.append(tuple(messages))
+            async def next_step(self, tool_results=()):
                 started.set()
                 try:
                     await asyncio.Event().wait()
                 except asyncio.CancelledError:
-                    return ProviderResult(200, {}, "late answer")
+                    return ModelStep(200, "late answer", ())
 
         store = SessionStore(tmp_path / "chat-session.json")
         session = ChatSession(
@@ -176,5 +186,50 @@ def test_chat_session_clear_removes_memory_and_file(tmp_path):
 
         assert session.messages == ()
         assert not store.path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_chat_session_persists_only_final_turn_after_automatic_tool_call(tmp_path):
+    async def scenario():
+        class ToolCallingProvider(RecordingProvider):
+            def __init__(self):
+                super().__init__()
+                self.steps = iter(
+                    [
+                        ModelStep(
+                            200,
+                            None,
+                            (
+                                ToolCall(
+                                    "time-call",
+                                    "get_current_time",
+                                    '{"timezone":"UTC"}',
+                                ),
+                            ),
+                        ),
+                        ModelStep(200, "final answer", ()),
+                    ]
+                )
+                self.tool_results = []
+
+            async def next_step(self, tool_results=()):
+                self.tool_results.append(tuple(tool_results))
+                return next(self.steps)
+
+        store = SessionStore(tmp_path / "chat-session.json")
+        provider = ToolCallingProvider()
+        session = ChatSession(store, provider=provider)
+
+        await session.send("what time is it?")
+
+        assert len(provider.tool_results) == 2
+        assert provider.tool_results[0] == ()
+        assert provider.tool_results[1][0].call_id == "time-call"
+        assert session.messages == (
+            ChatMessage(ChatRole.USER, "what time is it?"),
+            ChatMessage(ChatRole.ASSISTANT, "final answer"),
+        )
+        assert SessionStore(store.path).load() == session.messages
 
     asyncio.run(scenario())

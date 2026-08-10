@@ -188,6 +188,103 @@ def test_enter_submits_input():
     asyncio.run(scenario())
 
 
+def test_assistant_output_renders_markdown():
+    async def scenario():
+        markdown_answer = """## 结果
+
+- 第一项
+
+> 中文引用
+
+**重点**与[文档](https://example.com)
+
+| 列 | 值 |
+| --- | --- |
+| A | B |
+
+```python
+print("hello")
+```"""
+
+        async def fake_runner(input_text: str) -> ChatResult:
+            return ChatResult(markdown_answer, "fake", "fake-model")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("render markdown")
+
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+
+            transcript = transcript_text(app)
+            assert "Assistant" in transcript
+            assert "结果" in transcript
+            assert "第一项" in transcript
+            assert "中文引用" in transcript
+            assert "重点" in transcript
+            assert "文档" in transcript
+            assert "A" in transcript
+            assert "B" in transcript
+            assert 'print("hello")' in transcript
+            assert "## 结果" not in transcript
+            assert "> 中文引用" not in transcript
+            assert "**重点**" not in transcript
+            assert "[文档](" not in transcript
+            assert "| --- |" not in transcript
+            assert "```python" not in transcript
+
+    asyncio.run(scenario())
+
+
+def test_restored_assistant_history_renders_markdown(tmp_path):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        store.save(
+            (
+                ChatMessage(ChatRole.USER, "上次的问题"),
+                ChatMessage(ChatRole.ASSISTANT, "**重要回答**"),
+            )
+        )
+        app = ChatTuiApp(
+            chat_session=ChatSession.load(store),
+            runtime_info=ALIYUN_INFO,
+        )
+
+        async with app.run_test():
+            transcript = transcript_text(app)
+            assert "Assistant" in transcript
+            assert "重要回答" in transcript
+            assert "**重要回答**" not in transcript
+            assert app.chat_session.messages[1].content == "**重要回答**"
+            assert SessionStore(store.path).load()[1].content == "**重要回答**"
+
+    asyncio.run(scenario())
+
+
+def test_non_assistant_messages_keep_markdown_markers_as_plain_text():
+    async def scenario():
+        async def fake_runner(input_text: str) -> ChatResult:
+            return ChatResult("ok", "fake", "fake-model")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("# 用户标题 **原文**")
+
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            app._write_message("System", "## 系统原文")
+            app._write_message("Error", "**错误原文**")
+
+            transcript = transcript_text(app)
+            assert "# 用户标题 **原文**" in transcript
+            assert "## 系统原文" in transcript
+            assert "**错误原文**" in transcript
+
+    asyncio.run(scenario())
+
+
 def test_runtime_error_displays_request_duration():
     async def scenario():
         clock_values = iter([20.0, 22.5])

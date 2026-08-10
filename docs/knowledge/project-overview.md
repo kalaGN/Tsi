@@ -60,15 +60,16 @@ git diff --check
 
 - 严格非空的单轮文本输入。
 - 部署级选择 `aliyun` 或 `deepseek`，以及 Provider 专属模型覆盖。
-- HTTP 固定返回 `{"output_text": "..."}`，TUI 展示同一文本。
+- HTTP 固定返回 `{"output_text": "..."}`；TUI 保留同一原文，并仅在展示层美化 Assistant Markdown。
 - 中文输入、耗时统计、请求取消、`/clear`、`/quit`、Enter 和双击 Esc。
+- Assistant 标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；用户、系统和错误保持纯文本。
 - 环境变量密钥、固定上游 URL、显式超时和脱敏错误分类。
 - 自动执行显式注册的只读当前时间工具，并限制模型步骤、每步调用数和载荷大小。
 - request ID 关联的结构化模型、HTTP 和工具日志。
 
 明确不支持：
 
-- 请求级 Provider/模型选择、流式、多会话管理、上下文压缩、写操作工具、MCP、动态插件、多 Agent 和多模态。
+- HTML、远程图片、Mermaid、Markdown 代码执行、请求级 Provider/模型选择、流式、多会话管理、上下文压缩、写操作工具、MCP、动态插件、多 Agent 和多模态。
 - 自动重试、降级、负载均衡、熔断、限流、用户认证授权和任务队列。
 - 容器、反向代理、进程管理、CI/CD、Trace、指标、告警、远程日志采集和正式健康检查。
 

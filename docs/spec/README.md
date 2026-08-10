@@ -4,6 +4,7 @@
 
 ## Active and Historical Specs
 
+- [TUI Markdown 渲染](20260810-TUIMarkdown渲染-需求.md)：使用现有 Rich 能力美化 TUI 中的新响应和已恢复 Assistant Markdown，其他角色保持纯文本；已完成。
 - [TUI 上下文占比](20260810-TUI上下文占比-需求.md)：在底部状态栏右侧展示已提交会话历史相对可配置预算的本地估算占比；待确认。
 - [工具调用编排](20260808-工具调用编排-需求.md)：为 HTTP 与 TUI 增加受白名单和循环上限约束的多模型 Function Calling 流程；已完成。
 - [外部模型请求日志](20260808-外部模型请求日志-需求.md)：记录实际外部 HTTP 请求、脱敏 Header、完整 JSON Body、状态、耗时和有限失败分类；已完成。

@@ -3,6 +3,7 @@
 import time
 from collections.abc import Awaitable, Callable
 
+from rich.markdown import Markdown
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -76,6 +77,8 @@ class ChatTuiApp(App[None]):
         clock: Clock = time.monotonic,
         chat_session: ChatSession | None = None,
     ) -> None:
+        """初始化运行时信息、可恢复会话以及可注入的测试边界。"""
+
         super().__init__()
         self.clock = clock
         self._configuration_error: str | None = None
@@ -107,6 +110,8 @@ class ChatTuiApp(App[None]):
         self._last_escape_at: float | None = None
 
     def compose(self) -> ComposeResult:
+        """声明标题、对话记录、输入框、状态栏和快捷键页脚布局。"""
+
         yield Static(self.TITLE, id="title", markup=False)
         yield RichLog(
             id="transcript",
@@ -123,6 +128,8 @@ class ChatTuiApp(App[None]):
         yield Footer(show_command_palette=False)
 
     def on_mount(self) -> None:
+        """挂载后恢复历史，并把配置或历史错误转换为安全界面状态。"""
+
         self.query_one("#prompt", TextArea).focus()
         if self.chat_session is not None:
             for message in self.chat_session.messages:
@@ -141,10 +148,14 @@ class ChatTuiApp(App[None]):
         self._update_status_bar()
 
     def watch_run_status(self) -> None:
+        """响应运行状态变化，并在组件挂载后刷新状态栏。"""
+
         if self.is_mounted:
             self._update_status_bar()
 
     def _update_status_bar(self) -> None:
+        """显示 Provider、模型、密钥是否配置以及当前运行状态。"""
+
         key_status = (
             "configured" if self.runtime_info.api_key_configured else "missing"
         )
@@ -155,6 +166,15 @@ class ChatTuiApp(App[None]):
         )
 
     def _write_message(self, role: str, content: str) -> None:
+        """按角色写入消息，仅为 Assistant 原文应用 Markdown 展示。"""
+
+        if role == "Assistant":
+            transcript = self.query_one("#transcript", RichLog)
+            transcript.write(Text(role, style="bold"))
+            # Markdown 仅属于 Assistant 展示层；Session 和模型上下文保留原文。
+            transcript.write(Markdown(content))
+            return
+
         message = Text()
         message.append(role, style="bold")
         message.append("\n")
@@ -162,6 +182,8 @@ class ChatTuiApp(App[None]):
         self.query_one("#transcript", RichLog).write(message)
 
     def action_submit_prompt(self) -> None:
+        """处理本地命令、输入校验，并启动唯一的异步对话请求。"""
+
         prompt_widget = self.query_one("#prompt", TextArea)
         input_text = prompt_widget.text
         command = input_text.strip()
@@ -217,6 +239,8 @@ class ChatTuiApp(App[None]):
         generation: int,
         started_at: float,
     ) -> None:
+        """执行模型请求，并用请求代次阻止取消后的陈旧结果写回。"""
+
         worker = get_current_worker()
         try:
             result = await self.chat_runner(input_text)
@@ -251,6 +275,8 @@ class ChatTuiApp(App[None]):
         self._write_message("System", f"耗时：{elapsed:.2f} 秒")
 
     def action_confirm_exit(self) -> None:
+        """第一次 Esc 取消请求并提示，限定时间内第二次 Esc 退出。"""
+
         now = self.clock()
         if self._last_escape_at is not None:
             elapsed = now - self._last_escape_at
@@ -265,6 +291,8 @@ class ChatTuiApp(App[None]):
         self._write_message("System", "再次按 Esc 退出")
 
     def _cancel_active_request(self, show_message: bool) -> None:
+        """取消当前 Worker，并递增代次使其可能的延迟结果失效。"""
+
         worker = self._active_worker
         if worker is None:
             return

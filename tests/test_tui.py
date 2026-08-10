@@ -10,7 +10,7 @@ from app.runtime.chat import (
     ChatRuntimeInfo,
 )
 from app.runtime.session import ChatSession
-from app.runtime.session_store import SessionStore
+from app.runtime.session_store import SessionStore, SessionStoreError
 from app.services.llm.contracts import ChatMessage, ChatRole
 from app.tui import __main__ as tui_main
 from app.tui import application as tui_application
@@ -21,6 +21,19 @@ from app.tui.state import RunStatus
 ALIYUN_INFO = ChatRuntimeInfo("aliyun", "qwen3-max", True)
 DEEPSEEK_INFO = ChatRuntimeInfo("deepseek", "deepseek-v4-flash", True)
 MISSING_KEY_INFO = ChatRuntimeInfo("deepseek", "deepseek-v4-flash", False)
+
+
+class ManualClock:
+    """为实时活动栏和退出窗口测试提供可重复读取的单调时钟。"""
+
+    def __init__(self, value: float = 0.0) -> None:
+        self.value = value
+
+    def __call__(self) -> float:
+        return self.value
+
+    def advance(self, seconds: float) -> None:
+        self.value += seconds
 
 
 def transcript_text(app: ChatTuiApp) -> str:
@@ -59,6 +72,159 @@ def test_tui_initial_state_supports_deepseek_status():
             assert "DeepSeek" in status
             assert "deepseek-v4-flash" in status
             assert "Key: configured" in status
+
+    asyncio.run(scenario())
+
+
+def test_activity_bar_starts_empty_above_prompt():
+    async def scenario():
+        async def fake_runner(input_text: str) -> ChatResult:
+            raise AssertionError("runner should not be called during startup")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test():
+            activity = app.query_one("#activity-bar", Static)
+            prompt = app.query_one("#prompt", TextArea)
+            status = app.query_one("#status-bar", Static)
+
+            assert str(activity.content) == ""
+            assert activity.region.y < prompt.region.y < status.region.y
+            assert app._activity_timer is None
+
+    asyncio.run(scenario())
+
+
+def test_activity_bar_updates_elapsed_time_and_clears_after_success():
+    async def scenario():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        clock = ManualClock(10.0)
+
+        async def fake_runner(input_text: str) -> ChatResult:
+            started.set()
+            await release.wait()
+            return ChatResult("done", "fake", "fake-model")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            clock=clock,
+        )
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("hello")
+            await pilot.press("enter")
+            await asyncio.wait_for(started.wait(), timeout=1)
+
+            activity = app.query_one("#activity-bar", Static)
+            initial = str(activity.content)
+            assert "思考中" in initial
+            assert "0.0 秒" in initial
+            assert "Esc 取消" in initial
+            assert app._activity_timer is not None
+
+            clock.advance(1.2)
+            await pilot.pause(0.15)
+            updated = str(activity.content)
+            assert "1.2 秒" in updated
+            assert updated != initial
+
+            release.set()
+            await app.workers.wait_for_complete()
+
+            assert str(activity.content) == ""
+            assert app._activity_timer is None
+            assert "System\n耗时：1.20 秒" in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
+def test_activity_bar_clears_after_known_and_unexpected_errors():
+    async def scenario():
+        async def known_error(input_text: str) -> ChatResult:
+            raise ChatRuntimeError(
+                ChatErrorCode.TIMEOUT,
+                "Upstream request timed out",
+            )
+
+        async def unexpected_error(input_text: str) -> ChatResult:
+            raise RuntimeError("internal detail")
+
+        for runner in (known_error, unexpected_error):
+            app = ChatTuiApp(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
+            async with app.run_test() as pilot:
+                prompt = app.query_one("#prompt", TextArea)
+                prompt.load_text("hello")
+                await pilot.press("enter")
+                await app.workers.wait_for_complete()
+
+                assert str(app.query_one("#activity-bar", Static).content) == ""
+                assert app._activity_timer is None
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_worker_and_timer_cannot_clear_new_request_activity():
+    async def scenario():
+        first_started = asyncio.Event()
+        first_cancelled = asyncio.Event()
+        release_first = asyncio.Event()
+        second_started = asyncio.Event()
+        release_second = asyncio.Event()
+        clock = ManualClock(10.0)
+        call_count = 0
+
+        async def fake_runner(input_text: str) -> ChatResult:
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                first_started.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    first_cancelled.set()
+                    await release_first.wait()
+                    return ChatResult("late first", "fake", "fake-model")
+
+            second_started.set()
+            await release_second.wait()
+            return ChatResult("second answer", "fake", "fake-model")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            clock=clock,
+        )
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("first")
+            await pilot.press("enter")
+            await asyncio.wait_for(first_started.wait(), timeout=1)
+
+            await pilot.press("escape")
+            await asyncio.wait_for(first_cancelled.wait(), timeout=1)
+
+            prompt.load_text("second")
+            await pilot.press("enter")
+            await asyncio.wait_for(second_started.wait(), timeout=1)
+            assert app._last_escape_at is None
+            activity = app.query_one("#activity-bar", Static)
+            current_activity = str(activity.content)
+            assert "思考中" in current_activity
+
+            # 模拟已经排队的旧 Timer tick，并让吞掉取消的旧 Worker 返回。
+            app._refresh_activity(1)
+            assert str(activity.content) == current_activity
+            release_first.set()
+            await pilot.pause()
+            assert "思考中" in str(activity.content)
+            assert app._activity_generation == app._request_generation
+            assert "late first" not in transcript_text(app)
+
+            release_second.set()
+            await app.workers.wait_for_complete()
+            assert str(activity.content) == ""
+            assert "second answer" in transcript_text(app)
 
     asyncio.run(scenario())
 
@@ -184,6 +350,145 @@ def test_enter_submits_input():
             assert "You\nhello" in transcript
             assert "Assistant\nanswer" in transcript
             assert "System\n耗时：1.23 秒" in transcript
+
+    asyncio.run(scenario())
+
+
+def test_up_down_navigates_input_history_and_restores_draft():
+    async def scenario():
+        async def fake_runner(input_text: str) -> ChatResult:
+            return ChatResult(f"answer: {input_text}", "fake", "fake-model")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            for text in ("first", "second", "third"):
+                prompt.load_text(text)
+                await pilot.press("enter")
+                await app.workers.wait_for_complete()
+
+            prompt.load_text("未发送草稿")
+            await pilot.press("up")
+            assert prompt.text == "third"
+            assert prompt.cursor_location == prompt.document.end
+
+            await pilot.press("up")
+            assert prompt.text == "second"
+            await pilot.press("up")
+            assert prompt.text == "first"
+            await pilot.press("up")
+            assert prompt.text == "first"
+
+            await pilot.press("down")
+            assert prompt.text == "second"
+            await pilot.press("down")
+            assert prompt.text == "third"
+            await pilot.press("down")
+            assert prompt.text == "未发送草稿"
+            assert prompt.cursor_location == prompt.document.end
+            await pilot.press("down")
+            assert prompt.text == "未发送草稿"
+
+    asyncio.run(scenario())
+
+
+def test_empty_input_history_keeps_current_draft():
+    async def scenario():
+        async def fake_runner(input_text: str) -> ChatResult:
+            raise AssertionError("runner should not be called")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("当前草稿")
+
+            await pilot.press("up")
+            await pilot.press("down")
+
+            assert prompt.text == "当前草稿"
+            assert app._history_index is None
+
+    asyncio.run(scenario())
+
+
+def test_input_history_restores_only_user_messages_with_original_text(tmp_path):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        store.save(
+            (
+                ChatMessage(ChatRole.USER, "中文\n多行"),
+                ChatMessage(ChatRole.ASSISTANT, "不应进入输入历史"),
+                ChatMessage(ChatRole.USER, "重复输入"),
+                ChatMessage(ChatRole.ASSISTANT, "answer 2"),
+                ChatMessage(ChatRole.USER, "重复输入"),
+                ChatMessage(ChatRole.ASSISTANT, "answer 3"),
+            )
+        )
+        app = ChatTuiApp(
+            chat_session=ChatSession.load(store),
+            runtime_info=ALIYUN_INFO,
+        )
+
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            await pilot.press("up")
+            assert prompt.text == "重复输入"
+            await pilot.press("up")
+            assert prompt.text == "重复输入"
+            await pilot.press("up")
+            assert prompt.text == "中文\n多行"
+            assert prompt.cursor_location == prompt.document.end
+
+    asyncio.run(scenario())
+
+
+def test_failed_input_remains_in_current_process_history():
+    async def scenario():
+        async def fake_runner(input_text: str) -> ChatResult:
+            raise ChatRuntimeError(
+                ChatErrorCode.TIMEOUT,
+                "Upstream request timed out",
+            )
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("失败输入")
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+
+            await pilot.press("up")
+            assert prompt.text == "失败输入"
+
+    asyncio.run(scenario())
+
+
+def test_clear_failure_preserves_input_history(tmp_path, monkeypatch):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        store.save(
+            (
+                ChatMessage(ChatRole.USER, "保留输入"),
+                ChatMessage(ChatRole.ASSISTANT, "answer"),
+            )
+        )
+        session = ChatSession.load(store)
+
+        def fail_clear():
+            raise SessionStoreError("Unable to clear saved conversation")
+
+        monkeypatch.setattr(store, "clear", fail_clear)
+        app = ChatTuiApp(chat_session=session, runtime_info=ALIYUN_INFO)
+
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("/clear")
+            await pilot.press("enter")
+
+            prompt.load_text("")
+            await pilot.press("up")
+            assert prompt.text == "保留输入"
+            assert "Unable to clear saved conversation" in transcript_text(app)
 
     asyncio.run(scenario())
 
@@ -345,6 +650,7 @@ def test_blank_input_is_rejected_without_calling_runner():
 
             assert app.run_status is RunStatus.READY
             assert "Input must not be blank" in transcript_text(app)
+            assert app._input_history == []
 
     asyncio.run(scenario())
 
@@ -392,6 +698,10 @@ def test_clear_command_clears_transcript_without_calling_runner():
             assert transcript_text(app) == ""
             assert received_inputs == ["hello"]
             assert app.run_status is RunStatus.READY
+            assert app._input_history == []
+            prompt.load_text("clear 后草稿")
+            await pilot.press("up")
+            assert prompt.text == "clear 后草稿"
 
     asyncio.run(scenario())
 
@@ -499,6 +809,12 @@ def test_thinking_state_blocks_duplicate_submission():
             release.set()
             await app.workers.wait_for_complete()
 
+            prompt.load_text("")
+            await pilot.press("up")
+            assert prompt.text == "first"
+            await pilot.press("down")
+            assert prompt.text == ""
+
     asyncio.run(scenario())
 
 
@@ -563,7 +879,7 @@ def test_double_escape_cancels_active_request_then_exits():
         started = asyncio.Event()
         cancelled = asyncio.Event()
         exit_called = False
-        clock_values = iter([10.0, 10.2, 10.3])
+        clock = ManualClock(10.0)
 
         async def fake_runner(input_text: str) -> ChatResult:
             started.set()
@@ -576,7 +892,7 @@ def test_double_escape_cancels_active_request_then_exits():
         app = ChatTuiApp(
             chat_runner=fake_runner,
             runtime_info=ALIYUN_INFO,
-            clock=lambda: next(clock_values),
+            clock=clock,
         )
         original_exit = app.exit
 
@@ -593,12 +909,20 @@ def test_double_escape_cancels_active_request_then_exits():
             await pilot.press("enter")
             await asyncio.wait_for(started.wait(), timeout=1)
 
+            clock.advance(0.2)
             await pilot.press("escape")
             await asyncio.wait_for(cancelled.wait(), timeout=1)
             assert not exit_called
+            assert str(app.query_one("#activity-bar", Static).content) == ""
+            assert app._activity_timer is None
             assert "System\n再次按 Esc 退出" in transcript_text(app)
             assert "耗时：" not in transcript_text(app)
 
+            prompt.load_text("")
+            await pilot.press("up")
+            assert prompt.text == "hello"
+
+            clock.advance(0.1)
             await pilot.press("escape")
 
         assert exit_called
@@ -630,6 +954,7 @@ def test_quit_command_exits_without_calling_runner():
             await pilot.press("enter")
 
         assert exit_called
+        assert app._input_history == []
 
     asyncio.run(scenario())
 
@@ -734,5 +1059,6 @@ def test_quit_command_cancels_active_request_before_exit():
 
         assert exit_called
         assert cancelled.is_set()
+        assert app._activity_timer is None
 
     asyncio.run(scenario())

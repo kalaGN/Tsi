@@ -4,6 +4,7 @@
 
 ## Documents
 
+- [TUI 输入交互设计](20260810-TUI输入交互-设计.md)：使用请求专属 Timer 实现输入框上方活动提示，并以高优先级 Up/Down 管理输入历史；已完成。
 - [TUI Markdown 渲染设计](20260810-TUIMarkdown渲染-设计.md)：仅在 Textual 展示层将 Assistant 原文构造为 Rich Markdown Renderable；已完成。
 - [工具调用编排设计](20260808-工具调用编排-设计.md)：根目录工具 Registry、Provider Turn、多模型协议续接、有界循环和只读时间工具；已完成。
 - [外部模型请求日志设计](20260808-外部模型请求日志-设计.md)：在共享 HTTP 边界记录完整 `messages/input`、脱敏 Header、状态、耗时和失败分类；已完成。

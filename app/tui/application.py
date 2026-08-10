@@ -8,6 +8,7 @@ from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.reactive import reactive
+from textual.timer import Timer
 from textual.widgets import Footer, RichLog, Static, TextArea
 from textual.worker import Worker, get_current_worker
 
@@ -32,9 +33,36 @@ class ChatTuiApp(App[None]):
 
     TITLE = "FastAPI Agent TUI"
     ESCAPE_CONFIRM_SECONDS = 1.5
+    ACTIVITY_INTERVAL_SECONDS = 0.1
+    SPINNER_FRAMES = (
+        "⠋",
+        "⠙",
+        "⠹",
+        "⠸",
+        "⠼",
+        "⠴",
+        "⠦",
+        "⠧",
+        "⠇",
+        "⠏",
+    )
     BINDINGS = [
         Binding("enter", "submit_prompt", "Send", priority=True),
         Binding("escape", "confirm_exit", "Exit (x2)", priority=True),
+        Binding(
+            "up",
+            "previous_input",
+            "Previous input",
+            show=False,
+            priority=True,
+        ),
+        Binding(
+            "down",
+            "next_input",
+            "Next input",
+            show=False,
+            priority=True,
+        ),
     ]
     CSS = """
     Screen {
@@ -59,6 +87,12 @@ class ChatTuiApp(App[None]):
         height: 7;
         min-height: 4;
         border: solid $accent;
+    }
+
+    #activity-bar {
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
     }
 
     #status-bar {
@@ -108,6 +142,21 @@ class ChatTuiApp(App[None]):
         self._active_worker: Worker[None] | None = None
         self._request_generation = 0
         self._last_escape_at: float | None = None
+        self._activity_timer: Timer | None = None
+        self._activity_started_at: float | None = None
+        self._activity_generation: int | None = None
+        self._spinner_index = 0
+        self._input_history: list[str] = (
+            [
+                message.content
+                for message in chat_session.messages
+                if message.role is ChatRole.USER
+            ]
+            if chat_session is not None
+            else []
+        )
+        self._history_index: int | None = None
+        self._history_draft = ""
 
     def compose(self) -> ComposeResult:
         """声明标题、对话记录、输入框、状态栏和快捷键页脚布局。"""
@@ -119,6 +168,7 @@ class ChatTuiApp(App[None]):
             markup=False,
             auto_scroll=True,
         )
+        yield Static(id="activity-bar", markup=False)
         yield TextArea(
             id="prompt",
             soft_wrap=True,
@@ -205,6 +255,8 @@ class ChatTuiApp(App[None]):
                 self.run_status = RunStatus.ERROR
                 return
             self._history_error = None
+            self._input_history.clear()
+            self._reset_history_navigation()
             prompt_widget.load_text("")
             self.query_one("#transcript", RichLog).clear()
             self.run_status = RunStatus.READY
@@ -220,6 +272,10 @@ class ChatTuiApp(App[None]):
             return
 
         started_at = self.clock()
+        # 新请求重新开始双 Esc 手势，避免上一次取消被误判为本次的退出确认。
+        self._last_escape_at = None
+        self._input_history.append(input_text)
+        self._reset_history_navigation()
         prompt_widget.load_text("")
         self._write_message("You", input_text)
         self.run_status = RunStatus.THINKING
@@ -232,6 +288,7 @@ class ChatTuiApp(App[None]):
             exclusive=True,
             exit_on_error=False,
         )
+        self._start_activity(started_at, generation)
 
     async def _run_prompt(
         self,
@@ -265,8 +322,103 @@ class ChatTuiApp(App[None]):
             self.run_status = RunStatus.ERROR
         finally:
             if generation == self._request_generation:
+                self._stop_activity(generation)
                 self._active_worker = None
                 self.query_one("#prompt", TextArea).focus()
+
+    def _start_activity(self, started_at: float, generation: int) -> None:
+        """为当前请求创建实时思考提示和专属周期 Timer。"""
+
+        self._stop_activity()
+        self._activity_started_at = started_at
+        self._activity_generation = generation
+        self._spinner_index = 0
+        self._render_activity(0.0)
+        self._activity_timer = self.set_interval(
+            self.ACTIVITY_INTERVAL_SECONDS,
+            lambda: self._refresh_activity(generation),
+            name="request-activity",
+        )
+
+    def action_previous_input(self) -> None:
+        """向更早的已发送输入移动，并在首次浏览时保存当前草稿。"""
+
+        if not self._input_history:
+            return
+        if self._history_index is None:
+            self._history_draft = self.query_one("#prompt", TextArea).text
+            self._history_index = len(self._input_history) - 1
+        else:
+            self._history_index = max(0, self._history_index - 1)
+        self._load_history_input(self._input_history[self._history_index])
+
+    def action_next_input(self) -> None:
+        """向更新的输入移动，并在越过末项时恢复浏览前草稿。"""
+
+        index = self._history_index
+        if index is None:
+            return
+        if index < len(self._input_history) - 1:
+            self._history_index = index + 1
+            self._load_history_input(self._input_history[self._history_index])
+            return
+
+        draft = self._history_draft
+        self._reset_history_navigation()
+        self._load_history_input(draft)
+
+    def _load_history_input(self, input_text: str) -> None:
+        """加载历史原文，并把光标放到多行文档末尾便于继续编辑。"""
+
+        prompt = self.query_one("#prompt", TextArea)
+        prompt.load_text(input_text)
+        prompt.move_cursor(prompt.document.end)
+
+    def _reset_history_navigation(self) -> None:
+        """退出历史浏览并丢弃仅用于恢复的临时草稿。"""
+
+        self._history_index = None
+        self._history_draft = ""
+
+    def _refresh_activity(self, generation: int) -> None:
+        """按单调时钟刷新当前请求的动画帧和已等待时间。"""
+
+        started_at = self._activity_started_at
+        if (
+            started_at is None
+            or generation != self._activity_generation
+            or generation != self._request_generation
+        ):
+            return
+        self._spinner_index = (self._spinner_index + 1) % len(self.SPINNER_FRAMES)
+        elapsed = max(0.0, self.clock() - started_at)
+        self._render_activity(elapsed)
+
+    def _render_activity(self, elapsed: float) -> None:
+        """将固定文案、当前动画帧和耗时写入输入框上方状态栏。"""
+
+        frame = self.SPINNER_FRAMES[self._spinner_index]
+        self.query_one("#activity-bar", Static).update(
+            f"{frame} 思考中 · {elapsed:.1f} 秒 · Esc 取消"
+        )
+
+    def _stop_activity(self, expected_generation: int | None = None) -> None:
+        """停止匹配请求的 Timer，并清空全部活动展示状态。"""
+
+        if (
+            expected_generation is not None
+            and self._activity_generation != expected_generation
+        ):
+            return
+        timer = self._activity_timer
+        if timer is not None:
+            timer.stop()
+        self._activity_timer = None
+        self._activity_started_at = None
+        self._activity_generation = None
+        self._spinner_index = 0
+        if self.is_mounted:
+            self.query_one("#activity-bar", Static).update("")
 
     def _write_elapsed_time(self, started_at: float) -> None:
         """在请求结果后显示不受系统时间调整影响的单轮耗时。"""
@@ -295,10 +447,13 @@ class ChatTuiApp(App[None]):
 
         worker = self._active_worker
         if worker is None:
+            self._stop_activity()
             return
 
+        generation = self._request_generation
         self._request_generation += 1
         self._active_worker = None
+        self._stop_activity(generation)
         worker.cancel()
         self.run_status = RunStatus.READY
         if show_message:

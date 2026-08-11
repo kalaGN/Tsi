@@ -4,6 +4,7 @@
 
 ## Documents
 
+- [TUI 消息复制任务](20260811-TUI消息复制-任务.md)：测试先行实现 SelectableRichLog，接入最终消息和临时流并完成回归；已完成。
 - [模型流式输出任务](20260811-模型流式输出-任务.md)：测试先行实现有界 SSE、两家 Provider 流解析、Runtime 回调、Session 原子提交和 TUI 临时输出；已完成。
 - [TUI 输入交互任务](20260810-TUI输入交互-任务.md)：测试优先实现活动 Timer、上下键历史、草稿恢复和文档同步；已完成。
 - [TUI Markdown 渲染任务](20260810-TUIMarkdown渲染-任务.md)：测试优先实现 Assistant Markdown 展示、纯文本边界和文档同步；已完成。

@@ -15,6 +15,7 @@
 - 根目录只读工具契约、Registry 和内置工具：`tools/`。
 - 多模型配置、协议适配和 Provider 错误：`app/services/llm/`。
 - 终端界面与启动入口：`app/tui/`。
+- TUI 可选择消息组件：`app/tui/widgets.py`。
 - 测试：`tests/`。
 - 真实依赖方向：`HTTP/TUI → runtime → tools + services.llm → Aliyun/DeepSeek`；HTTP 入口为 `main → application → router`。
 - 详细事实：[架构知识](docs/knowledge/architecture.md)。

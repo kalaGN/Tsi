@@ -4,6 +4,7 @@
 
 ## Documents
 
+- [TUI 消息复制设计](20260811-TUI消息复制-设计.md)：以项目内 SelectableRichLog 补齐选择坐标、高亮和可见文本提取，复用 Textual 内置复制动作；已完成。
 - [模型流式输出设计](20260811-模型流式输出-设计.md)：定义共享 SSE 边界、两家 Provider 解析、Runtime 回调、工具步骤撤销和 TUI 临时输出；已完成。
 - [TUI 输入交互设计](20260810-TUI输入交互-设计.md)：使用请求专属 Timer 实现输入框上方活动提示，并以高优先级 Up/Down 管理输入历史；已完成。
 - [TUI Markdown 渲染设计](20260810-TUIMarkdown渲染-设计.md)：仅在 Textual 展示层将 Assistant 原文构造为 Rich Markdown Renderable；已完成。

@@ -1,6 +1,8 @@
 import asyncio
 from pathlib import Path
 
+from textual.geometry import Offset
+from textual.selection import SELECT_ALL, Selection
 from textual.widgets import RichLog, Static, TextArea
 
 from app.runtime.chat import (
@@ -16,6 +18,7 @@ from app.tui import __main__ as tui_main
 from app.tui import application as tui_application
 from app.tui.application import ChatTuiApp
 from app.tui.state import RunStatus
+from app.tui.widgets import SelectableRichLog
 
 
 ALIYUN_INFO = ChatRuntimeInfo("aliyun", "qwen3-max", True)
@@ -40,6 +43,164 @@ def transcript_text(app: ChatTuiApp) -> str:
     return "\n".join(
         line.text for line in app.query_one("#transcript", RichLog).lines
     )
+
+
+def test_tui_uses_selectable_logs_for_transcript_and_stream_output():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during startup")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test():
+            assert isinstance(
+                app.query_one("#transcript", RichLog),
+                SelectableRichLog,
+            )
+            assert isinstance(
+                app.query_one("#stream-output", RichLog),
+                SelectableRichLog,
+            )
+
+    asyncio.run(scenario())
+
+
+def test_cmd_or_ctrl_a_selects_all_prompt_text():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during selection")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("第一行\n第二行")
+            prompt.move_cursor((0, 1))
+            prompt.focus()
+            await pilot.pause()
+
+            for shortcut in ("super+a", "ctrl+a"):
+                prompt.move_cursor((0, 1))
+                await pilot.press(shortcut)
+                assert prompt.selected_text == "第一行\n第二行"
+
+    asyncio.run(scenario())
+
+
+def test_selectable_log_extracts_multiline_chinese_selection():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during startup")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            transcript = app.query_one("#transcript", SelectableRichLog)
+            transcript.clear().write("你好\n世界")
+            await pilot.pause()
+
+            selection = Selection.from_offsets(Offset(1, 0), Offset(1, 1))
+
+            assert transcript.get_selection(selection) == ("好\n世", "\n")
+
+    asyncio.run(scenario())
+
+
+def test_selectable_log_supports_mouse_drag_and_ctrl_c_copy():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during startup")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            transcript = app.query_one("#transcript", SelectableRichLog)
+            transcript.clear().write("中文复制")
+            await pilot.pause()
+
+            assert await pilot.mouse_down(transcript, offset=(0, 0)) is True
+            assert await pilot.mouse_up(transcript, offset=(4, 0)) is True
+            await pilot.pause()
+            await pilot.press("ctrl+c")
+
+            assert app.screen.get_selected_text() == "中文"
+            assert app.clipboard == "中文"
+            app.copy_to_clipboard("")
+            await pilot.press("super+c")
+            assert app.clipboard == "中文"
+
+    asyncio.run(scenario())
+
+
+def test_selectable_log_copies_rendered_markdown_text_with_builtin_action():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during startup")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            transcript = app.query_one("#transcript", SelectableRichLog)
+            transcript.clear()
+            app._write_message("Assistant", "## 中文标题\n\n**重点内容**")
+            await pilot.pause()
+
+            app.screen.selections = {transcript: SELECT_ALL}
+            await pilot.pause()
+            app.screen.action_copy_text()
+
+            assert "Assistant" in app.clipboard
+            assert "中文标题" in app.clipboard
+            assert "重点内容" in app.clipboard
+            assert "##" not in app.clipboard
+            assert "**" not in app.clipboard
+
+    asyncio.run(scenario())
+
+
+def test_selectable_log_renders_visible_selection_highlight():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during startup")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            transcript = app.query_one("#transcript", SelectableRichLog)
+            transcript.clear().write("中文")
+            await pilot.pause()
+            original_styles = [segment.style for segment in transcript.render_line(0)]
+
+            app.screen.selections = {
+                transcript: Selection.from_offsets(Offset(0, 0), Offset(1, 0))
+            }
+            await pilot.pause()
+            selected_styles = [segment.style for segment in transcript.render_line(0)]
+
+            assert selected_styles != original_styles
+            assert transcript.get_selection(app.screen.selections[transcript]) == (
+                "中",
+                "\n",
+            )
+
+    asyncio.run(scenario())
+
+
+def test_cleared_selectable_log_cannot_copy_removed_message():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during startup")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            transcript = app.query_one("#transcript", SelectableRichLog)
+            transcript.clear().write("已经清除的消息")
+            await pilot.pause()
+            app.screen.selections = {transcript: SELECT_ALL}
+            await pilot.pause()
+
+            transcript.clear()
+            app.copy_to_clipboard("原剪贴板内容")
+            app.screen.action_copy_text()
+
+            assert app.clipboard == ""
+            assert "已经清除的消息" not in app.clipboard
+
+    asyncio.run(scenario())
 
 
 def test_tui_initial_state_shows_provider_model_and_key_status():
@@ -189,6 +350,11 @@ def test_tui_streams_plain_text_then_writes_final_markdown_once():
             assert "**重要**" in "\n".join(
                 line.text for line in stream_output.lines
             )
+            assert isinstance(stream_output, SelectableRichLog)
+            app.screen.selections = {stream_output: SELECT_ALL}
+            await pilot.pause()
+            app.screen.action_copy_text()
+            assert app.clipboard == "**重要**"
             assert "重要" not in transcript_text(app)
 
             release.set()
@@ -1124,6 +1290,66 @@ def test_unexpected_error_is_hidden_and_app_remains_available():
     asyncio.run(scenario())
 
 
+def test_escape_clears_prompt_before_starting_exit_confirmation():
+    async def scenario():
+        clock = ManualClock(10.0)
+
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called while clearing input")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            clock=clock,
+        )
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("待清空的中文\n第二行")
+
+            await pilot.press("escape")
+
+            assert prompt.text == ""
+            assert app._last_escape_at is None
+            assert "再次按 Esc 退出" not in transcript_text(app)
+            assert app.is_running is True
+
+            await pilot.press("escape")
+            assert "再次按 Esc 退出" in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
+def test_escape_clears_draft_before_cancelling_active_request():
+    async def scenario():
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            started.set()
+            await release.wait()
+            return ChatResult("done", "fake", "fake-model")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("正在发送")
+            await pilot.press("enter")
+            await asyncio.wait_for(started.wait(), timeout=1)
+            prompt.load_text("下一条草稿")
+
+            await pilot.press("escape")
+
+            assert prompt.text == ""
+            assert app._active_worker is not None
+            assert app.run_status is RunStatus.THINKING
+            assert app._last_escape_at is None
+
+            release.set()
+            await app.workers.wait_for_complete()
+
+    asyncio.run(scenario())
+
+
 def test_double_escape_cancels_active_request_then_exits():
     async def scenario():
         started = asyncio.Event()
@@ -1177,6 +1403,13 @@ def test_double_escape_cancels_active_request_then_exits():
             await pilot.press("up")
             assert prompt.text == "hello"
 
+            clock.advance(0.1)
+            await pilot.press("escape")
+            assert prompt.text == ""
+            assert app._last_escape_at is None
+            assert not exit_called
+
+            await pilot.press("escape")
             clock.advance(0.1)
             await pilot.press("escape")
 

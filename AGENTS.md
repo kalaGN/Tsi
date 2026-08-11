@@ -11,7 +11,7 @@
 - 启动入口：`main.py`，仅导出 `app.application.app`。
 - 应用组装：`app/application.py`。
 - HTTP 路由与请求校验：`app/routers/`。
-- HTTP/TUI 共享模型调用与中立错误，TUI Session 及存储也位于：`app/runtime/`。
+- HTTP/TUI 共享模型调用与中立错误，TUI Session、系统提示词读取及存储也位于：`app/runtime/`。
 - 根目录只读工具契约、Registry 和内置工具：`tools/`。
 - 多模型配置、协议适配和 Provider 错误：`app/services/llm/`。
 - 终端界面与启动入口：`app/tui/`。

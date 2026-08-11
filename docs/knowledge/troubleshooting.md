@@ -1,5 +1,17 @@
 # Troubleshooting
 
+## 阿里云返回 `Upstream service returned an invalid response`
+
+先查看 `logs/model-calls.log` 中对应请求是否已获得 HTTP 响应。阿里云 Responses API 的真实 SSE 可能发送空字符串 `response.output_text.delta`；项目会将其作为无内容事件忽略，后续有效文本和 `response.completed` 仍正常处理。非字符串 Delta、缺少完成事件、文本不一致或非法工具调用结构仍会返回该中立错误。
+
+如果升级到包含此兼容修复的版本后仍报错，应按 `request_id` 检查响应状态和 `Content-Type`，不要把上游响应正文、系统提示词或密钥复制到公开日志中。
+
+## 状态栏显示 `AGENTS: error`
+
+TUI 只在启动时读取命令执行目录直属的 `AGENTS.md`。确认它是可读取的 UTF-8 普通文件、正文不超过 32 KiB，且不是同名目录；错误期间普通输入不会调用模型，但 `/clear` 和 `/quit` 仍可使用。修复文件后重启 TUI，状态栏应显示 `AGENTS: loaded`；删除文件或保留空白文件后重启则显示 `AGENTS: none`。错误信息不会回显文件路径或正文。
+
+`AGENTS.md` 会作为 system 消息发送给外部模型，并进入现有完整请求日志。不要在其中保存密钥、Token 或隐私数据。
+
 ## 消息可以选中但没有进入系统剪贴板
 
 先在最终消息或流式临时回答中按住鼠标左键拖选，再按 macOS 的 `Cmd+C` 或其他平台的 `Ctrl+C`。项目使用 Textual 内置 OSC 52 剪贴板通道，不调用 `pbcopy`、`xclip` 等系统命令；部分终端会默认禁用 OSC 52，需在终端设置中允许应用访问剪贴板。Textual 8.2.8 明确提示 macOS 自带 Terminal 可能不支持该通道，此时建议使用 iTerm2、Ghostty、Kitty 或 WezTerm，或使用终端自身带修饰键的原生选择复制能力。

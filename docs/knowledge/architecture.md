@@ -22,6 +22,7 @@
 - `tools/contracts.py`：Provider 中立的 ToolDefinition、ToolCall、ToolResult 和 Tool 协议。
 - `tools/registry.py`：显式白名单注册、参数解析、串行执行、安全错误和载荷边界。
 - `tools/builtin.py`：只读 `get_current_time(timezone)` 实现。
+- `app/runtime/system_prompt.py`：从 TUI 启动目录有界读取可选 `AGENTS.md` 系统提示词。
 - `app/tui/__main__.py`：加载根目录 `.env` 并启动 Textual。
 - `app/tui/application.py`：终端输入与历史、用户消息卡片、临时纯文本流、最终 Assistant Markdown、请求活动 Timer、状态、耗时和取消。
 - `app/tui/widgets.py`：为 RichLog 补齐鼠标选择坐标、选择高亮和可见文本复制，并为输入框补充 `Cmd+A` / `Ctrl+A` 全选。
@@ -93,10 +94,11 @@ DeepSeek 必须收到合法终止原因和 `[DONE]`；阿里云必须收到成�
 ```text
 python -m app.tui
   -> load .env without overriding Shell variables
+  -> read cwd/AGENTS.md once as an optional bounded system prompt
   -> Runtime resolves Provider, model and safe key status
   -> load data/chat-session.json and restore complete turns
   -> Textual Worker calls ChatSession.send
-  -> Runtime sends committed history plus current user message and runs tool loop
+  -> Runtime sends optional system + committed history + current user and runs tool loop
   -> Provider text Delta crosses the neutral callback boundary
   -> request-scoped 100 ms Timer batches temporary plain-text output, spinner and elapsed time
   -> tool step reset removes text that is not the final answer
@@ -105,7 +107,7 @@ python -m app.tui
   -> TUI stops the Timer, clears activity and records final monotonic elapsed time
 ```
 
-TUI 不读取 Provider 专属密钥变量，不解析 Provider JSON，也不逐次确认只读工具；状态信息和实际调用共用工厂配置规则。工具轨迹只存在于当前 Turn，工具步骤触发 reset 后其临时文本被清除，Session 仍只提交最终 user/assistant 消息。生成中的文本仅在最高 8 行临时 `SelectableRichLog` 中按纯文本展示并由 100 ms Timer 合并刷新；成功后临时区隐藏，完整原文构造为 Rich Markdown Renderable。恢复历史和新响应复用同一最终展示路径；用户消息使用 Rich Panel 增加背景和边框但不解析 Markdown，系统和错误仍按纯文本显示，Session 与后续模型请求继续使用未经改写的原文。两个消息区域都通过项目内 RichLog 子类向 Textual 提供字符坐标、选区高亮和渲染后可见文本，鼠标拖选后由 Screen 内置 `Cmd+C` / `Ctrl+C` 动作复制，不读取隐藏 Session 或 Markdown 原文。请求代次会阻止取消后的陈旧 Delta 写回。HTTP `/chat` 不注册展示回调、不加载或修改 TUI 会话文件，仍在 Runtime 汇总完成后返回 JSON。
+TUI 不读取 Provider 专属密钥变量，不解析 Provider JSON，也不逐次确认只读工具；状态信息和实际调用共用工厂配置规则。启动入口只读取 `Path.cwd()/AGENTS.md` 一次，要求 UTF-8 普通文件且不超过 32 KiB；有效正文作为请求局部的唯一首条 system 消息，文件缺失/空白则省略，非法文件在 TUI 内形成阻断错误。系统提示词不进入 transcript 或 Session，`/clear` 只清 user/assistant 历史；HTTP `/chat` 不读取宿主机规则。工具轨迹只存在于当前 Turn，工具步骤触发 reset 后其临时文本被清除，Session 仍只提交最终 user/assistant 消息。生成中的文本仅在最高 8 行临时 `SelectableRichLog` 中按纯文本展示并由 100 ms Timer 合并刷新；成功后临时区隐藏，完整原文构造为 Rich Markdown Renderable。恢复历史和新响应复用同一最终展示路径；用户消息使用 Rich Panel 增加背景和边框但不解析 Markdown，系统和错误仍按纯文本显示，Session 与后续模型请求继续使用未经改写的原文。两个消息区域都通过项目内 RichLog 子类向 Textual 提供字符坐标、选区高亮和渲染后可见文本，鼠标拖选后由 Screen 内置 `Cmd+C` / `Ctrl+C` 动作复制，不读取隐藏 Session 或 Markdown 原文。请求代次会阻止取消后的陈旧 Delta 写回。HTTP `/chat` 不注册展示回调、不加载或修改 TUI 会话文件，仍在 Runtime 汇总完成后返回 JSON。
 
 输入历史是 `ChatTuiApp` 内存状态：启动时从 Session 的 user 消息初始化，当前进程每次真正启动的请求立即追加，因此失败或取消输入也可临时召回；只有完整成功轮次由既有 Session 规则跨重启保存。高优先级 Up/Down Binding 负责不循环浏览和草稿恢复，不修改 Session schema。
 
@@ -134,6 +136,7 @@ TUI 不读取 Provider 专属密钥变量，不解析 Provider JSON，也不逐�
 - 模型日志为单行 JSON；Runtime、所有模型步骤和工具事件共用同一 request ID，工具事件另用上游 call ID 关联。
 - Runtime 生成 request ID 并显式经 Provider 传给共享 HTTP 层，不使用 ContextVar 或全局当前 ID。
 - 输入、输出和完整请求体以明文进入 stderr 和本地文件，多轮历史在每次调用时重复落盘；仍不记录环境 API Key、真实 `Authorization`、Provider 原始响应体、Cookie 或异常原文。
+- TUI 系统提示词随完整 Provider 请求体明文进入模型日志；状态栏和 Runtime 摘要日志不回显正文。
 - HTTP 边界脱敏 Header 由日志层用固定值重建（`Authorization` 写为 `Bearer [REDACTED]`），从数据流上阻止密钥进入 Logger。
 - HTTP 耗时用 `time.monotonic()` 计算并保留两位毫秒；超时/连接失败只记录有限分类和耗时，不记录异常类名或堆栈。
 - 日志双写 stderr 和 UTF-8 `logs/model-calls.log`，单文件 10 MiB，保留 5 个备份；文件不可用时降级为 stderr。
@@ -141,6 +144,7 @@ TUI 不读取 Provider 专属密钥变量，不解析 Provider JSON，也不逐�
 - TUI 每个活动请求最多创建一个 100 ms Timer，空闲时没有周期任务；Timer 回调同样校验捕获的请求代次。
 - TUI 上下键固定用于输入历史，历史不去重、不循环且没有独立持久化文件；`/clear` 同步清空。
 - TUI 使用唯一 `data/chat-session.json` 保存完整轮次；启动恢复，`/clear` 删除，损坏历史不自动覆盖。
+- TUI 只在启动时读取当前目录直属 `AGENTS.md`，不递归、不热重载；system 消息与 Session schema 隔离。
 - TUI 只对 Assistant 原文做 Rich Markdown 展示，不执行代码、加载远程内容或改变 Session/HTTP 文本契约。
 - TUI 临时流只展示当前请求的纯文本；成功、错误、取消、工具 reset 和退出都会清理，部分文本不持久化。
 - TUI transcript 与临时流支持选择和复制当前可见文本；复制通道使用 Textual 内置剪贴板与终端 OSC 52，不调用系统命令。

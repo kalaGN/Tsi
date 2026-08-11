@@ -370,7 +370,10 @@ def test_aliyun_turn_appends_each_function_call_next_to_its_output(
 
     install_transport(monkeypatch, handler)
     turn = AliyunResponsesProvider(FAKE_API_KEY).create_turn(
-        user_messages(),
+        (
+            ChatMessage(ChatRole.SYSTEM, "project rules"),
+            ChatMessage(ChatRole.USER, "hello"),
+        ),
         (TIME_TOOL,),
         request_id=REQUEST_ID,
     )
@@ -387,6 +390,12 @@ def test_aliyun_turn_appends_each_function_call_next_to_its_output(
 
     assert [call.call_id for call in first_step.tool_calls] == ["call-1", "call-2"]
     assert final_step.output_text == "done"
+    for payload in captured_payloads:
+        assert payload["input"][0] == {
+            "role": "system",
+            "content": "project rules",
+        }
+        assert sum(item.get("role") == "system" for item in payload["input"]) == 1
     assert captured_payloads[1]["input"][-4:] == [
         {
             "type": "function_call",
@@ -422,6 +431,8 @@ def test_aliyun_turn_appends_each_function_call_next_to_its_output(
 def test_aliyun_streams_text_deltas_and_validates_completed_response(monkeypatch):
     events = (
         {"type": "response.output_text.delta", "delta": "你"},
+        # 阿里云真实流可能在有效文本后发送空 delta；它不应中断整轮响应。
+        {"type": "response.output_text.delta", "delta": ""},
         {"type": "response.output_text.delta", "delta": "好"},
         {"type": "response.output_text.done", "text": "你好"},
         {
@@ -455,6 +466,27 @@ def test_aliyun_streams_text_deltas_and_validates_completed_response(monkeypatch
     assert deltas == ["你", "好"]
     assert step.output_text == "你好"
     assert step.tool_calls == ()
+
+
+def test_aliyun_stream_rejects_non_string_text_delta(monkeypatch):
+    body = b'data:{"type":"response.output_text.delta","delta":null}\n\n'
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream((body,)),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+    turn = AliyunResponsesProvider(FAKE_API_KEY).create_turn(
+        user_messages(),
+        (),
+        request_id=REQUEST_ID,
+    )
+
+    with pytest.raises(ProviderInvalidResponseError):
+        asyncio.run(turn.next())
 
 
 def test_aliyun_stream_validates_tool_argument_deltas(monkeypatch):
@@ -636,7 +668,10 @@ def test_deepseek_turn_continues_with_assistant_and_ordered_tool_results(
 
     install_transport(monkeypatch, handler)
     turn = DeepSeekChatProvider(FAKE_API_KEY).create_turn(
-        user_messages(),
+        (
+            ChatMessage(ChatRole.SYSTEM, "project rules"),
+            ChatMessage(ChatRole.USER, "hello"),
+        ),
         (TIME_TOOL,),
         request_id=REQUEST_ID,
     )
@@ -654,6 +689,14 @@ def test_deepseek_turn_continues_with_assistant_and_ordered_tool_results(
     assert [call.call_id for call in first_step.tool_calls] == ["call-1", "call-2"]
     assert first_step.output_text == "checking"
     assert final_step.output_text == "done"
+    for payload in captured_payloads:
+        assert payload["messages"][0] == {
+            "role": "system",
+            "content": "project rules",
+        }
+        assert sum(
+            item.get("role") == "system" for item in payload["messages"]
+        ) == 1
     continued_messages = captured_payloads[1]["messages"]
     assert continued_messages[-3] == {
         "role": "assistant",
@@ -950,11 +993,68 @@ def test_provider_sends_ordered_multi_turn_messages(
 
 
 @pytest.mark.parametrize(
+    ("provider", "expected_field"),
+    [
+        (AliyunResponsesProvider(FAKE_API_KEY, "qwen3-max"), "input"),
+        (
+            DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash"),
+            "messages",
+        ),
+    ],
+)
+def test_provider_sends_single_system_message_before_conversation(
+    monkeypatch,
+    provider,
+    expected_field,
+):
+    history = (
+        ChatMessage(ChatRole.SYSTEM, "项目规则"),
+        ChatMessage(ChatRole.USER, "first"),
+        ChatMessage(ChatRole.ASSISTANT, "answer"),
+        ChatMessage(ChatRole.USER, "second"),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payload = json.loads(request.content)
+        assert payload[expected_field] == [
+            {"role": "system", "content": "项目规则"},
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "answer"},
+            {"role": "user", "content": "second"},
+        ]
+        if provider.name == "aliyun":
+            return httpx.Response(200, json={"output_text": "ok"})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}}]},
+        )
+
+    install_transport(monkeypatch, handler)
+
+    assert asyncio.run(run_provider_once(provider, history)).output_text == "ok"
+
+
+@pytest.mark.parametrize(
     "messages",
     [
         (),
         (ChatMessage(ChatRole.USER, ""),),
         (ChatMessage(ChatRole.ASSISTANT, "orphan"),),
+        (ChatMessage(ChatRole.SYSTEM, "rules"),),
+        (
+            ChatMessage(ChatRole.SYSTEM, ""),
+            ChatMessage(ChatRole.USER, "question"),
+        ),
+        (
+            ChatMessage(ChatRole.SYSTEM, "first"),
+            ChatMessage(ChatRole.SYSTEM, "second"),
+            ChatMessage(ChatRole.USER, "question"),
+        ),
+        (
+            ChatMessage(ChatRole.USER, "question"),
+            ChatMessage(ChatRole.SYSTEM, "late rules"),
+            ChatMessage(ChatRole.USER, "second"),
+        ),
         (
             ChatMessage(ChatRole.USER, "first"),
             ChatMessage(ChatRole.USER, "second"),
@@ -1495,6 +1595,46 @@ def test_post_json_log_events_redact_authorization_and_keep_payload(
     log_text = json.dumps(captured_model_events(), ensure_ascii=False)
     assert FAKE_API_KEY not in log_text
     assert "Bearer [REDACTED]" in log_text
+
+
+@pytest.mark.parametrize(
+    ("provider", "request_field"),
+    [
+        (AliyunResponsesProvider(FAKE_API_KEY, "qwen3-max"), "input"),
+        (
+            DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash"),
+            "messages",
+        ),
+    ],
+)
+def test_system_prompt_is_recorded_in_complete_upstream_request_body(
+    monkeypatch,
+    captured_model_events,
+    provider,
+    request_field,
+):
+    def handler(request: httpx.Request) -> httpx.Response:
+        if provider.name == "aliyun":
+            return httpx.Response(200, json={"output_text": "ok"})
+        return httpx.Response(200, json=_deepseek_ok_body())
+
+    install_transport(monkeypatch, handler)
+    messages = (
+        ChatMessage(ChatRole.SYSTEM, "logged project rules"),
+        ChatMessage(ChatRole.USER, "question"),
+    )
+
+    asyncio.run(run_provider_once(provider, messages))
+
+    request_event = next(
+        event
+        for event in captured_model_events()
+        if event["event"] == "llm_http_request"
+    )
+    assert request_event["request_body"][request_field][0] == {
+        "role": "system",
+        "content": "logged project rules",
+    }
 
 
 def test_deepseek_logged_request_body_equals_actual_payload_for_single_and_multi_turn(

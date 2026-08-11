@@ -26,10 +26,16 @@ class ChatSession:
         store: SessionStore,
         provider: LlmProvider | None = None,
         messages: tuple[ChatMessage, ...] = (),
+        system_prompt: str | None = None,
     ) -> None:
+        if system_prompt is not None and (
+            not isinstance(system_prompt, str) or not system_prompt.strip()
+        ):
+            raise ValueError("system_prompt must be nonblank text")
         self._store = store
         self._provider = provider
         self._messages = messages
+        self._system_prompt = system_prompt
         self._send_lock = asyncio.Lock()
 
     @classmethod
@@ -37,16 +43,28 @@ class ChatSession:
         cls,
         store: SessionStore,
         provider: LlmProvider | None = None,
+        system_prompt: str | None = None,
     ) -> "ChatSession":
         try:
             messages = store.load()
         except SessionStoreError as exc:
             raise _storage_error(exc) from exc
-        return cls(store=store, provider=provider, messages=messages)
+        return cls(
+            store=store,
+            provider=provider,
+            messages=messages,
+            system_prompt=system_prompt,
+        )
 
     @property
     def messages(self) -> tuple[ChatMessage, ...]:
         return self._messages
+
+    @property
+    def system_prompt_loaded(self) -> bool:
+        """只暴露加载状态，避免 TUI 或日志意外回显系统提示词。"""
+
+        return self._system_prompt is not None
 
     async def send(
         self,
@@ -69,6 +87,7 @@ class ChatSession:
             result = await run_chat_messages(
                 candidate_request,
                 provider=self._provider,
+                system_prompt=self._system_prompt,
                 on_text_delta=on_text_delta,
                 on_text_reset=on_text_reset,
             )

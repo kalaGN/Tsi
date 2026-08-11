@@ -223,6 +223,37 @@ def test_multi_turn_runtime_logs_only_current_user_input(monkeypatch):
     assert "first" not in repr(captured_requests)
 
 
+def test_runtime_prepends_system_prompt_without_changing_current_input_log(
+    monkeypatch,
+):
+    captured_requests = []
+    provider = FakeProvider(result=ModelStep(200, "answer", ()))
+    monkeypatch.setattr(chat, "new_request_id", lambda: "f" * 32)
+    monkeypatch.setattr(
+        chat,
+        "log_model_request",
+        lambda **fields: captured_requests.append(fields),
+    )
+    monkeypatch.setattr(chat, "log_model_response", lambda **fields: None)
+
+    asyncio.run(
+        run_chat_messages(
+            (ChatMessage(ChatRole.USER, "question"),),
+            provider=provider,
+            system_prompt="系统规则",
+        )
+    )
+
+    assert provider.received_inputs == [
+        (
+            ChatMessage(ChatRole.SYSTEM, "系统规则"),
+            ChatMessage(ChatRole.USER, "question"),
+        )
+    ]
+    assert captured_requests[0]["input_text"] == "question"
+    assert captured_requests[0]["input_chars"] == len("question")
+
+
 def test_run_chat_rejects_blank_input_without_calling_provider():
     provider = FakeProvider(
         result=ModelStep(200, "should not be returned", ())

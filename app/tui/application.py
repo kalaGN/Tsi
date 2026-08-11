@@ -141,6 +141,8 @@ class ChatTuiApp(App[None]):
         runtime_info: ChatRuntimeInfo | None = None,
         clock: Clock = time.monotonic,
         chat_session: ChatSession | None = None,
+        system_prompt: str | None = None,
+        system_prompt_error: str | None = None,
     ) -> None:
         """初始化运行时信息、可恢复会话以及可注入的测试边界。"""
 
@@ -148,6 +150,7 @@ class ChatTuiApp(App[None]):
         self.clock = clock
         self._configuration_error: str | None = None
         self._history_error: str | None = None
+        self._system_prompt_error = system_prompt_error
         if runtime_info is None:
             try:
                 runtime_info = get_chat_runtime_info()
@@ -159,12 +162,23 @@ class ChatTuiApp(App[None]):
         if chat_session is None and chat_runner is None:
             store = SessionStore()
             try:
-                chat_session = ChatSession.load(store)
+                chat_session = ChatSession.load(
+                    store,
+                    system_prompt=system_prompt,
+                )
             except ChatRuntimeError as exc:
                 # 保留损坏文件，只允许用户通过 /clear 显式删除。
                 self._history_error = exc.user_message
-                chat_session = ChatSession(store)
+                chat_session = ChatSession(
+                    store,
+                    system_prompt=system_prompt,
+                )
         self.chat_session = chat_session
+        self._system_prompt_loaded = (
+            chat_session.system_prompt_loaded
+            if chat_session is not None
+            else bool(system_prompt)
+        )
         self.chat_runner = (
             chat_session.send if chat_runner is None and chat_session else chat_runner
         )
@@ -235,6 +249,9 @@ class ChatTuiApp(App[None]):
             self.run_status = RunStatus.ERROR
             self._write_message("Error", self._history_error)
             self._write_message("System", "Use /clear to reset saved conversation")
+        if self._system_prompt_error is not None:
+            self.run_status = RunStatus.ERROR
+            self._write_message("Error", self._system_prompt_error)
         self._update_status_bar()
 
     def watch_run_status(self) -> None:
@@ -249,10 +266,16 @@ class ChatTuiApp(App[None]):
         key_status = (
             "configured" if self.runtime_info.api_key_configured else "missing"
         )
+        agents_status = (
+            "error"
+            if self._system_prompt_error is not None
+            else "loaded" if self._system_prompt_loaded else "none"
+        )
         self.query_one("#status-bar", Static).update(
             f"{_provider_display_name(self.runtime_info.provider)} | "
             f"{self.runtime_info.model} | "
-            f"Key: {key_status} | {self.run_status.value}"
+            f"Key: {key_status} | AGENTS: {agents_status} | "
+            f"{self.run_status.value}"
         )
 
     def _write_message(self, role: str, content: str) -> None:
@@ -321,12 +344,21 @@ class ChatTuiApp(App[None]):
             self._finish_stream_output()
             prompt_widget.load_text("")
             self.query_one("#transcript", RichLog).clear()
-            self.run_status = RunStatus.READY
+            self.run_status = (
+                RunStatus.ERROR
+                if self._system_prompt_error is not None
+                else RunStatus.READY
+            )
             return
 
         if self._history_error is not None:
             self._write_message("Error", self._history_error)
             self._write_message("System", "Use /clear to reset saved conversation")
+            return
+
+        if self._system_prompt_error is not None:
+            self._write_message("Error", self._system_prompt_error)
+            self.run_status = RunStatus.ERROR
             return
 
         if not input_text.strip():

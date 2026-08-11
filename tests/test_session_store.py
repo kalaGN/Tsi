@@ -90,3 +90,18 @@ def test_session_store_clear_removes_saved_history(tmp_path):
     store.clear()
 
     assert not path.exists()
+
+
+def test_session_store_rejects_system_prompt_as_history(tmp_path):
+    store = SessionStore(tmp_path / "chat-session.json")
+
+    with pytest.raises(SessionStoreError):
+        store.save(
+            (
+                ChatMessage(ChatRole.SYSTEM, "rules"),
+                ChatMessage(ChatRole.USER, "question"),
+                ChatMessage(ChatRole.ASSISTANT, "answer"),
+            )
+        )
+
+    assert not store.path.exists()

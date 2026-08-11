@@ -9,7 +9,13 @@ from app.runtime.chat import (
     run_chat_messages,
 )
 from app.runtime.session_store import SessionStore, SessionStoreError
-from app.services.llm.contracts import ChatMessage, ChatRole, LlmProvider
+from app.services.llm.contracts import (
+    ChatMessage,
+    ChatRole,
+    LlmProvider,
+    TextDeltaHandler,
+    TextResetHandler,
+)
 
 
 class ChatSession:
@@ -42,7 +48,15 @@ class ChatSession:
     def messages(self) -> tuple[ChatMessage, ...]:
         return self._messages
 
-    async def send(self, input_text: str) -> ChatResult:
+    async def send(
+        self,
+        input_text: str,
+        *,
+        on_text_delta: TextDeltaHandler | None = None,
+        on_text_reset: TextResetHandler | None = None,
+    ) -> ChatResult:
+        """流式执行一轮，并只在完整成功后提交磁盘与内存历史。"""
+
         if not isinstance(input_text, str) or not input_text.strip():
             raise ChatRuntimeError(
                 ChatErrorCode.INVALID_INPUT,
@@ -55,6 +69,8 @@ class ChatSession:
             result = await run_chat_messages(
                 candidate_request,
                 provider=self._provider,
+                on_text_delta=on_text_delta,
+                on_text_reset=on_text_reset,
             )
             current_task = asyncio.current_task()
             if current_task is not None and current_task.cancelling():

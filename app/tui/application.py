@@ -2,6 +2,7 @@
 
 import time
 from collections.abc import Awaitable, Callable
+from typing import Protocol
 
 from rich import box
 from rich.markdown import Markdown
@@ -22,11 +23,27 @@ from app.runtime.chat import (
 )
 from app.runtime.session import ChatSession
 from app.runtime.session_store import SessionStore
-from app.services.llm.contracts import ChatRole
+from app.services.llm.contracts import (
+    ChatRole,
+    TextDeltaHandler,
+    TextResetHandler,
+)
 from app.tui.state import RunStatus
 
 
-ChatRunner = Callable[[str], Awaitable[ChatResult]]
+class ChatRunner(Protocol):
+    """TUI 内部可注入的流式对话调用契约。"""
+
+    def __call__(
+        self,
+        input_text: str,
+        *,
+        on_text_delta: TextDeltaHandler | None = None,
+        on_text_reset: TextResetHandler | None = None,
+    ) -> Awaitable[ChatResult]:
+        ...
+
+
 Clock = Callable[[], float]
 
 
@@ -86,6 +103,14 @@ class ChatTuiApp(App[None]):
         height: 1fr;
         padding: 1 2;
         border: solid $primary-background;
+    }
+
+    #stream-output {
+        display: none;
+        height: 8;
+        max-height: 8;
+        padding: 0 2;
+        border: round $primary-background;
     }
 
     #prompt {
@@ -151,6 +176,9 @@ class ChatTuiApp(App[None]):
         self._activity_started_at: float | None = None
         self._activity_generation: int | None = None
         self._spinner_index = 0
+        self._stream_fragments: list[str] = []
+        self._stream_dirty = False
+        self._stream_generation: int | None = None
         self._input_history: list[str] = (
             [
                 message.content
@@ -169,6 +197,12 @@ class ChatTuiApp(App[None]):
         yield Static(self.TITLE, id="title", markup=False)
         yield RichLog(
             id="transcript",
+            wrap=True,
+            markup=False,
+            auto_scroll=True,
+        )
+        yield RichLog(
+            id="stream-output",
             wrap=True,
             markup=False,
             auto_scroll=True,
@@ -283,6 +317,7 @@ class ChatTuiApp(App[None]):
             self._history_error = None
             self._input_history.clear()
             self._reset_history_navigation()
+            self._finish_stream_output()
             prompt_widget.load_text("")
             self.query_one("#transcript", RichLog).clear()
             self.run_status = RunStatus.READY
@@ -307,6 +342,7 @@ class ChatTuiApp(App[None]):
         self.run_status = RunStatus.THINKING
         self._request_generation += 1
         generation = self._request_generation
+        self._begin_stream_output(generation)
         self._active_worker = self.run_worker(
             self._run_prompt(input_text, generation, started_at),
             name="chat-request",
@@ -326,10 +362,19 @@ class ChatTuiApp(App[None]):
 
         worker = get_current_worker()
         try:
-            result = await self.chat_runner(input_text)
+            result = await self.chat_runner(
+                input_text,
+                on_text_delta=lambda delta: self._append_stream_delta(
+                    delta,
+                    generation,
+                ),
+                on_text_reset=lambda: self._reset_stream_step(generation),
+            )
             # 取消会递增代次；即使底层协程晚返回，也不能写回陈旧结果。
             if worker.is_cancelled or generation != self._request_generation:
                 return
+            self._flush_stream_output(generation)
+            self._finish_stream_output(generation)
             self._write_message("Assistant", result.output_text)
             self._write_elapsed_time(started_at)
             self.run_status = RunStatus.READY
@@ -348,6 +393,7 @@ class ChatTuiApp(App[None]):
             self.run_status = RunStatus.ERROR
         finally:
             if generation == self._request_generation:
+                self._finish_stream_output(generation)
                 self._stop_activity(generation)
                 self._active_worker = None
                 self.query_one("#prompt", TextArea).focus()
@@ -419,6 +465,65 @@ class ChatTuiApp(App[None]):
         self._spinner_index = (self._spinner_index + 1) % len(self.SPINNER_FRAMES)
         elapsed = max(0.0, self.clock() - started_at)
         self._render_activity(elapsed)
+        self._flush_stream_output(generation)
+
+    def _begin_stream_output(self, generation: int) -> None:
+        """为新请求初始化独立的临时文本缓冲和请求代次。"""
+
+        self._finish_stream_output()
+        self._stream_generation = generation
+
+    def _append_stream_delta(self, delta: str, generation: int) -> None:
+        """仅为当前请求累计非空文本，等待活动 Timer 合并绘制。"""
+
+        if (
+            not isinstance(delta, str)
+            or not delta
+            or generation != self._stream_generation
+            or generation != self._request_generation
+        ):
+            return
+        self._stream_fragments.append(delta)
+        self._stream_dirty = True
+
+    def _flush_stream_output(self, generation: int) -> None:
+        """把当前步骤完整纯文本批量写入可滚动临时区域。"""
+
+        if generation != self._stream_generation or not self._stream_dirty:
+            return
+        stream_output = self.query_one("#stream-output", RichLog)
+        stream_output.clear()
+        stream_output.write(Text("".join(self._stream_fragments)))
+        stream_output.display = True
+        self._stream_dirty = False
+
+    def _reset_stream_step(self, generation: int) -> None:
+        """撤销工具中间步骤的临时文本，并允许同一请求继续输出。"""
+
+        if generation != self._stream_generation:
+            return
+        self._stream_fragments.clear()
+        self._stream_dirty = False
+        if self.is_mounted:
+            stream_output = self.query_one("#stream-output", RichLog)
+            stream_output.clear()
+            stream_output.display = False
+
+    def _finish_stream_output(self, expected_generation: int | None = None) -> None:
+        """清空匹配请求的临时内容，并结束其后续 Delta 接收。"""
+
+        if (
+            expected_generation is not None
+            and expected_generation != self._stream_generation
+        ):
+            return
+        self._stream_fragments.clear()
+        self._stream_dirty = False
+        self._stream_generation = None
+        if self.is_mounted:
+            stream_output = self.query_one("#stream-output", RichLog)
+            stream_output.clear()
+            stream_output.display = False
 
     def _render_activity(self, elapsed: float) -> None:
         """将固定文案、当前动画帧和耗时写入输入框上方状态栏。"""
@@ -473,12 +578,14 @@ class ChatTuiApp(App[None]):
 
         worker = self._active_worker
         if worker is None:
+            self._finish_stream_output()
             self._stop_activity()
             return
 
         generation = self._request_generation
         self._request_generation += 1
         self._active_worker = None
+        self._finish_stream_output(generation)
         self._stop_activity(generation)
         worker.cancel()
         self.run_status = RunStatus.READY

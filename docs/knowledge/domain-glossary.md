@@ -10,7 +10,7 @@ https://llm-h2k07hgnp4aylibi.cn-beijing.maas.aliyuncs.com/compatible-mode/v1/res
 
 ## Chat Completions API
 
-DeepSeek 提供的对话接口。本项目调用固定地址 `https://api.deepseek.com/chat/completions`，将有序中立消息映射为 `messages`，并使用非流式响应。
+DeepSeek 提供的对话接口。本项目调用固定地址 `https://api.deepseek.com/chat/completions`，将有序中立消息映射为 `messages`，并使用 SSE 流式响应。
 
 ## Provider
 
@@ -38,4 +38,4 @@ DeepSeek Provider 的 Bearer Token 环境变量，安全规则与 `DASHSCOPE_API
 
 ## Normalized Text Response
 
-指项目从不同 Provider 的响应中提取文本，并统一向 HTTP 返回 `{"output_text": "..."}`、向 TUI 返回同一文本。原始上游结构不会暴露给交互边界。
+指项目从不同 Provider 的 SSE 事件中增量提取并汇总文本，统一向 HTTP 返回 `{"output_text": "..."}`，向 TUI 实时展示后提交同一完整文本。原始上游结构不会暴露给交互边界。

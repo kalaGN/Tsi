@@ -28,10 +28,12 @@ class RecordingProvider:
         self.calls.append(tuple(messages))
         return RecordingTurn(self)
 
-    async def next_step(self, tool_results=()):
+    async def next_step(self, tool_results=(), *, on_text_delta=None):
         if self.error is not None:
             raise self.error
         answer = next(self.answers)
+        if on_text_delta is not None:
+            on_text_delta(answer)
         return ModelStep(200, answer, ())
 
 
@@ -39,8 +41,11 @@ class RecordingTurn:
     def __init__(self, provider):
         self.provider = provider
 
-    async def next(self, tool_results=()):
-        return await self.provider.next_step(tool_results)
+    async def next(self, tool_results=(), *, on_text_delta=None):
+        return await self.provider.next_step(
+            tool_results,
+            on_text_delta=on_text_delta,
+        )
 
 
 def test_chat_session_persists_turns_and_restores_history(tmp_path):
@@ -62,6 +67,24 @@ def test_chat_session_persists_turns_and_restores_history(tmp_path):
         ]
         restored = ChatSession.load(store)
         assert restored.messages == session.messages
+
+    asyncio.run(scenario())
+
+
+def test_chat_session_forwards_deltas_before_persisting_complete_turn(tmp_path):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        session = ChatSession(store, provider=RecordingProvider(["完整回答"]))
+        deltas = []
+
+        result = await session.send("问题", on_text_delta=deltas.append)
+
+        assert deltas == ["完整回答"]
+        assert result.output_text == "完整回答"
+        assert SessionStore(store.path).load() == (
+            ChatMessage(ChatRole.USER, "问题"),
+            ChatMessage(ChatRole.ASSISTANT, "完整回答"),
+        )
 
     asyncio.run(scenario())
 
@@ -107,7 +130,7 @@ def test_chat_session_cancellation_does_not_commit(tmp_path):
         started = asyncio.Event()
 
         class BlockingProvider(RecordingProvider):
-            async def next_step(self, tool_results=()):
+            async def next_step(self, tool_results=(), *, on_text_delta=None):
                 started.set()
                 await asyncio.Event().wait()
 
@@ -133,7 +156,7 @@ def test_chat_session_does_not_commit_when_provider_swallows_cancellation(
         started = asyncio.Event()
 
         class CancellationSwallowingProvider(RecordingProvider):
-            async def next_step(self, tool_results=()):
+            async def next_step(self, tool_results=(), *, on_text_delta=None):
                 started.set()
                 try:
                     await asyncio.Event().wait()
@@ -213,9 +236,12 @@ def test_chat_session_persists_only_final_turn_after_automatic_tool_call(tmp_pat
                 )
                 self.tool_results = []
 
-            async def next_step(self, tool_results=()):
+            async def next_step(self, tool_results=(), *, on_text_delta=None):
                 self.tool_results.append(tuple(tool_results))
-                return next(self.steps)
+                step = next(self.steps)
+                if on_text_delta is not None and step.output_text:
+                    on_text_delta(step.output_text)
+                return step
 
         store = SessionStore(tmp_path / "chat-session.json")
         provider = ToolCallingProvider()

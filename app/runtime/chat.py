@@ -22,6 +22,8 @@ from app.services.llm.contracts import (
     ProviderInvalidRequestError,
     ProviderResponseError,
     ProviderTimeoutError,
+    TextDeltaHandler,
+    TextResetHandler,
 )
 from app.services.llm.factory import create_provider
 from tools import ToolRegistry, create_default_registry
@@ -87,6 +89,9 @@ async def run_chat(
     input_text: str,
     provider: LlmProvider | None = None,
     registry: ToolRegistry | None = None,
+    *,
+    on_text_delta: TextDeltaHandler | None = None,
+    on_text_reset: TextResetHandler | None = None,
 ) -> ChatResult:
     """校验输入、调用所选 Provider，并统一外部异常语义。"""
 
@@ -100,6 +105,8 @@ async def run_chat(
         (ChatMessage(ChatRole.USER, input_text),),
         provider=provider,
         registry=registry,
+        on_text_delta=on_text_delta,
+        on_text_reset=on_text_reset,
     )
 
 
@@ -107,6 +114,9 @@ async def run_chat_messages(
     messages: Sequence[ChatMessage],
     provider: LlmProvider | None = None,
     registry: ToolRegistry | None = None,
+    *,
+    on_text_delta: TextDeltaHandler | None = None,
+    on_text_reset: TextResetHandler | None = None,
 ) -> ChatResult:
     """调用有序对话，日志仍只记录当前最后一条 user 输入。"""
 
@@ -133,6 +143,8 @@ async def run_chat_messages(
             turn,
             active_registry,
             request_id=request_id,
+            on_text_delta=on_text_delta,
+            on_text_reset=on_text_reset,
         )
         output_text = step.output_text
         if output_text is None:

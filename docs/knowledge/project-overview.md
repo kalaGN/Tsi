@@ -2,7 +2,7 @@
 
 ## Goal
 
-本项目用于学习和验证 FastAPI、Textual、外部模型接口与受控 Function Calling。HTTP 提供无状态文本调用，本地全屏 TUI 提供可持久化和恢复的唯一多轮会话；两者通过统一 Runtime 调用阿里云 Responses API 或 DeepSeek Chat Completions API，并自动执行根目录白名单只读工具。
+本项目用于学习和验证 FastAPI、Textual、外部模型流式接口与受控 Function Calling。HTTP 提供聚合 JSON 的无状态文本调用，本地全屏 TUI 提供流式展示且可持久化和恢复的唯一多轮会话；两者通过统一 Runtime 调用阿里云 Responses API 或 DeepSeek Chat Completions API，并自动执行根目录白名单只读工具。
 
 ## Project Shape
 
@@ -60,7 +60,7 @@ git diff --check
 
 - 严格非空的单轮文本输入。
 - 部署级选择 `aliyun` 或 `deepseek`，以及 Provider 专属模型覆盖。
-- HTTP 固定返回 `{"output_text": "..."}`；TUI 保留同一原文，并仅在展示层美化 Assistant Markdown。
+- 两家上游均使用 SSE；HTTP 聚合后固定返回 `{"output_text": "..."}`，TUI 增量展示纯文本并在完成后用同一原文渲染 Assistant Markdown。
 - 中文输入、最终耗时统计、请求中动画与实时耗时、请求取消、`/clear`、`/quit`、Enter 和双击 Esc。
 - 上下键输入历史、草稿恢复，以及从成功 Session user 消息恢复历史。
 - 用户消息以不解析 Markdown 的全宽背景卡片展示；Assistant 支持标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；系统和错误保持纯文本。
@@ -70,7 +70,7 @@ git diff --check
 
 明确不支持：
 
-- HTML、远程图片、Mermaid、Markdown 代码执行、请求级 Provider/模型选择、流式、多会话管理、上下文压缩、写操作工具、MCP、动态插件、多 Agent 和多模态。
+- HTML、远程图片、Mermaid、Markdown 代码执行、HTTP SSE、请求级 Provider/模型选择、多会话管理、上下文压缩、写操作工具、MCP、动态插件、多 Agent 和多模态。
 - 自动重试、降级、负载均衡、熔断、限流、用户认证授权和任务队列。
 - 容器、反向代理、进程管理、CI/CD、Trace、指标、告警、远程日志采集和正式健康检查。
 

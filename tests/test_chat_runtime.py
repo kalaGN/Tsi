@@ -30,15 +30,45 @@ from app.services.llm.contracts import (
 from app.services.llm.deepseek import DeepSeekChatProvider
 
 
+def deepseek_sse_response(message):
+    """构造完整单步 DeepSeek SSE，供 Runtime HTTP 边界测试复用。"""
+
+    delta = dict(message)
+    raw_calls = delta.get("tool_calls")
+    if isinstance(raw_calls, list):
+        delta["tool_calls"] = [
+            {"index": index, **raw_call}
+            for index, raw_call in enumerate(raw_calls)
+        ]
+    chunk = {
+        "choices": [
+            {
+                "index": 0,
+                "delta": delta,
+                "finish_reason": "tool_calls" if raw_calls else "stop",
+            }
+        ]
+    }
+    content = (
+        f"data: {json.dumps(chunk)}\n\ndata: [DONE]\n\n"
+    ).encode()
+    return httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        content=content,
+    )
+
+
 class FakeProvider:
     name = "fake"
     model = "fake-model"
     api_key_configured = True
 
-    def __init__(self, result=None, error=None, on_next=None):
+    def __init__(self, result=None, error=None, on_next=None, deltas=()):
         self.result = result
         self.error = error
         self.on_next = on_next
+        self.deltas = tuple(deltas)
         self.received_inputs = []
         self.received_tools = []
         self.request_ids = []
@@ -54,11 +84,14 @@ class FakeTurn:
     def __init__(self, provider):
         self.provider = provider
 
-    async def next(self, tool_results=()):
+    async def next(self, tool_results=(), *, on_text_delta=None):
         if self.provider.on_next is not None:
             self.provider.on_next()
         if self.provider.error is not None:
             raise self.provider.error
+        if on_text_delta is not None:
+            for delta in self.provider.deltas:
+                on_text_delta(delta)
         return self.provider.result
 
 
@@ -77,6 +110,25 @@ def test_run_chat_returns_normalized_provider_result():
     assert result.model == "fake-model"
     assert not hasattr(result, "raw_body")
     assert not hasattr(result, "upstream_status")
+
+
+def test_run_chat_forwards_text_deltas_and_returns_complete_result():
+    provider = FakeProvider(
+        result=ModelStep(200, "你好", ()),
+        deltas=("你", "好"),
+    )
+    received = []
+
+    result = asyncio.run(
+        run_chat(
+            "hello",
+            provider=provider,
+            on_text_delta=received.append,
+        )
+    )
+
+    assert received == ["你", "好"]
+    assert result.output_text == "你好"
 
 
 def test_run_chat_logs_input_and_output_around_provider_call(monkeypatch):
@@ -305,9 +357,7 @@ def test_run_chat_emits_four_correlated_events_with_real_http_boundary(
 ):
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(
-        lambda request: httpx.Response(
-            200, json={"choices": [{"message": {"content": "ok"}}]}
-        )
+        lambda request: deepseek_sse_response({"content": "ok"})
     )
     monkeypatch.setattr(
         http_client.httpx,
@@ -363,31 +413,21 @@ def test_run_chat_emits_correlated_events_for_complete_tool_loop(
         nonlocal request_count
         request_count += 1
         if request_count == 1:
-            return httpx.Response(
-                200,
-                json={
-                    "choices": [
+            return deepseek_sse_response(
+                {
+                    "tool_calls": [
                         {
-                            "message": {
-                                "tool_calls": [
-                                    {
-                                        "id": "time-call",
-                                        "type": "function",
-                                        "function": {
-                                            "name": "get_current_time",
-                                            "arguments": '{"timezone":"UTC"}',
-                                        },
-                                    }
-                                ]
-                            }
+                            "id": "time-call",
+                            "type": "function",
+                            "function": {
+                                "name": "get_current_time",
+                                "arguments": '{"timezone":"UTC"}',
+                            },
                         }
                     ]
-                },
+                }
             )
-        return httpx.Response(
-            200,
-            json={"choices": [{"message": {"content": "final"}}]},
-        )
+        return deepseek_sse_response({"content": "final"})
 
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(handler)

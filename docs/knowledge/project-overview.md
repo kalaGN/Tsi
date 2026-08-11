@@ -63,7 +63,7 @@ git diff --check
 - HTTP 固定返回 `{"output_text": "..."}`；TUI 保留同一原文，并仅在展示层美化 Assistant Markdown。
 - 中文输入、最终耗时统计、请求中动画与实时耗时、请求取消、`/clear`、`/quit`、Enter 和双击 Esc。
 - 上下键输入历史、草稿恢复，以及从成功 Session user 消息恢复历史。
-- Assistant 标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；用户、系统和错误保持纯文本。
+- 用户消息以不解析 Markdown 的全宽背景卡片展示；Assistant 支持标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；系统和错误保持纯文本。
 - 环境变量密钥、固定上游 URL、显式超时和脱敏错误分类。
 - 自动执行显式注册的只读当前时间工具，并限制模型步骤、每步调用数和载荷大小。
 - request ID 关联的结构化模型、HTTP 和工具日志。

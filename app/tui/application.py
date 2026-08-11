@@ -29,6 +29,7 @@ from app.services.llm.contracts import (
     TextResetHandler,
 )
 from app.tui.state import RunStatus
+from app.tui.widgets import PromptTextArea, SelectableRichLog
 
 
 class ChatRunner(Protocol):
@@ -195,20 +196,20 @@ class ChatTuiApp(App[None]):
         """声明标题、对话记录、输入框、状态栏和快捷键页脚布局。"""
 
         yield Static(self.TITLE, id="title", markup=False)
-        yield RichLog(
+        yield SelectableRichLog(
             id="transcript",
             wrap=True,
             markup=False,
             auto_scroll=True,
         )
-        yield RichLog(
+        yield SelectableRichLog(
             id="stream-output",
             wrap=True,
             markup=False,
             auto_scroll=True,
         )
         yield Static(id="activity-bar", markup=False)
-        yield TextArea(
+        yield PromptTextArea(
             id="prompt",
             soft_wrap=True,
             placeholder="Type a message. Enter: send, Esc x2: exit",
@@ -558,7 +559,15 @@ class ChatTuiApp(App[None]):
         self._write_message("System", f"耗时：{elapsed:.2f} 秒")
 
     def action_confirm_exit(self) -> None:
-        """第一次 Esc 取消请求并提示，限定时间内第二次 Esc 退出。"""
+        """优先清空输入；输入为空时才进入取消请求和双 Esc 退出。"""
+
+        prompt = self.query_one("#prompt", TextArea)
+        if prompt.text:
+            prompt.load_text("")
+            self._reset_history_navigation()
+            self._last_escape_at = None
+            prompt.focus()
+            return
 
         now = self.clock()
         if self._last_escape_at is not None:

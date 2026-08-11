@@ -3,7 +3,9 @@
 import time
 from collections.abc import Awaitable, Callable
 
+from rich import box
 from rich.markdown import Markdown
+from rich.panel import Panel
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -34,6 +36,9 @@ class ChatTuiApp(App[None]):
     TITLE = "FastAPI Agent TUI"
     ESCAPE_CONFIRM_SECONDS = 1.5
     ACTIVITY_INTERVAL_SECONDS = 0.1
+    USER_MESSAGE_FOREGROUND = "#f2f2f2"
+    USER_MESSAGE_BACKGROUND = "#2b2b2b"
+    USER_MESSAGE_BORDER = "#666666"
     SPINNER_FRAMES = (
         "⠋",
         "⠙",
@@ -216,7 +221,11 @@ class ChatTuiApp(App[None]):
         )
 
     def _write_message(self, role: str, content: str) -> None:
-        """按角色写入消息，仅为 Assistant 原文应用 Markdown 展示。"""
+        """按角色写入消息，并为用户和 Assistant 应用各自的展示样式。"""
+
+        if role == "You":
+            self._write_user_message(content)
+            return
 
         if role == "Assistant":
             transcript = self.query_one("#transcript", RichLog)
@@ -231,13 +240,30 @@ class ChatTuiApp(App[None]):
         message.append(content)
         self.query_one("#transcript", RichLog).write(message)
 
+    def _write_user_message(self, content: str) -> None:
+        """用全宽深色卡片区分用户原文，不解析其中的 Markdown。"""
+
+        message = Panel(
+            Text(content),
+            title=Text("You", style="bold"),
+            title_align="left",
+            box=box.ROUNDED,
+            border_style=self.USER_MESSAGE_BORDER,
+            style=(
+                f"{self.USER_MESSAGE_FOREGROUND} "
+                f"on {self.USER_MESSAGE_BACKGROUND}"
+            ),
+            padding=(0, 1),
+            expand=True,
+        )
+        self.query_one("#transcript", RichLog).write(message)
+
     def action_submit_prompt(self) -> None:
         """处理本地命令、输入校验，并启动唯一的异步对话请求。"""
 
         prompt_widget = self.query_one("#prompt", TextArea)
         input_text = prompt_widget.text
         command = input_text.strip()
-
         if command == "/quit":
             self._cancel_active_request(show_message=False)
             self.exit()

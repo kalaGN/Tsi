@@ -23,7 +23,7 @@
 - `tools/registry.py`：显式白名单注册、参数解析、串行执行、安全错误和载荷边界。
 - `tools/builtin.py`：只读 `get_current_time(timezone)` 实现。
 - `app/tui/__main__.py`：加载根目录 `.env` 并启动 Textual。
-- `app/tui/application.py`：终端输入与历史、Assistant Markdown 展示、请求活动 Timer、状态、耗时和取消。
+- `app/tui/application.py`：终端输入与历史、用户消息卡片、Assistant Markdown 展示、请求活动 Timer、状态、耗时和取消。
 - `app/tui/state.py`：定义 `Ready`、`Thinking`、`Error`。
 - `tests/test_llm_providers.py`：Provider、工厂和共享 HTTP Mock 测试。
 - `tests/test_chat_runtime.py`：Runtime 单元测试。
@@ -101,7 +101,7 @@ python -m app.tui
   -> TUI stops the Timer, clears activity and records final monotonic elapsed time
 ```
 
-TUI 不读取 Provider 专属密钥变量，不解析 Provider JSON，也不逐次确认只读工具；状态信息和实际调用共用工厂配置规则。工具轨迹只存在于当前 Turn，Session 仍只提交最终 user/assistant 消息。Assistant 的 Markdown 只在 `RichLog` 展示时构造为 Rich Renderable，恢复历史和新响应复用同一路径；用户、系统和错误仍按纯文本显示，Session 与后续模型请求继续使用未经改写的原文。请求活动 Timer 只展示应用固定文案和单调时钟耗时，不读取 reasoning、Token 或 Provider 状态，并在成功、错误、取消和退出时按请求代次停止。HTTP `/chat` 不加载或修改 TUI 会话文件。
+TUI 不读取 Provider 专属密钥变量，不解析 Provider JSON，也不逐次确认只读工具；状态信息和实际调用共用工厂配置规则。工具轨迹只存在于当前 Turn，Session 仍只提交最终 user/assistant 消息。Assistant 的 Markdown 只在 `RichLog` 展示时构造为 Rich Renderable，恢复历史和新响应复用同一路径；用户消息使用 Rich Panel 增加背景和边框但不解析 Markdown，系统和错误仍按纯文本显示，Session 与后续模型请求继续使用未经改写的原文。请求活动 Timer 只展示应用固定文案和单调时钟耗时，不读取 reasoning、Token 或 Provider 状态，并在成功、错误、取消和退出时按请求代次停止。HTTP `/chat` 不加载或修改 TUI 会话文件。
 
 输入历史是 `ChatTuiApp` 内存状态：启动时从 Session 的 user 消息初始化，当前进程每次真正启动的请求立即追加，因此失败或取消输入也可临时召回；只有完整成功轮次由既有 Session 规则跨重启保存。高优先级 Up/Down Binding 负责不循环浏览和草稿恢复，不修改 Session schema。
 

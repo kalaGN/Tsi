@@ -347,7 +347,8 @@ def test_enter_submits_input():
             assert prompt.text == ""
             assert app.run_status is RunStatus.READY
             transcript = transcript_text(app)
-            assert "You\nhello" in transcript
+            assert "You" in transcript
+            assert "hello" in transcript
             assert "Assistant\nanswer" in transcript
             assert "System\n耗时：1.23 秒" in transcript
 
@@ -590,6 +591,42 @@ def test_non_assistant_messages_keep_markdown_markers_as_plain_text():
     asyncio.run(scenario())
 
 
+def test_user_message_uses_background_card_without_styling_other_roles():
+    async def scenario():
+        async def fake_runner(input_text: str) -> ChatResult:
+            return ChatResult("普通回答", "fake", "fake-model")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("用户 **原文**")
+
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+
+            lines = app.query_one("#transcript", RichLog).lines
+            user_line = next(line for line in lines if "用户 **原文**" in line.text)
+            user_segment = next(
+                segment for segment in user_line if "用户 **原文**" in segment.text
+            )
+            assistant_line = next(line for line in lines if "普通回答" in line.text)
+            assistant_segment = next(
+                segment for segment in assistant_line if "普通回答" in segment.text
+            )
+
+            assert any("╭" in line.text and "You" in line.text for line in lines)
+            assert user_segment.style is not None
+            assert user_segment.style.color is not None
+            assert user_segment.style.bgcolor is not None
+            assert (
+                assistant_segment.style is None
+                or assistant_segment.style.bgcolor is None
+            )
+            assert "用户 **原文**" in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
 def test_runtime_error_displays_request_duration():
     async def scenario():
         clock_values = iter([20.0, 22.5])
@@ -722,7 +759,8 @@ def test_tui_restores_saved_conversation_on_mount(tmp_path):
 
         async with app.run_test():
             transcript = transcript_text(app)
-            assert "You\n上次的问题" in transcript
+            assert "You" in transcript
+            assert "上次的问题" in transcript
             assert "Assistant\n上次的回答" in transcript
 
     asyncio.run(scenario())

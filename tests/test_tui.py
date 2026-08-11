@@ -221,7 +221,70 @@ def test_tui_initial_state_shows_provider_model_and_key_status():
             assert "Aliyun" in str(status_bar.content)
             assert "qwen3-max" in str(status_bar.content)
             assert "Key: configured" in str(status_bar.content)
+            assert "AGENTS: none" in str(status_bar.content)
             assert "Ready" in str(status_bar.content)
+
+    asyncio.run(scenario())
+
+
+def test_tui_status_shows_loaded_system_prompt_without_exposing_content():
+    async def scenario():
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
+            raise AssertionError("runner should not be called during startup")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            system_prompt="private project rules",
+        )
+        async with app.run_test():
+            status = str(app.query_one("#status-bar", Static).content)
+
+            assert "AGENTS: loaded" in status
+            assert "private project rules" not in status
+            assert "private project rules" not in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
+def test_tui_system_prompt_error_blocks_normal_request_but_keeps_input():
+    async def scenario():
+        received_inputs = []
+
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
+            received_inputs.append(input_text)
+            return ChatResult("unexpected", "fake", "fake-model")
+
+        error = "Unable to load AGENTS.md"
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            system_prompt_error=error,
+        )
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("hello")
+
+            await pilot.press("enter")
+
+            assert received_inputs == []
+            assert prompt.text == "hello"
+            assert app._input_history == []
+            assert app.run_status is RunStatus.ERROR
+            assert "AGENTS: error" in str(
+                app.query_one("#status-bar", Static).content
+            )
+            assert error in transcript_text(app)
 
     asyncio.run(scenario())
 
@@ -588,8 +651,18 @@ def test_tui_invalid_provider_configuration_starts_in_safe_error_state(monkeypat
     asyncio.run(scenario())
 
 
-def test_tui_entrypoint_loads_project_env_without_overriding_shell(monkeypatch):
+def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
+    tmp_path,
+    monkeypatch,
+):
     observed = {}
+    system_prompt = "# 启动目录规则\n"
+    (tmp_path / "AGENTS.md").write_text(system_prompt, encoding="utf-8")
+    real_load_system_prompt = tui_main.load_system_prompt
+
+    def observed_load_system_prompt(startup_directory):
+        observed.setdefault("system_prompt_loads", []).append(startup_directory)
+        return real_load_system_prompt(startup_directory)
 
     def fake_load_dotenv(path, override):
         observed["dotenv"] = (path, override)
@@ -598,18 +671,26 @@ def test_tui_entrypoint_loads_project_env_without_overriding_shell(monkeypatch):
         def run(self):
             observed["run"] = True
 
-    def fake_create_app():
+    def fake_create_app(*, system_prompt, system_prompt_error):
         observed["kitty_keyboard_disabled"] = (
             tui_main.os.environ.get("TEXTUAL_DISABLE_KITTY_KEY")
         )
+        observed["system_prompt"] = system_prompt
+        observed["system_prompt_error"] = system_prompt_error
         return FakeApp()
 
+    monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("TEXTUAL_DISABLE_KITTY_KEY", raising=False)
     monkeypatch.setattr(tui_main, "load_dotenv", fake_load_dotenv)
     monkeypatch.setattr(
         tui_main,
         "configure_model_logging",
         lambda: observed.setdefault("logging", "configured"),
+    )
+    monkeypatch.setattr(
+        tui_main,
+        "load_system_prompt",
+        observed_load_system_prompt,
     )
     monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
 
@@ -620,6 +701,38 @@ def test_tui_entrypoint_loads_project_env_without_overriding_shell(monkeypatch):
         "dotenv": (expected_root / ".env", False),
         "logging": "configured",
         "kitty_keyboard_disabled": "1",
+        "system_prompt_loads": [tmp_path],
+        "system_prompt": system_prompt,
+        "system_prompt_error": None,
+        "run": True,
+    }
+
+
+def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
+    observed = {}
+    (tmp_path / "AGENTS.md").write_bytes(b"\xff")
+
+    class FakeApp:
+        def run(self):
+            observed["run"] = True
+
+    def fake_create_app(*, system_prompt, system_prompt_error):
+        observed["system_prompt"] = system_prompt
+        observed["system_prompt_error"] = system_prompt_error
+        return FakeApp()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(tui_main, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tui_main, "configure_model_logging", lambda: None)
+    monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
+
+    tui_main.main()
+
+    assert observed == {
+        "system_prompt": None,
+        "system_prompt_error": (
+            "AGENTS.md must be a readable UTF-8 file no larger than 32 KiB"
+        ),
         "run": True,
     }
 

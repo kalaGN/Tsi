@@ -62,12 +62,14 @@ git diff --check
 - 部署级选择 `aliyun` 或 `deepseek`，以及 Provider 专属模型覆盖。
 - 两家上游均使用 SSE；HTTP 聚合后固定返回 `{"output_text": "..."}`，TUI 增量展示纯文本并在完成后用同一原文渲染 Assistant Markdown。
 - 中文输入、`Cmd+A` / `Ctrl+A` 全选输入、Esc 清空输入、最终耗时统计、请求中动画与实时耗时、请求取消、`/clear`、`/quit`、Enter 和双击 Esc。
+- TUI 启动目录直属 `AGENTS.md` 的 32 KiB UTF-8 有界读取，以及不持久化的 Provider 标准 system 消息。
 - 上下键输入历史、草稿恢复，以及从成功 Session user 消息恢复历史。
 - 用户消息以不解析 Markdown 的全宽背景卡片展示；Assistant 支持标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；系统和错误保持纯文本。
 - 最终消息和流式临时文本支持鼠标选择，并通过 `Cmd+C` / `Ctrl+C` 复制渲染后的可见文字。
 - 环境变量密钥、固定上游 URL、显式超时和脱敏错误分类。
 - 自动执行显式注册的只读当前时间工具，并限制模型步骤、每步调用数和载荷大小。
 - request ID 关联的结构化模型、HTTP 和工具日志。
+- 完整上游请求日志包含实际 system 消息；HTTP `/chat` 不加载本地项目规则。
 
 明确不支持：
 

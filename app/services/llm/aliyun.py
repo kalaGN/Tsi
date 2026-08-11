@@ -234,10 +234,13 @@ class _AliyunStreamState:
         return (), streamed_text or complete_text
 
     def _append_text_delta(self, delta: Any) -> None:
-        """追加非空文本并限制 UTF-8 累计大小。"""
+        """追加文本并限制 UTF-8 累计大小。"""
 
-        if not isinstance(delta, str) or not delta:
+        if not isinstance(delta, str):
             raise _invalid_structure()
+        # 阿里云可能发送空文本 delta；它不携带内容，也不代表协议失败。
+        if not delta:
+            return
         self._text_bytes += len(delta.encode("utf-8"))
         if self._text_bytes > MAX_STREAM_OUTPUT_BYTES:
             raise _invalid_structure()

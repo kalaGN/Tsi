@@ -115,12 +115,20 @@ async def run_chat_messages(
     provider: LlmProvider | None = None,
     registry: ToolRegistry | None = None,
     *,
+    system_prompt: str | None = None,
     on_text_delta: TextDeltaHandler | None = None,
     on_text_reset: TextResetHandler | None = None,
 ) -> ChatResult:
-    """调用有序对话，日志仍只记录当前最后一条 user 输入。"""
+    """调用有序对话，可选 system 不改变当前 user 输入日志。"""
 
-    current_input = messages[-1].content if messages else ""
+    conversation = tuple(messages)
+    current_input = conversation[-1].content if conversation else ""
+    provider_messages = conversation
+    if system_prompt is not None:
+        # 系统提示词只属于本次请求，不回写调用方维护的会话历史。
+        provider_messages = (
+            ChatMessage(ChatRole.SYSTEM, system_prompt),
+        ) + conversation
     try:
         active_provider = create_provider() if provider is None else provider
         active_registry = create_default_registry() if registry is None else registry
@@ -135,7 +143,7 @@ async def run_chat_messages(
             input_text=current_input,
         )
         turn = active_provider.create_turn(
-            messages,
+            provider_messages,
             active_registry.definitions,
             request_id=request_id,
         )

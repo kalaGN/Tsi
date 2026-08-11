@@ -14,6 +14,7 @@ TextResetHandler = Callable[[], None]
 class ChatRole(str, Enum):
     """当前文本对话支持的 Provider 中立角色。"""
 
+    SYSTEM = "system"
     USER = "user"
     ASSISTANT = "assistant"
 
@@ -131,19 +132,38 @@ class ProviderInvalidResponseError(LlmProviderError):
 def validate_provider_messages(
     messages: Sequence[ChatMessage],
 ) -> tuple[ChatMessage, ...]:
-    """验证待发送序列是以 user 结束的交替对话。"""
+    """验证可选首条 system 后是以 user 结束的交替对话。"""
 
     normalized = tuple(messages)
-    if not normalized or len(normalized) % 2 == 0:
+    if not normalized:
         raise ProviderInvalidRequestError()
 
-    for index, message in enumerate(normalized):
+    conversation_start = 0
+    first_message = normalized[0]
+    if isinstance(first_message, ChatMessage) and first_message.role is ChatRole.SYSTEM:
+        if not _has_nonblank_content(first_message):
+            raise ProviderInvalidRequestError()
+        conversation_start = 1
+
+    conversation = normalized[conversation_start:]
+    if not conversation or len(conversation) % 2 == 0:
+        raise ProviderInvalidRequestError()
+
+    for index, message in enumerate(conversation):
         expected_role = ChatRole.USER if index % 2 == 0 else ChatRole.ASSISTANT
         if (
-            not isinstance(message, ChatMessage)
+            not _has_nonblank_content(message)
             or message.role is not expected_role
-            or not isinstance(message.content, str)
-            or not message.content.strip()
         ):
             raise ProviderInvalidRequestError()
     return normalized
+
+
+def _has_nonblank_content(message: object) -> bool:
+    """集中校验中立消息形状，避免在非法对象上提前读取属性。"""
+
+    return (
+        isinstance(message, ChatMessage)
+        and isinstance(message.content, str)
+        and bool(message.content.strip())
+    )

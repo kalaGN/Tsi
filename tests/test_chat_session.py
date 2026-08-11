@@ -71,6 +71,68 @@ def test_chat_session_persists_turns_and_restores_history(tmp_path):
     asyncio.run(scenario())
 
 
+def test_chat_session_uses_system_prompt_without_persisting_it(tmp_path):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        provider = RecordingProvider(["第一答", "第二答"])
+        session = ChatSession.load(
+            store,
+            provider=provider,
+            system_prompt="项目系统规则",
+        )
+
+        await session.send("第一问")
+        session.clear()
+        await session.send("第二问")
+
+        assert provider.calls == [
+            (
+                ChatMessage(ChatRole.SYSTEM, "项目系统规则"),
+                ChatMessage(ChatRole.USER, "第一问"),
+            ),
+            (
+                ChatMessage(ChatRole.SYSTEM, "项目系统规则"),
+                ChatMessage(ChatRole.USER, "第二问"),
+            ),
+        ]
+        assert session.system_prompt_loaded is True
+        assert session.messages == (
+            ChatMessage(ChatRole.USER, "第二问"),
+            ChatMessage(ChatRole.ASSISTANT, "第二答"),
+        )
+        assert SessionStore(store.path).load() == session.messages
+
+    asyncio.run(scenario())
+
+
+def test_restored_session_uses_current_startup_system_prompt(tmp_path):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        store.save(
+            (
+                ChatMessage(ChatRole.USER, "old question"),
+                ChatMessage(ChatRole.ASSISTANT, "old answer"),
+            )
+        )
+        provider = RecordingProvider(["new answer"])
+        session = ChatSession.load(
+            store,
+            provider=provider,
+            system_prompt="new startup rules",
+        )
+
+        await session.send("new question")
+
+        assert provider.calls[0] == (
+            ChatMessage(ChatRole.SYSTEM, "new startup rules"),
+            ChatMessage(ChatRole.USER, "old question"),
+            ChatMessage(ChatRole.ASSISTANT, "old answer"),
+            ChatMessage(ChatRole.USER, "new question"),
+        )
+
+    asyncio.run(scenario())
+
+
 def test_chat_session_forwards_deltas_before_persisting_complete_turn(tmp_path):
     async def scenario():
         store = SessionStore(tmp_path / "chat-session.json")
@@ -245,10 +307,20 @@ def test_chat_session_persists_only_final_turn_after_automatic_tool_call(tmp_pat
 
         store = SessionStore(tmp_path / "chat-session.json")
         provider = ToolCallingProvider()
-        session = ChatSession(store, provider=provider)
+        session = ChatSession(
+            store,
+            provider=provider,
+            system_prompt="project rules",
+        )
 
         await session.send("what time is it?")
 
+        assert provider.calls == [
+            (
+                ChatMessage(ChatRole.SYSTEM, "project rules"),
+                ChatMessage(ChatRole.USER, "what time is it?"),
+            )
+        ]
         assert len(provider.tool_results) == 2
         assert provider.tool_results[0] == ()
         assert provider.tool_results[1][0].call_id == "time-call"

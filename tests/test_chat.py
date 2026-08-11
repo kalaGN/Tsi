@@ -34,12 +34,84 @@ def install_upstream_transport(monkeypatch, handler):
     """在 HTTP 契约测试中阻断所有真实模型请求。"""
 
     real_async_client = httpx.AsyncClient
-    transport = httpx.MockTransport(handler)
+
+    def adapted_handler(request):
+        return adapt_json_response_to_sse(request, handler(request))
+
+    transport = httpx.MockTransport(adapted_handler)
 
     def create_client(**kwargs):
         return real_async_client(transport=transport, **kwargs)
 
     monkeypatch.setattr(http_client.httpx, "AsyncClient", create_client)
+
+
+def adapt_json_response_to_sse(request, response):
+    """将既有 HTTP 契约测试的成功假 JSON 转成等价上游 SSE。"""
+
+    if (
+        request.headers.get("Accept") != "text/event-stream"
+        or not response.is_success
+        or response.headers.get("content-type", "").startswith("text/event-stream")
+    ):
+        return response
+    try:
+        body = json.loads(response.content)
+    except (TypeError, ValueError):
+        return response
+
+    if str(request.url) == DEEPSEEK_CHAT_COMPLETIONS_URL:
+        choices = body.get("choices") if isinstance(body, dict) else None
+        if isinstance(choices, list) and choices and isinstance(choices[0], dict):
+            message = choices[0].get("message")
+        else:
+            message = None
+        if isinstance(message, dict):
+            delta = dict(message)
+            calls = delta.get("tool_calls")
+            if isinstance(calls, list):
+                delta["tool_calls"] = [
+                    {"index": index, **call}
+                    for index, call in enumerate(calls)
+                ]
+            chunk = {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": "tool_calls" if calls else "stop",
+                    }
+                ]
+            }
+        else:
+            chunk = body
+        content = (
+            f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+            "data: [DONE]\n\n"
+        ).encode()
+    elif str(request.url) == ALIYUN_RESPONSES_URL:
+        completed = dict(body) if isinstance(body, dict) else body
+        events = []
+        if isinstance(completed, dict):
+            completed.setdefault("status", "completed")
+            text = completed.get("output_text")
+            if isinstance(text, str) and text:
+                events.append(
+                    {"type": "response.output_text.delta", "delta": text}
+                )
+        events.append({"type": "response.completed", "response": completed})
+        content = b"".join(
+            f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
+            for event in events
+        )
+    else:
+        return response
+
+    return httpx.Response(
+        response.status_code,
+        headers={"content-type": "text/event-stream"},
+        content=content,
+    )
 
 
 def test_main_exports_application():
@@ -86,6 +158,7 @@ def test_chat_supports_explicit_aliyun_and_returns_only_normalized_text(monkeypa
         assert request.headers["Authorization"] == f"Bearer {FAKE_API_KEY}"
         payload = json.loads(request.content)
         assert payload["input"] == [{"role": "user", "content": "hello"}]
+        assert payload["stream"] is True
         assert payload["tools"][0]["name"] == "get_current_time"
         assert payload["tool_choice"] == "auto"
         return httpx.Response(
@@ -115,7 +188,7 @@ def test_chat_defaults_to_deepseek_and_returns_only_normalized_text(monkeypatch)
         assert payload["messages"] == [{"role": "user", "content": "hello"}]
         assert payload["tools"][0]["function"]["name"] == "get_current_time"
         assert payload["tool_choice"] == "auto"
-        assert payload["stream"] is False
+        assert payload["stream"] is True
         return httpx.Response(
             200,
             json={
@@ -385,7 +458,9 @@ def test_chat_rejects_non_json_upstream_success(monkeypatch):
     response = client.post("/chat", json={"input": "hello"})
 
     assert response.status_code == 502
-    assert response.json() == {"detail": "Upstream service returned invalid JSON"}
+    assert response.json() == {
+        "detail": "Upstream service returned an invalid response"
+    }
     assert FAKE_API_KEY not in response.text
 
 

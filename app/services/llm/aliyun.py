@@ -1,5 +1,6 @@
-"""阿里云兼容模式 Responses API Provider。"""
+"""阿里云兼容模式 Responses 流式 API Provider。"""
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Sequence
 
@@ -9,9 +10,15 @@ from app.services.llm.contracts import (
     ProviderConfigurationError,
     ProviderInvalidResponseError,
     ProviderInvalidRequestError,
+    TextDeltaHandler,
     validate_provider_messages,
 )
-from app.services.llm.http_client import post_json
+from app.services.llm.http_client import (
+    MAX_STREAM_OUTPUT_BYTES,
+    MAX_STREAM_TOOL_ARGUMENT_BYTES,
+    MAX_STREAM_TOOL_CALLS,
+    post_sse,
+)
 from tools.contracts import ToolCall, ToolDefinition, ToolResult
 
 
@@ -79,6 +86,8 @@ class AliyunTurn:
     async def next(
         self,
         tool_results: Sequence[ToolResult] = (),
+        *,
+        on_text_delta: TextDeltaHandler | None = None,
     ) -> ModelStep:
         if self._completed:
             raise ProviderInvalidRequestError()
@@ -87,25 +96,27 @@ class AliyunTurn:
         payload: dict[str, Any] = {
             "model": self._model,
             "input": self._input_items,
+            "stream": True,
         }
         if self._tools:
             payload["tools"] = [_aliyun_tool(tool) for tool in self._tools]
             payload["tool_choice"] = "auto"
 
-        status_code, body = await post_json(
+        stream_state = _AliyunStreamState(on_text_delta)
+        status_code = await post_sse(
             ALIYUN_RESPONSES_URL,
             self._api_key,
             payload,
             request_id=self._request_id,
             provider=AliyunResponsesProvider.name,
             model=self._model,
+            on_data=stream_state.accept,
         )
-        calls = _extract_function_calls(body)
+        calls, output_text = stream_state.finish()
         if calls:
             self._pending_calls = calls
-            return ModelStep(status_code, _optional_output_text(body), calls)
+            return ModelStep(status_code, output_text, calls)
 
-        output_text = _extract_output_text(body)
         self._completed = True
         return ModelStep(status_code, output_text, ())
 
@@ -140,6 +151,179 @@ class AliyunTurn:
                 }
             )
         self._pending_calls = ()
+
+
+class _AliyunStreamState:
+    """累积 Responses 流的最终文本、工具调用与 completed 完整对象。"""
+
+    def __init__(self, on_text_delta: TextDeltaHandler | None) -> None:
+        self._on_text_delta = on_text_delta
+        self._text_fragments: list[str] = []
+        self._text_bytes = 0
+        self._done_text: str | None = None
+        self._completed_response: dict[str, Any] | None = None
+        self._completed_call_items: dict[str, dict[str, Any]] = {}
+        self._argument_fragments: dict[str, list[str]] = {}
+        self._argument_bytes: dict[str, int] = {}
+        self._saw_done_marker = False
+
+    def accept(self, data: str) -> None:
+        """处理一个 Responses data 事件，并只发布最终回答文本 Delta。"""
+
+        if self._completed_response is not None and data != "[DONE]":
+            raise _invalid_structure()
+        if data == "[DONE]":
+            if self._saw_done_marker:
+                raise _invalid_structure()
+            self._saw_done_marker = True
+            return
+        try:
+            event = json.loads(data)
+        except (TypeError, ValueError) as exc:
+            raise _invalid_structure() from exc
+        if not isinstance(event, dict) or not isinstance(event.get("type"), str):
+            raise _invalid_structure()
+
+        event_type = event["type"]
+        if event_type == "response.output_text.delta":
+            self._append_text_delta(event.get("delta"))
+        elif event_type == "response.output_text.done":
+            text = event.get("text")
+            if not isinstance(text, str) or not text or self._done_text is not None:
+                raise _invalid_structure()
+            self._done_text = text
+        elif event_type == "response.output_item.done":
+            self._accept_output_item(event.get("item"))
+        elif event_type == "response.function_call_arguments.delta":
+            self._append_argument_delta(event)
+        elif event_type == "response.function_call_arguments.done":
+            self._accept_argument_done(event)
+        elif event_type == "response.completed":
+            response = event.get("response")
+            if not isinstance(response, dict) or self._completed_response is not None:
+                raise _invalid_structure()
+            self._completed_response = response
+        elif event_type in {"response.failed", "response.incomplete"}:
+            raise _invalid_structure()
+
+    def finish(
+        self,
+    ) -> tuple[tuple[ToolCall, ...], str | None]:
+        """以 completed 完整对象校验增量，并返回原有模型步骤信息。"""
+
+        body = self._completed_response
+        if not isinstance(body, dict) or body.get("status") != "completed":
+            raise _invalid_structure()
+        calls = _extract_function_calls(body)
+        self._validate_completed_call_items(body, calls)
+
+        streamed_text = "".join(self._text_fragments)
+        if calls:
+            output_text = _optional_output_text(body)
+            if streamed_text and output_text is not None and streamed_text != output_text:
+                raise _invalid_structure()
+            if self._done_text is not None and streamed_text != self._done_text:
+                raise _invalid_structure()
+            return calls, streamed_text or output_text
+
+        complete_text = _extract_output_text(body)
+        if streamed_text and streamed_text != complete_text:
+            raise _invalid_structure()
+        if self._done_text is not None and self._done_text != complete_text:
+            raise _invalid_structure()
+        return (), streamed_text or complete_text
+
+    def _append_text_delta(self, delta: Any) -> None:
+        """追加非空文本并限制 UTF-8 累计大小。"""
+
+        if not isinstance(delta, str) or not delta:
+            raise _invalid_structure()
+        self._text_bytes += len(delta.encode("utf-8"))
+        if self._text_bytes > MAX_STREAM_OUTPUT_BYTES:
+            raise _invalid_structure()
+        self._text_fragments.append(delta)
+        if self._on_text_delta is not None:
+            self._on_text_delta(delta)
+
+    def _accept_output_item(self, item: Any) -> None:
+        """保存完整 function_call item，供 completed 对象交叉校验。"""
+
+        if not isinstance(item, dict) or item.get("type") != "function_call":
+            return
+        item_id = item.get("id")
+        if not isinstance(item_id, str) or not item_id or item_id in self._completed_call_items:
+            raise _invalid_structure()
+        _extract_function_calls({"output": [item]})
+        self._completed_call_items[item_id] = item
+        if len(self._completed_call_items) > MAX_STREAM_TOOL_CALLS:
+            raise _invalid_structure()
+
+    def _append_argument_delta(self, event: dict[str, Any]) -> None:
+        """按 item ID 拼接可选的 function argument Delta。"""
+
+        item_id = event.get("item_id")
+        delta = event.get("delta")
+        if not isinstance(item_id, str) or not item_id or not isinstance(delta, str):
+            raise _invalid_structure()
+        fragments = self._argument_fragments.setdefault(item_id, [])
+        if len(self._argument_fragments) > MAX_STREAM_TOOL_CALLS:
+            raise _invalid_structure()
+        fragments.append(delta)
+        size = self._argument_bytes.get(item_id, 0) + len(delta.encode("utf-8"))
+        if size > MAX_STREAM_TOOL_ARGUMENT_BYTES:
+            raise _invalid_structure()
+        self._argument_bytes[item_id] = size
+
+    def _accept_argument_done(self, event: dict[str, Any]) -> None:
+        """校验 arguments.done 完整值与此前 Delta 拼接一致。"""
+
+        item_id = event.get("item_id")
+        arguments = event.get("arguments")
+        if not isinstance(item_id, str) or not item_id or not isinstance(arguments, str):
+            raise _invalid_structure()
+        if (
+            item_id not in self._argument_fragments
+            and len(self._argument_fragments) >= MAX_STREAM_TOOL_CALLS
+        ):
+            raise _invalid_structure()
+        streamed = "".join(self._argument_fragments.get(item_id, ()))
+        if streamed and streamed != arguments:
+            raise _invalid_structure()
+        if len(arguments.encode("utf-8")) > MAX_STREAM_TOOL_ARGUMENT_BYTES:
+            raise _invalid_structure()
+        self._argument_fragments[item_id] = [arguments]
+        self._argument_bytes[item_id] = len(arguments.encode("utf-8"))
+
+    def _validate_completed_call_items(
+        self,
+        body: dict[str, Any],
+        calls: tuple[ToolCall, ...],
+    ) -> None:
+        """验证增量/Item 事件和 completed 中的完整工具参数一致。"""
+
+        output = body.get("output")
+        if not isinstance(output, list):
+            if calls or self._completed_call_items or self._argument_fragments:
+                raise _invalid_structure()
+            return
+        call_items = [
+            item
+            for item in output
+            if isinstance(item, dict) and item.get("type") == "function_call"
+        ]
+        if len(call_items) != len(calls) or len(calls) > MAX_STREAM_TOOL_CALLS:
+            raise _invalid_structure()
+        by_id = {
+            item.get("id"): item
+            for item in call_items
+            if isinstance(item.get("id"), str) and item.get("id")
+        }
+        if self._completed_call_items and self._completed_call_items != by_id:
+            raise _invalid_structure()
+        for item_id, fragments in self._argument_fragments.items():
+            item = by_id.get(item_id)
+            if item is None or item.get("arguments") != "".join(fragments):
+                raise _invalid_structure()
 
 
 def _extract_output_text(body: Any) -> str:

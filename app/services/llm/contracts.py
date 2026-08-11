@@ -2,9 +2,13 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Protocol, Sequence
+from typing import Callable, Protocol, Sequence
 
 from tools.contracts import ToolCall, ToolDefinition, ToolResult
+
+
+TextDeltaHandler = Callable[[str], None]
+TextResetHandler = Callable[[], None]
 
 
 class ChatRole(str, Enum):
@@ -50,6 +54,8 @@ class LlmTurn(Protocol):
     async def next(
         self,
         tool_results: Sequence[ToolResult] = (),
+        *,
+        on_text_delta: TextDeltaHandler | None = None,
     ) -> ModelStep:
         ...
 

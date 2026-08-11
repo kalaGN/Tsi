@@ -141,7 +141,7 @@ git diff --check
 
 ## 9. Reliability and Observability
 
-已实现：HTTPX 异步调用、10 秒连接超时、60 秒总超时、连接/超时/上游状态/JSON 及文本结构错误分类、request ID、结构化模型/HTTP/工具事件和本地日志轮转。
+已实现：HTTPX 异步 SSE 调用、10 秒连接超时、60 秒流生命周期总超时、连接/超时/上游状态/SSE/JSON 及文本结构错误分类、流事件与文本/工具参数大小边界、request ID、结构化模型/HTTP/工具事件和本地日志轮转。
 
 未实现：重试、退避、熔断、Trace、指标、告警、远程日志采集、Readiness/Liveness、Graceful Shutdown 自定义处理。
 
@@ -157,7 +157,7 @@ git diff --check
 - 不得编造性能阈值。
 - 影响网络调用、并发、序列化或日志热路径的变更应记录可比的变更前后数据。
 - 在建立基线前，将性能结论标记为“待验证”。
-- 引入流式响应、连接池共享或并发限制前必须先设计和测试。
+- 修改现有流式协议、连接池共享或并发限制前必须先设计和测试。
 
 ## 11. Git and Collaboration
 

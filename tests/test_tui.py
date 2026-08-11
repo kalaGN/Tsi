@@ -44,7 +44,12 @@ def transcript_text(app: ChatTuiApp) -> str:
 
 def test_tui_initial_state_shows_provider_model_and_key_status():
     async def scenario():
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
@@ -62,7 +67,12 @@ def test_tui_initial_state_shows_provider_model_and_key_status():
 
 def test_tui_initial_state_supports_deepseek_status():
     async def scenario():
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
@@ -78,7 +88,12 @@ def test_tui_initial_state_supports_deepseek_status():
 
 def test_activity_bar_starts_empty_above_prompt():
     async def scenario():
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
@@ -100,7 +115,12 @@ def test_activity_bar_updates_elapsed_time_and_clears_after_success():
         release = asyncio.Event()
         clock = ManualClock(10.0)
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             started.set()
             await release.wait()
             return ChatResult("done", "fake", "fake-model")
@@ -139,15 +159,117 @@ def test_activity_bar_updates_elapsed_time_and_clears_after_success():
     asyncio.run(scenario())
 
 
+def test_tui_streams_plain_text_then_writes_final_markdown_once():
+    async def scenario():
+        streamed = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
+            on_text_delta("**重")
+            on_text_delta("要**")
+            streamed.set()
+            await release.wait()
+            return ChatResult("**重要**", "fake", "fake-model")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("hello")
+            await pilot.press("enter")
+            await asyncio.wait_for(streamed.wait(), timeout=1)
+            await pilot.pause(0.15)
+
+            stream_output = app.query_one("#stream-output", RichLog)
+            assert stream_output.display is True
+            assert "**重要**" in "\n".join(
+                line.text for line in stream_output.lines
+            )
+            assert "重要" not in transcript_text(app)
+
+            release.set()
+            await app.workers.wait_for_complete()
+
+            assert stream_output.display is False
+            assert stream_output.lines == []
+            transcript = transcript_text(app)
+            assert "重要" in transcript
+            assert "**重要**" not in transcript
+
+    asyncio.run(scenario())
+
+
+def test_tui_resets_tool_step_stream_before_showing_final_step():
+    async def scenario():
+        first_streamed = asyncio.Event()
+        continue_after_tool = asyncio.Event()
+        final_streamed = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
+            on_text_delta("工具中间文本")
+            first_streamed.set()
+            await continue_after_tool.wait()
+            on_text_reset()
+            on_text_delta("最终文本")
+            final_streamed.set()
+            await release.wait()
+            return ChatResult("最终文本", "fake", "fake-model")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("hello")
+            await pilot.press("enter")
+            await asyncio.wait_for(first_streamed.wait(), timeout=1)
+            await pilot.pause(0.15)
+            stream_output = app.query_one("#stream-output", RichLog)
+            assert "工具中间文本" in "\n".join(
+                line.text for line in stream_output.lines
+            )
+
+            continue_after_tool.set()
+            await asyncio.wait_for(final_streamed.wait(), timeout=1)
+            await pilot.pause(0.15)
+            current = "\n".join(line.text for line in stream_output.lines)
+            assert "最终文本" in current
+            assert "工具中间文本" not in current
+
+            release.set()
+            await app.workers.wait_for_complete()
+            assert stream_output.display is False
+            assert "最终文本" in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
 def test_activity_bar_clears_after_known_and_unexpected_errors():
     async def scenario():
-        async def known_error(input_text: str) -> ChatResult:
+        async def known_error(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise ChatRuntimeError(
                 ChatErrorCode.TIMEOUT,
                 "Upstream request timed out",
             )
 
-        async def unexpected_error(input_text: str) -> ChatResult:
+        async def unexpected_error(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise RuntimeError("internal detail")
 
         for runner in (known_error, unexpected_error):
@@ -174,7 +296,12 @@ def test_cancelled_worker_and_timer_cannot_clear_new_request_activity():
         clock = ManualClock(10.0)
         call_count = 0
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             nonlocal call_count
             call_count += 1
             if call_count == 1:
@@ -231,7 +358,12 @@ def test_cancelled_worker_and_timer_cannot_clear_new_request_activity():
 
 def test_tui_missing_key_starts_in_safe_error_state():
     async def scenario():
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=MISSING_KEY_INFO)
@@ -249,7 +381,12 @@ def test_tui_status_never_displays_api_key():
     async def scenario():
         secret_key = "test-secret-key-must-not-appear"
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
@@ -326,7 +463,12 @@ def test_enter_submits_input():
         received_inputs = []
         clock_values = iter([10.0, 11.234])
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             received_inputs.append(input_text)
             return ChatResult("answer", "fake", "fake-model")
 
@@ -357,7 +499,12 @@ def test_enter_submits_input():
 
 def test_up_down_navigates_input_history_and_restores_draft():
     async def scenario():
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             return ChatResult(f"answer: {input_text}", "fake", "fake-model")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
@@ -395,7 +542,12 @@ def test_up_down_navigates_input_history_and_restores_draft():
 
 def test_empty_input_history_keeps_current_draft():
     async def scenario():
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise AssertionError("runner should not be called")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
@@ -445,7 +597,12 @@ def test_input_history_restores_only_user_messages_with_original_text(tmp_path):
 
 def test_failed_input_remains_in_current_process_history():
     async def scenario():
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise ChatRuntimeError(
                 ChatErrorCode.TIMEOUT,
                 "Upstream request timed out",
@@ -512,7 +669,12 @@ def test_assistant_output_renders_markdown():
 print("hello")
 ```"""
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             return ChatResult(markdown_answer, "fake", "fake-model")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
@@ -570,7 +732,12 @@ def test_restored_assistant_history_renders_markdown(tmp_path):
 
 def test_non_assistant_messages_keep_markdown_markers_as_plain_text():
     async def scenario():
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             return ChatResult("ok", "fake", "fake-model")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
@@ -593,7 +760,12 @@ def test_non_assistant_messages_keep_markdown_markers_as_plain_text():
 
 def test_user_message_uses_background_card_without_styling_other_roles():
     async def scenario():
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             return ChatResult("普通回答", "fake", "fake-model")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
@@ -631,7 +803,12 @@ def test_runtime_error_displays_request_duration():
     async def scenario():
         clock_values = iter([20.0, 22.5])
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise ChatRuntimeError(
                 ChatErrorCode.TIMEOUT,
                 "Upstream request timed out",
@@ -658,7 +835,12 @@ def test_runtime_error_displays_request_duration():
 
 def test_text_area_accepts_chinese_input_directly():
     async def scenario():
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise AssertionError("runner should not be called while editing")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
@@ -675,7 +857,12 @@ def test_text_area_accepts_chinese_input_directly():
 
 def test_blank_input_is_rejected_without_calling_runner():
     async def scenario():
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise AssertionError("runner must not receive blank input")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
@@ -696,7 +883,12 @@ def test_help_and_chat_are_sent_as_ordinary_model_input():
     async def scenario():
         received_inputs = []
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             received_inputs.append(input_text)
             return ChatResult("ok", "fake", "fake-model")
 
@@ -717,7 +909,12 @@ def test_clear_command_clears_transcript_without_calling_runner():
     async def scenario():
         received_inputs = []
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             received_inputs.append(input_text)
             return ChatResult("answer", "fake", "fake-model")
 
@@ -824,7 +1021,12 @@ def test_thinking_state_blocks_duplicate_submission():
         release = asyncio.Event()
         received_inputs = []
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             received_inputs.append(input_text)
             started.set()
             await release.wait()
@@ -860,7 +1062,12 @@ def test_runtime_error_is_recoverable_on_next_submission():
     async def scenario():
         attempts = 0
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             nonlocal attempts
             attempts += 1
             if attempts == 1:
@@ -894,7 +1101,12 @@ def test_unexpected_error_is_hidden_and_app_remains_available():
     async def scenario():
         secret_detail = "internal-secret-detail"
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise RuntimeError(secret_detail)
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
@@ -919,7 +1131,12 @@ def test_double_escape_cancels_active_request_then_exits():
         exit_called = False
         clock = ManualClock(10.0)
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             started.set()
             try:
                 await asyncio.Event().wait()
@@ -974,7 +1191,12 @@ def test_quit_command_exits_without_calling_runner():
     async def scenario():
         exit_called = False
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise AssertionError("runner must not receive /quit")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
@@ -1001,7 +1223,12 @@ def test_double_escape_exits_when_no_request_is_running():
     async def scenario():
         exit_called = False
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise AssertionError("runner should not be called")
 
         clock_values = iter([10.0, 10.5])
@@ -1035,7 +1262,12 @@ def test_escape_confirmation_expires_after_timeout():
         exit_called = False
         clock_values = iter([10.0, 12.0, 12.5])
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             raise AssertionError("runner should not be called")
 
         app = ChatTuiApp(
@@ -1069,7 +1301,12 @@ def test_quit_command_cancels_active_request_before_exit():
         cancelled = asyncio.Event()
         exit_called = False
 
-        async def fake_runner(input_text: str) -> ChatResult:
+        async def fake_runner(
+            input_text: str,
+            *,
+            on_text_delta=None,
+            on_text_reset=None,
+        ) -> ChatResult:
             started.set()
             try:
                 await asyncio.Event().wait()

@@ -33,7 +33,7 @@ class FakeTurn:
         self.steps = iter(steps)
         self.received_results = []
 
-    async def next(self, tool_results=()):
+    async def next(self, tool_results=(), *, on_text_delta=None):
         self.received_results.append(tuple(tool_results))
         return next(self.steps)
 
@@ -80,6 +80,46 @@ def test_tool_loop_executes_tool_and_returns_result_to_next_model_step():
         "ok": True,
         "data": {"received": {"value": "中文"}},
     }
+
+
+def test_tool_loop_resets_streamed_intermediate_text_before_tools():
+    class StreamingTurn(FakeTurn):
+        async def next(self, tool_results=(), *, on_text_delta=None):
+            step = await super().next(
+                tool_results,
+                on_text_delta=on_text_delta,
+            )
+            if on_text_delta is not None and step.output_text:
+                on_text_delta(step.output_text)
+            return step
+
+    tool = RecordingTool()
+    turn = StreamingTurn(
+        [
+            ModelStep(
+                200,
+                "checking",
+                (ToolCall("call-1", "lookup", "{}"),),
+            ),
+            final_step("done"),
+        ]
+    )
+    deltas = []
+    resets = []
+
+    result = asyncio.run(
+        run_tool_loop(
+            turn,
+            ToolRegistry([tool]),
+            request_id="9" * 32,
+            on_text_delta=deltas.append,
+            on_text_reset=lambda: resets.append("reset"),
+        )
+    )
+
+    assert deltas == ["checking", "done"]
+    assert resets == ["reset"]
+    assert result.output_text == "done"
 
 
 def test_tool_loop_executes_multiple_calls_serially_and_logs_metadata(monkeypatch):

@@ -11,6 +11,8 @@ from app.services.llm.contracts import (
     LlmTurn,
     ModelStep,
     ProviderInvalidResponseError,
+    TextDeltaHandler,
+    TextResetHandler,
 )
 from tools.contracts import ToolPayloadLimitError, ToolResult
 from tools.registry import ToolRegistry
@@ -29,19 +31,25 @@ async def run_tool_loop(
     registry: ToolRegistry,
     *,
     request_id: str,
+    on_text_delta: TextDeltaHandler | None = None,
+    on_text_reset: TextResetHandler | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> ModelStep:
     """串行执行模型要求的白名单工具，直到得到最终文本或触达上限。"""
 
     results: tuple[ToolResult, ...] = ()
     for step_number in range(1, MAX_MODEL_STEPS + 1):
-        step = await turn.next(results)
+        step = await turn.next(results, on_text_delta=on_text_delta)
         if not step.tool_calls:
             if not isinstance(step.output_text, str) or not step.output_text:
                 raise ProviderInvalidResponseError(
                     "Upstream service returned an invalid response"
                 )
             return step
+
+        # 当前模型步骤属于工具中间态，撤销可能已展示的临时文本。
+        if on_text_reset is not None:
+            on_text_reset()
 
         # 最后一步的调用无法再被模型消费，因此不执行这些无用工具。
         if (

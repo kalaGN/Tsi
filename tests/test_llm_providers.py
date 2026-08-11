@@ -28,8 +28,8 @@ from app.services.llm.deepseek import (
     DeepSeekChatProvider,
 )
 from app.services.llm.factory import create_provider, resolve_provider_config
-from app.services.llm import http_client
-from app.services.llm.http_client import post_json
+from app.services.llm import deepseek, http_client
+from app.services.llm.http_client import post_json, post_sse
 from tools.contracts import ToolDefinition, ToolResult
 
 
@@ -50,16 +50,128 @@ def user_messages(content: str = "hello") -> tuple[ChatMessage, ...]:
     return (ChatMessage(ChatRole.USER, content),)
 
 
-def install_transport(monkeypatch, handler):
+def install_transport(monkeypatch, handler, *, adapt_streaming_json=True):
     """让 Provider 使用内存 Transport，确保测试不会访问真实模型。"""
 
     real_async_client = httpx.AsyncClient
-    transport = httpx.MockTransport(handler)
+
+    def adapted_handler(request):
+        response = handler(request)
+        if adapt_streaming_json:
+            return _adapt_json_response_to_sse(request, response)
+        return response
+
+    transport = httpx.MockTransport(adapted_handler)
 
     def create_client(**kwargs):
         return real_async_client(transport=transport, **kwargs)
 
     monkeypatch.setattr(http_client.httpx, "AsyncClient", create_client)
+
+
+def _adapt_json_response_to_sse(request, response):
+    """把旧行为测试的成功 JSON 转成单事件流，避免掩盖生产协议分支。"""
+
+    if (
+        request.headers.get("Accept") != "text/event-stream"
+        or not response.is_success
+        or response.headers.get("content-type", "").startswith("text/event-stream")
+    ):
+        return response
+    try:
+        body = json.loads(response.content)
+    except (TypeError, ValueError):
+        return response
+
+    if str(request.url) == DEEPSEEK_CHAT_COMPLETIONS_URL:
+        events = _deepseek_json_as_sse(body)
+    elif str(request.url) == ALIYUN_RESPONSES_URL:
+        events = _aliyun_json_as_sse(body)
+    else:
+        return response
+    return httpx.Response(
+        response.status_code,
+        headers={"content-type": "text/event-stream"},
+        stream=ChunkedAsyncStream((events,)),
+    )
+
+
+def _deepseek_json_as_sse(body):
+    """把完整 DeepSeek message 变成协议等价的单个 Delta。"""
+
+    choices = body.get("choices") if isinstance(body, dict) else None
+    if not isinstance(choices, list) or not choices:
+        chunk = body
+    else:
+        first = choices[0]
+        message = first.get("message") if isinstance(first, dict) else None
+        if not isinstance(message, dict):
+            chunk = body
+        else:
+            delta = dict(message)
+            raw_calls = delta.get("tool_calls")
+            if isinstance(raw_calls, list):
+                delta["tool_calls"] = [
+                    {"index": index, **raw_call}
+                    for index, raw_call in enumerate(raw_calls)
+                ]
+            chunk = {
+                "choices": [
+                    {
+                        "index": 0,
+                        "delta": delta,
+                        "finish_reason": "tool_calls" if raw_calls else "stop",
+                    }
+                ]
+            }
+    return (
+        f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+        "data: [DONE]\n\n"
+    ).encode()
+
+
+def _aliyun_json_as_sse(body):
+    """把完整 Responses 对象变成 Delta 与 completed 测试事件。"""
+
+    response_body = dict(body) if isinstance(body, dict) else body
+    events = []
+    if isinstance(response_body, dict):
+        response_body.setdefault("status", "completed")
+        output_text = response_body.get("output_text")
+        if isinstance(output_text, str) and output_text:
+            events.append({"type": "response.output_text.delta", "delta": output_text})
+    events.append({"type": "response.completed", "response": response_body})
+    return b"".join(
+        f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
+        for event in events
+    )
+
+
+class ChunkedAsyncStream(httpx.AsyncByteStream):
+    """按指定网络分块返回字节，覆盖 SSE 跨 Chunk 边界。"""
+
+    def __init__(self, chunks):
+        self._chunks = tuple(chunks)
+
+    async def __aiter__(self):
+        for chunk in self._chunks:
+            yield chunk
+
+
+class BlockingAsyncStream(httpx.AsyncByteStream):
+    """保持读取挂起，并暴露关闭状态用于超时和取消测试。"""
+
+    def __init__(self):
+        self.started = asyncio.Event()
+        self.closed = False
+
+    async def __aiter__(self):
+        self.started.set()
+        await asyncio.Event().wait()
+        yield b""  # pragma: no cover - 仅用于满足异步生成器契约
+
+    async def aclose(self):
+        self.closed = True
 
 
 async def run_provider_once(provider, messages):
@@ -173,10 +285,10 @@ def test_aliyun_sends_expected_request_and_extracts_text(
         assert str(request.url) == ALIYUN_RESPONSES_URL
         assert request.headers["Authorization"] == f"Bearer {FAKE_API_KEY}"
         assert request.headers["Content-Type"] == "application/json"
-        assert request.headers["Accept"] == "application/json"
+        assert request.headers["Accept"] == "text/event-stream"
         assert request.content == (
             b'{"model":"custom-qwen","input":'
-            b'[{"role":"user","content":"hello"}]}'
+            b'[{"role":"user","content":"hello"}],"stream":true}'
         )
         return httpx.Response(200, json=body)
 
@@ -211,6 +323,7 @@ def test_aliyun_turn_declares_flat_tools_and_uses_array_input(monkeypatch):
         {
             "model": "custom-qwen",
             "input": [{"role": "user", "content": "hello"}],
+            "stream": True,
             "tools": [
                 {
                     "type": "function",
@@ -306,6 +419,101 @@ def test_aliyun_turn_appends_each_function_call_next_to_its_output(
     assert request_bodies == captured_payloads
 
 
+def test_aliyun_streams_text_deltas_and_validates_completed_response(monkeypatch):
+    events = (
+        {"type": "response.output_text.delta", "delta": "你"},
+        {"type": "response.output_text.delta", "delta": "好"},
+        {"type": "response.output_text.done", "text": "你好"},
+        {
+            "type": "response.completed",
+            "response": {"status": "completed", "output_text": "你好"},
+        },
+    )
+    chunks = tuple(
+        f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode()
+        for event in events
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream(chunks),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+    turn = AliyunResponsesProvider(FAKE_API_KEY).create_turn(
+        user_messages(),
+        (),
+        request_id=REQUEST_ID,
+    )
+    deltas = []
+
+    step = asyncio.run(turn.next(on_text_delta=deltas.append))
+
+    assert deltas == ["你", "好"]
+    assert step.output_text == "你好"
+    assert step.tool_calls == ()
+
+
+def test_aliyun_stream_validates_tool_argument_deltas(monkeypatch):
+    call_item = {
+        "id": "item-1",
+        "type": "function_call",
+        "name": "get_current_time",
+        "arguments": '{"timezone":"UTC"}',
+        "call_id": "call-1",
+    }
+    events = (
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "item-1",
+            "delta": '{"time',
+        },
+        {
+            "type": "response.function_call_arguments.delta",
+            "item_id": "item-1",
+            "delta": 'zone":"UTC"}',
+        },
+        {
+            "type": "response.function_call_arguments.done",
+            "item_id": "item-1",
+            "arguments": '{"timezone":"UTC"}',
+        },
+        {"type": "response.output_item.done", "item": call_item},
+        {
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "output": [call_item],
+            },
+        },
+    )
+    body = b"".join(
+        f"data: {json.dumps(event)}\n\n".encode() for event in events
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream((body,)),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+    turn = AliyunResponsesProvider(FAKE_API_KEY).create_turn(
+        user_messages(),
+        (TIME_TOOL,),
+        request_id=REQUEST_ID,
+    )
+
+    step = asyncio.run(turn.next())
+
+    assert len(step.tool_calls) == 1
+    assert step.tool_calls[0].arguments_json == '{"timezone":"UTC"}'
+
+
 def test_deepseek_sends_expected_request_and_extracts_text(monkeypatch):
     body = {
         "id": "chat-1",
@@ -317,10 +525,10 @@ def test_deepseek_sends_expected_request_and_extracts_text(monkeypatch):
         assert str(request.url) == DEEPSEEK_CHAT_COMPLETIONS_URL
         assert request.headers["Authorization"] == f"Bearer {FAKE_API_KEY}"
         assert request.headers["Content-Type"] == "application/json"
-        assert request.headers["Accept"] == "application/json"
+        assert request.headers["Accept"] == "text/event-stream"
         assert request.content == (
             b'{"model":"deepseek-v4-pro","messages":'
-            b'[{"role":"user","content":"\xe4\xbd\xa0\xe5\xa5\xbd"}],"stream":false}'
+            b'[{"role":"user","content":"\xe4\xbd\xa0\xe5\xa5\xbd"}],"stream":true}'
         )
         return httpx.Response(200, json=body)
 
@@ -362,7 +570,7 @@ def test_deepseek_turn_declares_tools_and_returns_direct_text(monkeypatch):
         {
             "model": "deepseek-v4-pro",
             "messages": [{"role": "user", "content": "hello"}],
-            "stream": False,
+            "stream": True,
             "tools": [
                 {
                     "type": "function",
@@ -488,6 +696,137 @@ def test_deepseek_turn_continues_with_assistant_and_ordered_tool_results(
         if event["event"] == "llm_http_request"
     ]
     assert request_bodies == captured_payloads
+
+
+def test_deepseek_streams_text_deltas_in_order(monkeypatch):
+    chunks = (
+        b'data: {"choices":[{"index":0,"delta":{"role":"assistant",'
+        b'"content":"\xe4\xbd\xa0"},"finish_reason":null}]}\n\n',
+        b'data: {"choices":[{"index":0,"delta":{"content":"\xe5\xa5\xbd"},'
+        b'"finish_reason":"stop"}]}\n\ndata: [DONE]\n\n',
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["stream"] is True
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream(chunks),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+    turn = DeepSeekChatProvider(FAKE_API_KEY).create_turn(
+        user_messages(),
+        (),
+        request_id=REQUEST_ID,
+    )
+    deltas = []
+
+    step = asyncio.run(turn.next(on_text_delta=deltas.append))
+
+    assert deltas == ["你", "好"]
+    assert step.output_text == "你好"
+    assert step.tool_calls == ()
+
+
+def test_deepseek_stream_assembles_tool_arguments_across_chunks(monkeypatch):
+    chunks = (
+        b'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,'
+        b'"id":"call-1","type":"function","function":{"name":"get_current_time",'
+        b'"arguments":"{\\\"time"}}]},"finish_reason":null}]}\n\n',
+        b'data: {"choices":[{"index":0,"delta":{"tool_calls":[{"index":0,'
+        b'"function":{"arguments":"zone\\\":\\\"UTC\\\"}"}}]},'
+        b'"finish_reason":"tool_calls"}]}\n\ndata: [DONE]\n\n',
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream(chunks),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+    turn = DeepSeekChatProvider(FAKE_API_KEY).create_turn(
+        user_messages(),
+        (TIME_TOOL,),
+        request_id=REQUEST_ID,
+    )
+
+    step = asyncio.run(turn.next())
+
+    assert step.output_text is None
+    assert len(step.tool_calls) == 1
+    assert step.tool_calls[0].call_id == "call-1"
+    assert step.tool_calls[0].name == "get_current_time"
+    assert step.tool_calls[0].arguments_json == '{"timezone":"UTC"}'
+
+
+def test_deepseek_stream_bounds_private_reasoning_content(monkeypatch):
+    body = (
+        b'data: {"choices":[{"index":0,"delta":'
+        b'{"reasoning_content":"hidden"},"finish_reason":null}]}\n\n'
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream((body,)),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+    monkeypatch.setattr(deepseek, "MAX_STREAM_OUTPUT_BYTES", 3)
+    turn = DeepSeekChatProvider(FAKE_API_KEY).create_turn(
+        user_messages(),
+        (),
+        request_id=REQUEST_ID,
+    )
+
+    with pytest.raises(ProviderInvalidResponseError):
+        asyncio.run(turn.next())
+
+
+def test_deepseek_stream_bounds_tool_call_count_before_runtime(monkeypatch):
+    raw_calls = [
+        {
+            "index": index,
+            "id": f"call-{index}",
+            "type": "function",
+            "function": {"name": "get_current_time", "arguments": "{}"},
+        }
+        for index in range(2)
+    ]
+    event = {
+        "choices": [
+            {
+                "index": 0,
+                "delta": {"tool_calls": raw_calls},
+                "finish_reason": "tool_calls",
+            }
+        ]
+    }
+    body = (
+        f"data: {json.dumps(event)}\n\ndata: [DONE]\n\n".encode()
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream((body,)),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+    monkeypatch.setattr(deepseek, "MAX_STREAM_TOOL_CALLS", 1)
+    turn = DeepSeekChatProvider(FAKE_API_KEY).create_turn(
+        user_messages(),
+        (TIME_TOOL,),
+        request_id=REQUEST_ID,
+    )
+
+    with pytest.raises(ProviderInvalidResponseError):
+        asyncio.run(turn.next())
 
 
 def test_deepseek_turn_rejects_mismatched_tool_result_before_second_request(
@@ -747,7 +1086,7 @@ def test_provider_rejects_non_json_success(monkeypatch, provider):
     with pytest.raises(ProviderInvalidResponseError) as captured:
         asyncio.run(run_provider_once(provider, user_messages()))
 
-    assert captured.value.user_message == "Upstream service returned invalid JSON"
+    assert captured.value.user_message == "Upstream service returned an invalid response"
 
 
 @pytest.mark.parametrize(
@@ -773,7 +1112,7 @@ def test_provider_rejects_success_without_text(monkeypatch, provider, body):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=body)
 
-    install_transport(monkeypatch, handler)
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
 
     with pytest.raises(ProviderInvalidResponseError) as captured:
         asyncio.run(run_provider_once(provider, user_messages()))
@@ -859,6 +1198,180 @@ def test_post_json_logs_request_and_response_with_controllable_clock(
     assert response_event["status_code"] == 200
     assert response_event["duration_ms"] == 250.0
     assert response_event["response_content_type"] == "application/json"
+
+
+def test_post_sse_decodes_utf8_across_chunks_and_multiline_events(
+    monkeypatch, captured_model_events
+):
+    chunks = (
+        b": keepalive\r\ndata: {\"delta\":\"\xe4\xbd",
+        b"\xa0\"}\r\n\r\ndata: first\ndata: second\n\n",
+        b"data: [DONE]\n\n",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["Accept"] == "text/event-stream"
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream; charset=utf-8"},
+            stream=ChunkedAsyncStream(chunks),
+        )
+
+    install_transport(monkeypatch, handler)
+    received = []
+    ticks = iter([1.0, 1.25])
+
+    status = asyncio.run(
+        post_sse(
+            DEEPSEEK_CHAT_COMPLETIONS_URL,
+            FAKE_API_KEY,
+            {"model": "m", "stream": True},
+            request_id=REQUEST_ID,
+            provider="deepseek",
+            model="m",
+            on_data=received.append,
+            clock=lambda: next(ticks),
+        )
+    )
+
+    assert status == 200
+    assert received == ['{"delta":"你"}', "first\nsecond", "[DONE]"]
+    events = captured_model_events()
+    assert [event["event"] for event in events] == [
+        "llm_http_request",
+        "llm_http_response",
+    ]
+    assert events[1]["duration_ms"] == 250.0
+
+
+@pytest.mark.parametrize(
+    "chunks",
+    [
+        (b"data: \xff\n\n",),
+        (b'data: {"unfinished":true}',),
+        (b"data: " + b"x" * (64 * 1024 + 1),),
+    ],
+)
+def test_post_sse_rejects_invalid_or_unbounded_stream(monkeypatch, chunks):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream(chunks),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+
+    with pytest.raises(ProviderInvalidResponseError):
+        asyncio.run(
+            post_sse(
+                DEEPSEEK_CHAT_COMPLETIONS_URL,
+                FAKE_API_KEY,
+                {"model": "m", "stream": True},
+                request_id=REQUEST_ID,
+                provider="deepseek",
+                model="m",
+                on_data=lambda data: None,
+            )
+        )
+
+
+def test_post_sse_rejects_non_event_stream_content_type(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"not": "a stream"})
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+
+    with pytest.raises(ProviderInvalidResponseError):
+        asyncio.run(
+            post_sse(
+                DEEPSEEK_CHAT_COMPLETIONS_URL,
+                FAKE_API_KEY,
+                {"model": "m", "stream": True},
+                request_id=REQUEST_ID,
+                provider="deepseek",
+                model="m",
+                on_data=lambda data: None,
+            )
+        )
+
+
+def test_post_sse_applies_overall_timeout_and_closes_stream(
+    monkeypatch,
+    captured_model_events,
+):
+    stream = BlockingAsyncStream()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=stream,
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+    monkeypatch.setattr(http_client, "TOTAL_TIMEOUT_SECONDS", 0.01)
+    ticks = iter([3.0, 3.02])
+
+    with pytest.raises(ProviderTimeoutError):
+        asyncio.run(
+            post_sse(
+                DEEPSEEK_CHAT_COMPLETIONS_URL,
+                FAKE_API_KEY,
+                {"model": "m", "stream": True},
+                request_id=REQUEST_ID,
+                provider="deepseek",
+                model="m",
+                on_data=lambda data: None,
+                clock=lambda: next(ticks),
+            )
+        )
+
+    assert stream.closed is True
+    events = captured_model_events()
+    assert [event["event"] for event in events] == [
+        "llm_http_request",
+        "llm_http_error",
+    ]
+    assert events[1]["error_type"] == "timeout"
+
+
+def test_post_sse_cancellation_closes_stream_without_network_error(
+    monkeypatch,
+    captured_model_events,
+):
+    async def scenario():
+        stream = BlockingAsyncStream()
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=stream,
+            )
+
+        install_transport(monkeypatch, handler, adapt_streaming_json=False)
+        task = asyncio.create_task(
+            post_sse(
+                DEEPSEEK_CHAT_COMPLETIONS_URL,
+                FAKE_API_KEY,
+                {"model": "m", "stream": True},
+                request_id=REQUEST_ID,
+                provider="deepseek",
+                model="m",
+                on_data=lambda data: None,
+            )
+        )
+        await stream.started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert stream.closed is True
+
+    asyncio.run(scenario())
+    assert [event["event"] for event in captured_model_events()] == [
+        "llm_http_request"
+    ]
 
 
 @pytest.mark.parametrize("status_code", [401, 403, 500])

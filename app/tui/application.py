@@ -13,7 +13,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual.timer import Timer
-from textual.widgets import Button, Footer, RichLog, Static, TextArea
+from textual.widgets import Button, RichLog, Static, TextArea
 from textual.worker import Worker, get_current_worker
 
 from app.runtime.chat import (
@@ -79,8 +79,8 @@ class ChatTuiApp(App[None]):
         "⠏",
     )
     BINDINGS = [
-        Binding("enter", "submit_prompt", "Send", priority=True),
-        Binding("escape", "confirm_exit", "Exit (x2)", priority=True),
+        Binding("enter", "submit_prompt", "Send", show=False, priority=True),
+        Binding("escape", "confirm_exit", "Exit (x2)", show=False, priority=True),
         Binding(
             "up",
             "previous_input",
@@ -232,7 +232,7 @@ class ChatTuiApp(App[None]):
         self._history_draft = ""
 
     def compose(self) -> ComposeResult:
-        """声明标题、对话记录、输入框、状态栏和快捷键页脚布局。"""
+        """声明标题、对话记录、输入框和状态栏布局。"""
 
         yield Static(self.TITLE, id="title", markup=False)
         yield SelectableRichLog(
@@ -254,7 +254,6 @@ class ChatTuiApp(App[None]):
             placeholder="Type a message. Enter: send, Esc x2: exit",
         )
         yield Static(id="status-bar", markup=False)
-        yield Footer(show_command_palette=False)
 
     def on_mount(self) -> None:
         """挂载后恢复历史，并把配置或历史错误转换为安全界面状态。"""

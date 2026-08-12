@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 from textual.geometry import Offset
 from textual.selection import SELECT_ALL, Selection
-from textual.widgets import RichLog, Static, TextArea
+from textual.widgets import Footer, RichLog, Static, TextArea
 
 from app.runtime.chat import (
     ChatErrorCode,
@@ -436,7 +436,7 @@ def test_tui_initial_state_supports_deepseek_status():
     asyncio.run(scenario())
 
 
-def test_activity_bar_starts_empty_above_prompt():
+def test_activity_bar_starts_empty_above_prompt_without_footer():
     async def scenario():
         async def fake_runner(
             input_text: str,
@@ -454,6 +454,7 @@ def test_activity_bar_starts_empty_above_prompt():
 
             assert str(activity.content) == ""
             assert activity.region.y < prompt.region.y < status.region.y
+            assert not list(app.query(Footer))
             assert app._activity_timer is None
 
     asyncio.run(scenario())

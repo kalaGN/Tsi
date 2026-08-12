@@ -681,10 +681,56 @@ class WorkspaceChangeJournal:
 class ApplyWorkspaceEditsTool:
     definition = ToolDefinition(
         "apply_workspace_edits",
-        "创建文件或按精确文本替换工作区文件；执行前必须审批",
+        (
+            "创建文件或按精确文本替换工作区文件；执行前必须审批。"
+            "create 传 mode/path/content；replace 传 mode/path/expected_sha256/"
+            "old_text/new_text，其中 expected_sha256 来自 read_workspace_file"
+        ),
         {
             "type": "object",
-            "properties": {"edits": {"type": "array"}},
+            "properties": {
+                "edits": {
+                    "type": "array",
+                    "description": "1 至 10 个结构化文件变更",
+                    "minItems": 1,
+                    "maxItems": MAX_EDIT_FILES,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "mode": {
+                                "type": "string",
+                                "enum": ["create", "replace"],
+                            },
+                            "path": {
+                                "type": "string",
+                                "description": "工作区内的相对文件路径",
+                            },
+                            "content": {
+                                "type": "string",
+                                "description": "create 模式的新文件完整内容",
+                            },
+                            "expected_sha256": {
+                                "type": "string",
+                                "description": (
+                                    "replace 模式必填；read_workspace_file "
+                                    "返回的完整文件 SHA-256"
+                                ),
+                                "pattern": "^[0-9a-f]{64}$",
+                            },
+                            "old_text": {
+                                "type": "string",
+                                "description": "replace 模式必填且须在文件中仅出现一次",
+                            },
+                            "new_text": {
+                                "type": "string",
+                                "description": "replace 模式替换后的文本，可为空字符串",
+                            },
+                        },
+                        "required": ["mode", "path"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
             "required": ["edits"],
             "additionalProperties": False,
         },

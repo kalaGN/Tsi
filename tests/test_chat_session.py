@@ -2,15 +2,18 @@ import asyncio
 
 import pytest
 
-from app.runtime.chat import ChatErrorCode, ChatRuntimeError
+from app.runtime import session as session_module
+from app.runtime.chat import ChatErrorCode, ChatResult, ChatRuntimeError
 from app.runtime.session import ChatSession
 from app.runtime.session_store import SessionStore, SessionStoreError
+from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS
 from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
     ModelStep,
     ProviderTimeoutError,
 )
+from tools import create_default_registry
 from tools.contracts import ToolCall
 
 
@@ -147,6 +150,41 @@ def test_chat_session_forwards_deltas_before_persisting_complete_turn(tmp_path):
             ChatMessage(ChatRole.USER, "问题"),
             ChatMessage(ChatRole.ASSISTANT, "完整回答"),
         )
+
+    asyncio.run(scenario())
+
+
+def test_chat_session_forwards_registry_limits_and_tool_callbacks(tmp_path, monkeypatch):
+    async def scenario():
+        captured = {}
+        registry = create_default_registry()
+
+        async def fake_run(messages, **kwargs):
+            captured["messages"] = messages
+            captured.update(kwargs)
+            return ChatResult("answer", "fake", "fake-model")
+
+        async def approve(_request):
+            return True
+
+        observed = lambda call, result: None
+        monkeypatch.setattr(session_module, "run_chat_messages", fake_run)
+        session = ChatSession(
+            SessionStore(tmp_path / "session.json"),
+            registry=registry,
+            tool_loop_limits=WORKSPACE_TOOL_LOOP_LIMITS,
+        )
+
+        await session.send(
+            "question",
+            on_tool_approval=approve,
+            on_tool_result=observed,
+        )
+
+        assert captured["registry"] is registry
+        assert captured["tool_loop_limits"] is WORKSPACE_TOOL_LOOP_LIMITS
+        assert captured["on_tool_approval"] is approve
+        assert captured["on_tool_result"] is observed
 
     asyncio.run(scenario())
 

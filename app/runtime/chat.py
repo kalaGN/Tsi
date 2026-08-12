@@ -9,7 +9,12 @@ from app.observability.model_logging import (
     log_model_response,
     new_request_id,
 )
-from app.runtime.tool_loop import ToolLoopLimitError, run_tool_loop
+from app.runtime.tool_loop import (
+    DEFAULT_TOOL_LOOP_LIMITS,
+    ToolLoopLimitError,
+    ToolLoopLimits,
+    run_tool_loop,
+)
 from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
@@ -26,7 +31,12 @@ from app.services.llm.contracts import (
     TextResetHandler,
 )
 from app.services.llm.factory import create_provider
-from tools import ToolRegistry, create_default_registry
+from tools import (
+    ToolApprovalHandler,
+    ToolRegistry,
+    ToolResultHandler,
+    create_default_registry,
+)
 
 
 @dataclass(frozen=True)
@@ -92,6 +102,9 @@ async def run_chat(
     *,
     on_text_delta: TextDeltaHandler | None = None,
     on_text_reset: TextResetHandler | None = None,
+    on_tool_approval: ToolApprovalHandler | None = None,
+    on_tool_result: ToolResultHandler | None = None,
+    tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
 ) -> ChatResult:
     """校验输入、调用所选 Provider，并统一外部异常语义。"""
 
@@ -107,6 +120,9 @@ async def run_chat(
         registry=registry,
         on_text_delta=on_text_delta,
         on_text_reset=on_text_reset,
+        on_tool_approval=on_tool_approval,
+        on_tool_result=on_tool_result,
+        tool_loop_limits=tool_loop_limits,
     )
 
 
@@ -118,6 +134,9 @@ async def run_chat_messages(
     system_prompt: str | None = None,
     on_text_delta: TextDeltaHandler | None = None,
     on_text_reset: TextResetHandler | None = None,
+    on_tool_approval: ToolApprovalHandler | None = None,
+    on_tool_result: ToolResultHandler | None = None,
+    tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
 ) -> ChatResult:
     """调用有序对话，可选 system 不改变当前 user 输入日志。"""
 
@@ -153,6 +172,9 @@ async def run_chat_messages(
             request_id=request_id,
             on_text_delta=on_text_delta,
             on_text_reset=on_text_reset,
+            on_tool_approval=on_tool_approval,
+            on_tool_result=on_tool_result,
+            limits=tool_loop_limits,
         )
         output_text = step.output_text
         if output_text is None:

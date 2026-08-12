@@ -4,6 +4,7 @@
 
 ## Documents
 
+- [TUI 项目自修改设计](20260811-TUI项目自修改-设计.md)：定义 Workspace 隔离、风险契约、两阶段 Diff 审批、结构化编辑、白名单检查、Journal 撤销及 TUI 专属预算；已完成。
 - [系统提示词设计](20260811-系统提示词-设计.md)：定义启动目录 AGENTS 读取、system 消息契约、Session 隔离和 TUI 阻断状态；已完成。
 - [TUI 消息复制设计](20260811-TUI消息复制-设计.md)：以项目内 SelectableRichLog 补齐选择坐标、高亮和可见文本提取，复用 Textual 内置复制动作；已完成。
 - [模型流式输出设计](20260811-模型流式输出-设计.md)：定义共享 SSE 边界、两家 Provider 解析、Runtime 回调、工具步骤撤销和 TUI 临时输出；已完成。

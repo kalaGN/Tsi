@@ -2,7 +2,7 @@
 
 ## Overview
 
-这是一个基于 Python 3.11 的轻量模型调用项目，同时提供聚合 JSON 的无状态 FastAPI HTTP 和支持流式展示、可恢复单会话的 Textual TUI。两个入口共享 Chat Runtime；Runtime 通过 Provider Turn 选择阿里云或 DeepSeek，并自动编排根目录白名单只读工具；根目录 `main.py` 只保留 Uvicorn 兼容入口。
+这是一个基于 Python 3.11 的轻量模型调用项目，同时提供聚合 JSON 的无状态 FastAPI HTTP 和支持流式展示、可恢复单会话及项目自修改的 Textual TUI。两个入口共享 Chat Runtime，但使用隔离的 Registry 和循环预算：HTTP 仅有只读时间工具，TUI 绑定启动目录并提供读取、审批写入、固定检查和撤销工具。
 
 ## Components
 
@@ -11,7 +11,7 @@
 - `app/observability/model_logging.py`：配置模型/HTTP/工具 JSON 日志、stderr 输出、本地转储和事件白名单。
 - `app/routers/chat.py`：校验 `POST /chat`，返回统一 `ChatResponse` 并映射 HTTP 错误。
 - `app/runtime/chat.py`：无状态入口、有序消息调用、默认工具 Registry、统一结果和安全错误语义。
-- `app/runtime/tool_loop.py`：最多 5 个模型步骤、每步最多 4 个工具调用的串行编排与工具事件。
+- `app/runtime/tool_loop.py`：默认/Workspace 循环预算、请求级审批上下文、串行工具编排和结果观察回调。
 - `app/runtime/session.py`：串行化 TUI 发送，只提交 Provider 和持久化均成功的完整轮次。
 - `app/runtime/session_store.py`：版本化 JSON 会话校验、原子保存、恢复与清理。
 - `app/services/llm/contracts.py`：中立角色/消息、ModelStep、Provider Turn、文本 Delta/reset 回调协议和共享异常。
@@ -19,17 +19,21 @@
 - `app/services/llm/http_client.py`：共享异步 SSE POST、有界事件解码、流生命周期超时、I/O 边界事件记录和脱敏错误处理。
 - `app/services/llm/aliyun.py`：阿里云 Responses 流事件累加、Function Call 续接和完整结果校验。
 - `app/services/llm/deepseek.py`：DeepSeek Chat Completions 流事件累加、assistant/tool 续接和完整结果校验。
-- `tools/contracts.py`：Provider 中立的 ToolDefinition、ToolCall、ToolResult 和 Tool 协议。
-- `tools/registry.py`：显式白名单注册、参数解析、串行执行、安全错误和载荷边界。
+- `tools/contracts.py`：Provider 中立的风险等级、Tool、审批请求、调用、结果和回调契约。
+- `tools/registry.py`：显式白名单注册、参数解析、两阶段审批、串行执行、安全错误和载荷边界。
 - `tools/builtin.py`：只读 `get_current_time(timezone)` 实现。
+- `tools/workspace.py`：Workspace 路径策略、文件/Git 工具、结构化编辑、Journal 和撤销。
+- `tools/project_checks.py`：无 Shell 的四个固定项目检查。
 - `app/runtime/system_prompt.py`：从 TUI 启动目录有界读取可选 `AGENTS.md` 系统提示词。
-- `app/tui/__main__.py`：加载根目录 `.env` 并启动 Textual。
-- `app/tui/application.py`：终端输入与历史、用户消息卡片、临时纯文本流、最终 Assistant Markdown、请求活动 Timer、状态、耗时和取消。
+- `app/tui/__main__.py`：加载根目录 `.env`，捕获一次启动目录，创建 Workspace Registry 并启动 Textual。
+- `app/tui/application.py`：终端输入与历史、消息展示、请求活动、审批回调、已落盘失败提醒、状态、耗时和取消。
+- `app/tui/approval.py`：默认拒绝且可复制的纯文本完整 Diff Modal。
 - `app/tui/widgets.py`：为 RichLog 补齐鼠标选择坐标、选择高亮和可见文本复制，并为输入框补充 `Cmd+A` / `Ctrl+A` 全选。
-- `app/tui/state.py`：定义 `Ready`、`Thinking`、`Error`。
+- `app/tui/state.py`：定义 `Ready`、`Thinking`、`Awaiting approval`、`Error`。
 - `tests/test_llm_providers.py`：Provider、工厂和共享 HTTP Mock 测试。
 - `tests/test_chat_runtime.py`：Runtime 单元测试。
-- `tests/test_tool_loop.py`、`tests/test_tools.py`：有界编排、Registry 和内置工具测试。
+- `tests/test_tool_loop.py`、`tests/test_tools.py`：有界编排、审批、Registry 和内置工具测试。
+- `tests/test_workspace_tools.py`：路径、文件、Git、编辑、检查和撤销测试。
 - `tests/test_model_logging.py`：日志格式、幂等、转储和失败降级测试。
 - `tests/test_chat.py`：HTTP 契约与 Provider 接线测试。
 - `tests/test_tui.py`：Textual 无头交互测试。
@@ -52,7 +56,7 @@ main.py -> app.application -> app.routers.chat --------+
                                                                   shared HTTP
 
 python -m app.tui -> configure model logging -> app.tui.application
-                                                   -> app.runtime.chat
+                         -> Workspace Registry -> ChatSession -> app.runtime.chat
 ```
 
 - Router 和 TUI 只依赖 Runtime，不理解外部响应结构。
@@ -83,11 +87,11 @@ POST /chat
   -> Router returns 200 {"output_text": "..."}
 ```
 
-不需要工具时仍只有四个成功事件。需要工具时，同一 request ID 下会出现多组 HTTP 事件和工具元数据事件。共享 HTTP 层在真实 I/O 边界旁路记录，不修改状态码映射、重试或超时；`llm_http_request.request_body` 与实际 payload 一致，因此续接请求会明文包含工具结果。
+不需要工具时仍只有四个成功事件。需要工具时，同一 request ID 下会出现多组 HTTP 事件和工具事件；`llm_tool_call` 明文记录完整 JSON 参数，`llm_tool_result` 明文记录完整安全结果。共享 HTTP 层在真实 I/O 边界旁路记录，不修改状态码映射、重试或超时；`llm_http_request.request_body` 与实际 payload 一致，因此续接请求也会明文包含工具结果。
 
 DeepSeek Turn 按 choice/tool index 拼接流式文本和工具参数，把 assistant `tool_calls` 和对应 `role=tool/tool_call_id` 结果加入 messages，并保留工具调用时的 `reasoning_content`。阿里云 Turn 消费 `output_text.delta/done`、function call 与 `response.completed`，把每个 `function_call` 与对应 `function_call_output` 紧邻加入 input。两家结构都在 Provider 内转换为中立 ToolCall/ToolResult。
 
-DeepSeek 必须收到合法终止原因和 `[DONE]`；阿里云必须收到成功的 `response.completed`。事件 JSON、UTF-8、终止标记、完成文本或工具结构不一致均属于无效上游响应并映射为 502。单 SSE 事件上限 64 KiB，单步文本上限 1 MiB，单工具参数上限 8 KiB。
+DeepSeek 必须收到合法终止原因和 `[DONE]`；阿里云必须收到成功的 `response.completed`。事件 JSON、UTF-8、终止标记、完成文本或工具结构不一致均属于无效上游响应并映射为 502。单 SSE 事件上限 96 KiB，单步文本上限 1 MiB，流解析层单工具参数上限 64 KiB；Registry 再按具体工具执行 8 KiB 或 64 KiB 上限。
 
 ## TUI Chat Flow
 
@@ -95,10 +99,15 @@ DeepSeek 必须收到合法终止原因和 `[DONE]`；阿里云必须收到成�
 python -m app.tui
   -> load .env without overriding Shell variables
   -> read cwd/AGENTS.md once as an optional bounded system prompt
+  -> capture cwd once and create Workspace Policy, Journal and Registry
   -> Runtime resolves Provider, model and safe key status
   -> load data/chat-session.json and restore complete turns
   -> Textual Worker calls ChatSession.send
   -> Runtime sends optional system + committed history + current user and runs tool loop
+  -> read tools execute automatically; mutating tools preview a full bounded Diff
+  -> Textual Modal defaults to reject and returns a request-scoped decision
+  -> approved edit is revalidated, atomically applied and recorded in the Journal
+  -> fixed checks run without Shell; undo uses the latest unchanged change_id
   -> Provider text Delta crosses the neutral callback boundary
   -> request-scoped 100 ms Timer batches temporary plain-text output, spinner and elapsed time
   -> tool step reset removes text that is not the final answer
@@ -107,7 +116,7 @@ python -m app.tui
   -> TUI stops the Timer, clears activity and records final monotonic elapsed time
 ```
 
-TUI 不读取 Provider 专属密钥变量，不解析 Provider JSON，也不逐次确认只读工具；状态信息和实际调用共用工厂配置规则。启动入口只读取 `Path.cwd()/AGENTS.md` 一次，要求 UTF-8 普通文件且不超过 32 KiB；有效正文作为请求局部的唯一首条 system 消息，文件缺失/空白则省略，非法文件在 TUI 内形成阻断错误。系统提示词不进入 transcript 或 Session，`/clear` 只清 user/assistant 历史；HTTP `/chat` 不读取宿主机规则。工具轨迹只存在于当前 Turn，工具步骤触发 reset 后其临时文本被清除，Session 仍只提交最终 user/assistant 消息。生成中的文本仅在最高 8 行临时 `SelectableRichLog` 中按纯文本展示并由 100 ms Timer 合并刷新；成功后临时区隐藏，完整原文构造为 Rich Markdown Renderable。恢复历史和新响应复用同一最终展示路径；用户消息使用 Rich Panel 增加背景和边框但不解析 Markdown，系统和错误仍按纯文本显示，Session 与后续模型请求继续使用未经改写的原文。两个消息区域都通过项目内 RichLog 子类向 Textual 提供字符坐标、选区高亮和渲染后可见文本，鼠标拖选后由 Screen 内置 `Cmd+C` / `Ctrl+C` 动作复制，不读取隐藏 Session 或 Markdown 原文。请求代次会阻止取消后的陈旧 Delta 写回。HTTP `/chat` 不注册展示回调、不加载或修改 TUI 会话文件，仍在 Runtime 汇总完成后返回 JSON。
+TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只读取 `Path.cwd()/AGENTS.md` 一次，并把同一启动目录固定为 Workspace；二者都不热加载。系统提示词和工具轨迹不进入 Session，Session 仍只提交最终 user/assistant。审批期间状态为 `Awaiting approval`，Modal 只显示相对路径和纯文本 Diff；拒绝不会写盘，相同变更在一次请求内不会重复弹窗。成功编辑保留 `change_id`，Journal 最多 10 个批次且不跨重启；后续模型失败时 TUI 会列出本轮仍保留的相对路径。请求代次会阻止取消后的陈旧 Delta 或审批结果写回。HTTP `/chat` 不加载 Workspace 模块、不读取宿主规则或 TUI 会话文件，仍在 Runtime 汇总完成后返回 JSON。
 
 输入历史是 `ChatTuiApp` 内存状态：启动时从 Session 的 user 消息初始化，当前进程每次真正启动的请求立即追加，因此失败或取消输入也可临时召回；只有完整成功轮次由既有 Session 规则跨重启保存。高优先级 Up/Down Binding 负责不循环浏览和草稿恢复，不修改 Session schema。
 
@@ -124,8 +133,10 @@ TUI 不读取 Provider 专属密钥变量，不解析 Provider JSON，也不逐�
 
 - HTTP 与 TUI 都只接触统一文本，原始 Provider JSON 只存在于 Provider 调用栈。
 - 所有请求统一通过 Provider Turn，不保留旧 `generate()` 或原始 ProviderResult 路径。
-- 根目录 Registry 仅注册 `get_current_time(timezone)`；工具名只能来自显式白名单，不支持反射、动态 import、Shell、写操作或 MCP。
-- 工具循环最多 5 个模型步骤、每步 4 次调用；参数/结果 UTF-8 上限分别为 8/32 KiB，多个调用串行执行。
+- HTTP 默认 Registry 仅注册 `get_current_time(timezone)`；TUI Registry 另注册 8 个 Workspace 工具。工具名只能来自显式白名单，不支持反射、动态 import、任意 Shell 或 MCP。
+- HTTP 循环最多 5 步、每步 4 次、总计 16 次；TUI 最多 20 步、每步 4 次、总计 40 次。普通参数/结果上限为 8/32 KiB，编辑参数为 64 KiB。
+- 写 Tool 必须先生成完整有界 Diff；Registry 没有审批回调、用户拒绝或内容并发变化时均不会执行。
+- Workspace 拒绝越界、符号链接、保护路径、二进制和超限文件；编辑只支持 create/replace，固定检查不接受额外 argv、cwd 或环境。
 - 第 5 步仍请求工具时不执行无法被后续步骤消费的调用，Runtime 返回安全 `tool_limit`，HTTP 映射为 502。
 - `/chat` 请求不包含 Provider 或模型；切换由部署环境控制。
 - 使用现有异步 HTTPX，不引入 Provider SDK。

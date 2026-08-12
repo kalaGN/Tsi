@@ -1,4 +1,5 @@
 import json
+import inspect
 
 import httpx
 import pytest
@@ -16,6 +17,17 @@ from app.services.llm.deepseek import DEEPSEEK_CHAT_COMPLETIONS_URL
 
 client = TestClient(main.app)
 FAKE_API_KEY = "test-only-api-key"
+
+
+def test_http_entrypoints_do_not_import_workspace_capabilities():
+    sources = (
+        inspect.getsource(main),
+        inspect.getsource(application),
+        inspect.getsource(chat_router),
+    )
+
+    assert all("tools.workspace" not in source for source in sources)
+    assert all("create_workspace_registry" not in source for source in sources)
 
 
 @pytest.fixture(autouse=True)

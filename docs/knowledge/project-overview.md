@@ -2,7 +2,7 @@
 
 ## Goal
 
-本项目用于学习和验证 FastAPI、Textual、外部模型流式接口与受控 Function Calling。HTTP 提供聚合 JSON 的无状态文本调用，本地全屏 TUI 提供流式展示且可持久化和恢复的唯一多轮会话；两者通过统一 Runtime 调用阿里云 Responses API 或 DeepSeek Chat Completions API，并自动执行根目录白名单只读工具。
+本项目用于学习和验证 FastAPI、Textual、外部模型流式接口与受控 Function Calling。HTTP 提供聚合 JSON 的无状态文本调用和只读时间工具；本地全屏 TUI 提供流式展示、可恢复单会话，以及绑定启动目录的项目读取、审批修改、固定检查和撤销闭环。
 
 ## Project Shape
 
@@ -36,7 +36,7 @@
 - `app/runtime/chat.py`：HTTP/TUI 共享用例、结果和错误语义。
 - `app/runtime/tool_loop.py`：有界模型步骤和串行工具执行编排。
 - `app/services/llm/`：配置工厂、共享网络边界、阿里云与 DeepSeek Provider。
-- `tools/`：Provider 中立工具契约、Registry 和 `get_current_time`。
+- `tools/`：Provider 中立契约、Registry、`get_current_time`、Workspace 策略、文件/Git 工具和固定项目检查。
 - `app/tui/`：Textual 应用、状态和模块启动入口。
 - `tests/test_llm_providers.py`：Provider 协议与错误测试。
 - `tests/test_chat.py`、`tests/test_chat_runtime.py`、`tests/test_tui.py`：对应交互边界测试。
@@ -67,13 +67,15 @@ git diff --check
 - 用户消息以不解析 Markdown 的全宽背景卡片展示；Assistant 支持标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；系统和错误保持纯文本。
 - 最终消息和流式临时文本支持鼠标选择，并通过 `Cmd+C` / `Ctrl+C` 复制渲染后的可见文字。
 - 环境变量密钥、固定上游 URL、显式超时和脱敏错误分类。
-- 自动执行显式注册的只读当前时间工具，并限制模型步骤、每步调用数和载荷大小。
+- HTTP 自动执行只读当前时间工具；TUI 自动执行 Workspace 只读工具并审批每次写入/撤销。
+- TUI 支持结构化 create/replace、哈希冲突保护、原子批次、固定项目检查和进程内 LIFO 撤销。
 - request ID 关联的结构化模型、HTTP 和工具日志。
 - 完整上游请求日志包含实际 system 消息；HTTP `/chat` 不加载本地项目规则。
 
 明确不支持：
 
-- HTML、远程图片、Mermaid、Markdown 代码执行、HTTP SSE、请求级 Provider/模型选择、多会话管理、上下文压缩、写操作工具、MCP、动态插件、多 Agent 和多模态。
+- HTML、远程图片、Mermaid、Markdown 代码执行、HTTP SSE、请求级 Provider/模型选择、多会话管理、上下文压缩、任意 Shell、MCP、动态插件、多 Agent 和多模态。
+- 文件删除、移动、重命名、自动依赖安装、Git Commit/Tag/Push、热加载和跨重启撤销。
 - 自动重试、降级、负载均衡、熔断、限流、用户认证授权和任务队列。
 - 容器、反向代理、进程管理、CI/CD、Trace、指标、告警、远程日志采集和正式健康检查。
 

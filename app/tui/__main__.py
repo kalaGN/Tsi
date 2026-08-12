@@ -7,12 +7,15 @@ from dotenv import load_dotenv
 
 from app.observability.model_logging import configure_model_logging
 from app.runtime.system_prompt import SystemPromptLoadError, load_system_prompt
+from tools.workspace import WorkspacePolicy, create_workspace_registry
 
 
 def _create_app(
     *,
     system_prompt: str | None,
     system_prompt_error: str | None,
+    workspace_registry,
+    workspace_error: str | None,
 ):
     """延迟导入 Textual，确保终端兼容配置先于框架初始化生效。"""
 
@@ -21,6 +24,8 @@ def _create_app(
     return ChatTuiApp(
         system_prompt=system_prompt,
         system_prompt_error=system_prompt_error,
+        workspace_registry=workspace_registry,
+        workspace_error=workspace_error,
     )
 
 
@@ -39,9 +44,18 @@ def main() -> None:
     except SystemPromptLoadError as exc:
         system_prompt = None
         system_prompt_error = str(exc)
+    try:
+        workspace_policy = WorkspacePolicy(startup_directory)
+        workspace_registry = create_workspace_registry(workspace_policy)
+        workspace_error = None
+    except (OSError, ValueError):
+        workspace_registry = None
+        workspace_error = "Workspace tools are unavailable"
     _create_app(
         system_prompt=system_prompt,
         system_prompt_error=system_prompt_error,
+        workspace_registry=workspace_registry,
+        workspace_error=workspace_error,
     ).run()
 
 

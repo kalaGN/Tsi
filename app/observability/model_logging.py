@@ -70,6 +70,7 @@ _EVENT_FIELDS = {
         "call_id",
         "tool_name",
         "arguments_chars",
+        "arguments_json",
     ),
     "llm_tool_result": (
         "request_id",
@@ -78,6 +79,16 @@ _EVENT_FIELDS = {
         "status",
         "duration_ms",
         "output_chars",
+        "output_text",
+    ),
+    "llm_tool_approval": (
+        "request_id",
+        "call_id",
+        "tool_name",
+        "approved",
+        "paths_count",
+        "diff_chars",
+        "duration_ms",
     ),
 }
 
@@ -286,8 +297,9 @@ def log_model_tool_call(
     call_id: str,
     tool_name: str,
     arguments_chars: int,
+    arguments_json: str,
 ) -> None:
-    """记录一次白名单工具调用的关联元数据，不重复记录完整参数。"""
+    """记录一次白名单工具调用及模型提供的完整 JSON 参数。"""
 
     logging.getLogger(LOGGER_NAME).info(
         "llm_tool_call",
@@ -297,6 +309,7 @@ def log_model_tool_call(
             "call_id": call_id,
             "tool_name": tool_name,
             "arguments_chars": arguments_chars,
+            "arguments_json": arguments_json,
         },
     )
 
@@ -309,8 +322,9 @@ def log_model_tool_result(
     status: str,
     duration_ms: float,
     output_chars: int,
+    output_text: str,
 ) -> None:
-    """记录工具结果状态和耗时，不记录结果正文或异常详情。"""
+    """记录工具结果和耗时；安全错误仍由 Registry 固定正文。"""
 
     logging.getLogger(LOGGER_NAME).info(
         "llm_tool_result",
@@ -322,6 +336,34 @@ def log_model_tool_result(
             "status": status,
             "duration_ms": duration_ms,
             "output_chars": output_chars,
+            "output_text": output_text,
+        },
+    )
+
+
+def log_model_tool_approval(
+    *,
+    request_id: str,
+    call_id: str,
+    tool_name: str,
+    approved: bool,
+    paths_count: int,
+    diff_chars: int,
+    duration_ms: float,
+) -> None:
+    """记录审批决定的有限元数据，不记录文件路径或 Diff 正文。"""
+
+    logging.getLogger(LOGGER_NAME).info(
+        "llm_tool_approval",
+        extra={
+            "event": "llm_tool_approval",
+            "request_id": request_id,
+            "call_id": call_id,
+            "tool_name": tool_name,
+            "approved": approved,
+            "paths_count": paths_count,
+            "diff_chars": diff_chars,
+            "duration_ms": duration_ms,
         },
     )
 

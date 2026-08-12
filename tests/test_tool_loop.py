@@ -4,9 +4,19 @@ import json
 import pytest
 
 from app.runtime import tool_loop
-from app.runtime.tool_loop import ToolLoopLimitError, run_tool_loop
+from app.runtime.tool_loop import (
+    DEFAULT_TOOL_LOOP_LIMITS,
+    WORKSPACE_TOOL_LOOP_LIMITS,
+    ToolLoopLimitError,
+    run_tool_loop,
+)
 from app.services.llm.contracts import ModelStep
-from tools.contracts import ToolCall, ToolDefinition
+from tools.contracts import (
+    ToolApprovalRequest,
+    ToolCall,
+    ToolDefinition,
+    ToolEffect,
+)
 from tools.registry import MAX_ARGUMENT_BYTES, ToolRegistry
 
 
@@ -44,6 +54,25 @@ def tool_step(*calls):
 
 def final_step(text="done"):
     return ModelStep(200, text, ())
+
+
+class ApprovalRecordingTool(RecordingTool):
+    definition = ToolDefinition(
+        "write_test",
+        "Write a test value",
+        {"type": "object", "properties": {}},
+        effect=ToolEffect.MUTATING,
+    )
+
+    async def preview(self, call_id, arguments):
+        return ToolApprovalRequest(
+            call_id=call_id,
+            tool_name=self.definition.name,
+            title="Apply one change",
+            paths=("demo.txt",),
+            diff_text="--- a/demo.txt\n+++ b/demo.txt\n@@ -0,0 +1 @@\n+中文\n",
+            fingerprint="a" * 64,
+        )
 
 
 def test_tool_loop_returns_direct_model_text_without_executing_tool():
@@ -160,8 +189,13 @@ def test_tool_loop_executes_multiple_calls_serially_and_logs_metadata(monkeypatc
     assert events == [{"order": 1}, {"order": 2}]
     assert [event["call_id"] for event in calls] == ["call-1", "call-2"]
     assert [event["request_id"] for event in calls] == ["c" * 32, "c" * 32]
+    assert [event["arguments_json"] for event in calls] == [
+        '{"order":1}',
+        '{"order":2}',
+    ]
     assert [event["duration_ms"] for event in results] == [10.0, 25.0]
     assert [event["status"] for event in results] == ["success", "success"]
+    assert all(json.loads(event["output_text"])["ok"] for event in results)
 
 
 def test_tool_loop_returns_recoverable_tool_error_to_model():
@@ -234,3 +268,104 @@ def test_tool_loop_does_not_swallow_tool_cancellation():
         asyncio.run(
             run_tool_loop(turn, ToolRegistry([tool]), request_id="2" * 32)
         )
+
+
+def test_tool_loop_limit_profiles_keep_http_default_and_expand_workspace():
+    assert DEFAULT_TOOL_LOOP_LIMITS.max_model_steps == 5
+    assert DEFAULT_TOOL_LOOP_LIMITS.max_tool_calls_per_step == 4
+    assert DEFAULT_TOOL_LOOP_LIMITS.max_total_tool_calls == 16
+    assert WORKSPACE_TOOL_LOOP_LIMITS.max_model_steps == 20
+    assert WORKSPACE_TOOL_LOOP_LIMITS.max_tool_calls_per_step == 4
+    assert WORKSPACE_TOOL_LOOP_LIMITS.max_total_tool_calls == 40
+
+
+def test_tool_loop_stops_before_exceeding_total_call_budget():
+    tool = RecordingTool()
+    calls = [
+        tool_step(
+            *(ToolCall(f"call-{step}-{index}", "lookup", "{}") for index in range(4))
+        )
+        for step in range(5)
+    ]
+    turn = FakeTurn(calls)
+
+    with pytest.raises(ToolLoopLimitError):
+        asyncio.run(
+            run_tool_loop(
+                turn,
+                ToolRegistry([tool]),
+                request_id="3" * 32,
+                limits=DEFAULT_TOOL_LOOP_LIMITS,
+            )
+        )
+
+    assert len(tool.events) == 16
+
+
+def test_tool_loop_passes_approval_and_logs_metadata_without_diff(monkeypatch):
+    tool = ApprovalRecordingTool()
+    turn = FakeTurn(
+        [tool_step(ToolCall("call-write", "write_test", "{}")), final_step()]
+    )
+    approvals = []
+    logged = []
+
+    async def approve(request):
+        approvals.append(request)
+        return True
+
+    monkeypatch.setattr(
+        tool_loop,
+        "log_model_tool_approval",
+        lambda **fields: logged.append(fields),
+    )
+    ticks = iter([1.0, 1.01, 2.0, 2.025])
+
+    result = asyncio.run(
+        run_tool_loop(
+            turn,
+            ToolRegistry([tool]),
+            request_id="4" * 32,
+            on_tool_approval=approve,
+            clock=lambda: next(ticks),
+        )
+    )
+
+    assert result.output_text == "done"
+    assert len(approvals) == 1
+    assert tool.events == [{}]
+    assert logged == [
+        {
+            "request_id": "4" * 32,
+            "call_id": "call-write",
+            "tool_name": "write_test",
+            "approved": True,
+            "paths_count": 1,
+            "diff_chars": len(approvals[0].diff_text),
+            "duration_ms": 990.0,
+        }
+    ]
+    assert "中文" not in json.dumps(logged, ensure_ascii=False)
+
+
+def test_tool_loop_reports_each_completed_tool_result_to_host():
+    tool = RecordingTool()
+    call = ToolCall("call-observe", "lookup", '{"value":"中文"}')
+    turn = FakeTurn([tool_step(call), final_step()])
+    observed = []
+
+    asyncio.run(
+        run_tool_loop(
+            turn,
+            ToolRegistry([tool]),
+            request_id="5" * 32,
+            on_tool_result=lambda completed_call, result: observed.append(
+                (completed_call, result)
+            ),
+        )
+    )
+
+    assert observed[0][0] == call
+    assert json.loads(observed[0][1].output)["data"]["received"] == {
+        "value": "中文"
+    }

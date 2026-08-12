@@ -9,6 +9,7 @@ from app.runtime.chat import (
     run_chat_messages,
 )
 from app.runtime.session_store import SessionStore, SessionStoreError
+from app.runtime.tool_loop import DEFAULT_TOOL_LOOP_LIMITS, ToolLoopLimits
 from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
@@ -16,6 +17,7 @@ from app.services.llm.contracts import (
     TextDeltaHandler,
     TextResetHandler,
 )
+from tools import ToolApprovalHandler, ToolRegistry, ToolResultHandler
 
 
 class ChatSession:
@@ -27,6 +29,8 @@ class ChatSession:
         provider: LlmProvider | None = None,
         messages: tuple[ChatMessage, ...] = (),
         system_prompt: str | None = None,
+        registry: ToolRegistry | None = None,
+        tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
     ) -> None:
         if system_prompt is not None and (
             not isinstance(system_prompt, str) or not system_prompt.strip()
@@ -36,6 +40,8 @@ class ChatSession:
         self._provider = provider
         self._messages = messages
         self._system_prompt = system_prompt
+        self._registry = registry
+        self._tool_loop_limits = tool_loop_limits
         self._send_lock = asyncio.Lock()
 
     @classmethod
@@ -44,6 +50,8 @@ class ChatSession:
         store: SessionStore,
         provider: LlmProvider | None = None,
         system_prompt: str | None = None,
+        registry: ToolRegistry | None = None,
+        tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
     ) -> "ChatSession":
         try:
             messages = store.load()
@@ -54,6 +62,8 @@ class ChatSession:
             provider=provider,
             messages=messages,
             system_prompt=system_prompt,
+            registry=registry,
+            tool_loop_limits=tool_loop_limits,
         )
 
     @property
@@ -72,6 +82,8 @@ class ChatSession:
         *,
         on_text_delta: TextDeltaHandler | None = None,
         on_text_reset: TextResetHandler | None = None,
+        on_tool_approval: ToolApprovalHandler | None = None,
+        on_tool_result: ToolResultHandler | None = None,
     ) -> ChatResult:
         """流式执行一轮，并只在完整成功后提交磁盘与内存历史。"""
 
@@ -87,9 +99,13 @@ class ChatSession:
             result = await run_chat_messages(
                 candidate_request,
                 provider=self._provider,
+                registry=self._registry,
                 system_prompt=self._system_prompt,
                 on_text_delta=on_text_delta,
                 on_text_reset=on_text_reset,
+                on_tool_approval=on_tool_approval,
+                on_tool_result=on_tool_result,
+                tool_loop_limits=self._tool_loop_limits,
             )
             current_task = asyncio.current_task()
             if current_task is not None and current_task.cancelling():

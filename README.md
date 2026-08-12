@@ -1,6 +1,6 @@
 # FastAPI Demo
 
-这是一个轻量大模型调用项目，同时提供无状态 FastAPI HTTP 接口和可恢复上下文的 Textual TUI，支持阿里云 Responses API、DeepSeek Chat Completions API，以及受限的本地只读工具调用。
+这是一个轻量大模型调用项目，同时提供无状态 FastAPI HTTP 接口和可恢复上下文的 Textual TUI，支持阿里云 Responses API、DeepSeek Chat Completions API，以及带审批和撤销能力的本地项目工具。
 
 ## 安装依赖
 
@@ -66,19 +66,33 @@ curl --location 'http://127.0.0.1:8000/chat' \
 
 ## 工具调用
 
-HTTP 与 TUI 会把根目录 `tools/` 中显式注册的只读工具提供给模型。模型请求工具时，Runtime 自动执行并把结果回传同一个 Provider，直到模型给出最终文本；用户无需输入工具命令或逐次确认。
+HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间工具；TUI 绑定启动目录，自动执行只读工具，创建、修改或撤销文件时展示完整 Diff 并等待本地确认。Runtime 会把每次结果回传同一个 Provider，直到模型给出最终文本。
 
-第一版只包含：
+HTTP 工具：
 
 - `get_current_time(timezone)`：获取指定 IANA 时区（例如 `Asia/Shanghai`）的当前 ISO 8601 时间。
 
+TUI 在该工具之外提供：
+
+- `list_workspace_files`：分页列举允许读取的文件和目录。
+- `search_workspace_text`：按字面量搜索 UTF-8 文本。
+- `read_workspace_file`：按行读取文本并返回 SHA-256。
+- `get_workspace_git_status` / `get_workspace_git_diff`：查看 Git 状态和分页 Diff。
+- `apply_workspace_edits`：审批后创建文件或执行带哈希前置条件的精确替换。
+- `run_project_check`：只运行 `compile`、`test_all`、`pip_check`、`diff_check` 四个固定检查。
+- `undo_workspace_change`：审批后撤销当前进程最近一次 Agent 修改。
+
+典型流程为：模型先列举、搜索、读取和检查现有差异，再提出结构化修改；TUI 显示相对路径和完整有界 Diff，默认焦点为拒绝。确认后模型可运行检查并继续修正。每个新写入和撤销都独立审批；Journal 最多保存 10 个批次且只存在当前 TUI 进程，重启后不能撤销旧批次。
+
 安全和成本边界：
 
-- 工具必须在代码中显式注册；模型不能执行任意 Shell、Python、文件路径、URL 或动态模块。
-- 只允许无副作用工具，不支持文件写入、数据库写入、MCP 或动态插件。
-- 每个用户请求最多 5 个模型步骤，每步最多 4 个工具调用。
-- 单次参数最多 8 KiB、结果最多 32 KiB，均按 UTF-8 字节数计算。
-- 多个工具按模型返回顺序串行执行；达到上限时 `/chat` 返回安全的 502。
+- 工具只能从根目录 `tools/` 显式注册；不提供任意 Shell/Python、动态 import、网络、数据库、依赖安装或 Git 提交/推送。
+- Workspace 固定为 TUI 启动目录；绝对路径、`..`、符号链接、二进制和保护路径会被拒绝。
+- `.env*`、`.git/`、`.venv/`、`data/`、`logs/` 和缓存目录不可读写；`AGENTS.md`、Rules、依赖文件和 Workspace 安全实现额外禁止写入。
+- `apply_workspace_edits` 只支持创建已有目录下的 UTF-8 文件和精确替换，不支持删除、移动、重命名或创建目录。
+- HTTP 默认最多 5 个模型步骤、每步 4 次、总计 16 次工具调用；TUI 分别为 20、4、40。
+- 普通参数最多 8 KiB，编辑参数最多 64 KiB，结果最多 32 KiB；多个调用串行执行。
+- 达到上限时 `/chat` 返回安全的 502；TUI 显示安全错误。已确认并完成的磁盘修改不会因后续模型失败自动回滚，界面会列出仍保留的相对路径。
 
 ## 启动 TUI
 
@@ -100,7 +114,7 @@ TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统
 - `/clear`：清空界面、模型上下文和本地持久化历史。
 - `/quit`：取消运行中请求并退出。
 
-TUI 支持直接使用中文输入法。用户输入会用带背景的全宽卡片区分，但仍逐字显示、不解析 Markdown；Assistant 生成中按纯文本增量显示，完成后按 Markdown 美化，系统提示和错误信息保持纯文本。最终消息和生成中的临时文本都可鼠标拖选；复制 Markdown 回答时得到的是渲染后的可见文字，不包含标题井号、强调符号或代码围栏。上下键始终用于输入历史，不承担多行输入的垂直光标移动；粘贴的多行文本仍可原样发送。`/help` 和 `/chat` 不是本地命令，会作为普通文本发送给模型。当前不支持 HTML、远程图片、Mermaid、HTTP SSE、多会话管理、历史搜索、上下文压缩、写操作工具或请求级模型切换。
+TUI 支持直接使用中文输入法。用户输入会用带背景的全宽卡片区分，但仍逐字显示、不解析 Markdown；Assistant 生成中按纯文本增量显示，完成后按 Markdown 美化，系统提示和错误信息保持纯文本。最终消息、流式临时文本和审批 Diff 都可选择复制。上下键始终用于输入历史，不承担多行输入的垂直光标移动；粘贴的多行文本仍可原样发送。`/help` 和 `/chat` 不是本地命令，会作为普通文本发送给模型。当前不支持 HTML、远程图片、Mermaid、HTTP SSE、多会话管理、历史搜索、上下文压缩、任意命令工具或请求级模型切换。
 
 ## TUI 会话历史
 
@@ -139,16 +153,16 @@ llm_request -> llm_http_request -> llm_http_response -> llm_response
 
 需要工具时，同一个 request ID 下会出现多组 `llm_http_request/llm_http_response`，并在工具执行处插入：
 
-- `llm_tool_call`：call ID、工具名和参数字符数。
-- `llm_tool_result`：call ID、成功/错误状态、耗时和输出字符数。
+- `llm_tool_call`：call ID、工具名、参数字符数和完整 JSON 参数。
+- `llm_tool_result`：call ID、成功/错误状态、耗时、输出字符数和完整工具结果。
 
-专用工具事件不重复保存完整参数或结果；实际回传模型的完整工具结果会出现在下一次 `llm_http_request.request_body` 中，因此仍属于下述明文日志风险范围。
+工具参数和结果会直接记录在专用工具事件中；实际回传模型的完整工具结果还会出现在下一次 `llm_http_request.request_body` 中。审批事件只记录决定、文件数和 Diff 字符数，不额外记录审批 Diff 正文。
 
 连接超时或网络失败时，`llm_http_request` 后写一条 `llm_http_error`，仅包含 `timeout` 或 `connection` 安全分类和耗时，不记录异常类名、异常原文或 Traceback。非 2xx 已收到响应，只写 `llm_http_response`，不再写 `llm_http_error`。
 
 日志不记录环境 API Key、真实 `Authorization`、Provider 原始响应体、Cookie 或异常原文。
 
-> 隐私警告：输入、输出、TUI 加载的 `AGENTS.md` 系统提示词和完整请求体都以明文同时写入 stderr 和本地文件，且多轮历史会在每次调用时重复落盘。不要在提问或 `AGENTS.md` 中放置密码、Token、个人隐私或其他不应发送和持久化的数据。具有本地文件读取权限的用户或进程可以读取日志内容。
+> 隐私警告：输入、输出、工具参数、工具结果、TUI 加载的 `AGENTS.md` 系统提示词和完整请求体都以明文同时写入 stderr 和本地文件，且多轮历史会在每次调用时重复落盘。不要在提问、工具参数或 `AGENTS.md` 中放置密码、Token、个人隐私或其他不应发送和持久化的数据。具有本地文件读取权限的用户或进程可以读取日志内容。
 
 单文件转储阈值为 10 MiB，保留 5 个备份；`logs/` 已被 Git 忽略。由于正文不截断，单条超大记录可令当前文件暂时超过该阈值。日志失败不影响模型请求本身。
 

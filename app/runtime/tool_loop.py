@@ -2,9 +2,11 @@
 
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from app.observability.model_logging import (
     log_model_tool_call,
+    log_model_tool_approval,
     log_model_tool_result,
 )
 from app.services.llm.contracts import (
@@ -14,12 +16,27 @@ from app.services.llm.contracts import (
     TextDeltaHandler,
     TextResetHandler,
 )
-from tools.contracts import ToolPayloadLimitError, ToolResult
+from tools.contracts import (
+    ToolApprovalHandler,
+    ToolExecutionContext,
+    ToolPayloadLimitError,
+    ToolResult,
+    ToolResultHandler,
+)
 from tools.registry import ToolRegistry
 
 
-MAX_MODEL_STEPS = 5
-MAX_TOOL_CALLS_PER_STEP = 4
+@dataclass(frozen=True)
+class ToolLoopLimits:
+    """限制单次模型请求的步骤数与工具调用成本。"""
+
+    max_model_steps: int
+    max_tool_calls_per_step: int
+    max_total_tool_calls: int
+
+
+DEFAULT_TOOL_LOOP_LIMITS = ToolLoopLimits(5, 4, 16)
+WORKSPACE_TOOL_LOOP_LIMITS = ToolLoopLimits(20, 4, 40)
 
 
 class ToolLoopLimitError(Exception):
@@ -33,12 +50,45 @@ async def run_tool_loop(
     request_id: str,
     on_text_delta: TextDeltaHandler | None = None,
     on_text_reset: TextResetHandler | None = None,
+    on_tool_approval: ToolApprovalHandler | None = None,
+    on_tool_result: ToolResultHandler | None = None,
+    limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
     clock: Callable[[], float] = time.monotonic,
 ) -> ModelStep:
     """串行执行模型要求的白名单工具，直到得到最终文本或触达上限。"""
 
+    if (
+        limits.max_model_steps < 1
+        or limits.max_tool_calls_per_step < 1
+        or limits.max_total_tool_calls < 0
+    ):
+        raise ValueError("tool loop limits are invalid")
+
+    async def approve(request):
+        """为审批交互增加不含路径和 Diff 正文的审计事件。"""
+
+        if on_tool_approval is None:
+            return False
+        started_at = clock()
+        approved = await on_tool_approval(request)
+        duration_ms = round((clock() - started_at) * 1000, 2)
+        log_model_tool_approval(
+            request_id=request_id,
+            call_id=request.call_id,
+            tool_name=request.tool_name,
+            approved=approved is True,
+            paths_count=len(request.paths),
+            diff_chars=len(request.diff_text),
+            duration_ms=duration_ms,
+        )
+        return approved
+
+    execution_context = ToolExecutionContext(
+        approval_handler=approve if on_tool_approval is not None else None
+    )
     results: tuple[ToolResult, ...] = ()
-    for step_number in range(1, MAX_MODEL_STEPS + 1):
+    executed_calls = 0
+    for step_number in range(1, limits.max_model_steps + 1):
         step = await turn.next(results, on_text_delta=on_text_delta)
         if not step.tool_calls:
             if not isinstance(step.output_text, str) or not step.output_text:
@@ -53,8 +103,10 @@ async def run_tool_loop(
 
         # 最后一步的调用无法再被模型消费，因此不执行这些无用工具。
         if (
-            step_number == MAX_MODEL_STEPS
-            or len(step.tool_calls) > MAX_TOOL_CALLS_PER_STEP
+            step_number == limits.max_model_steps
+            or len(step.tool_calls) > limits.max_tool_calls_per_step
+            or executed_calls + len(step.tool_calls)
+            > limits.max_total_tool_calls
         ):
             raise ToolLoopLimitError("Tool call limit exceeded")
 
@@ -65,10 +117,11 @@ async def run_tool_loop(
                 call_id=call.call_id,
                 tool_name=call.name,
                 arguments_chars=len(call.arguments_json),
+                arguments_json=call.arguments_json,
             )
             started_at = clock()
             try:
-                result = await registry.execute(call)
+                result = await registry.execute(call, execution_context)
             except ToolPayloadLimitError as exc:
                 raise ToolLoopLimitError("Tool call limit exceeded") from exc
             duration_ms = round((clock() - started_at) * 1000, 2)
@@ -79,8 +132,12 @@ async def run_tool_loop(
                 status="error" if result.is_error else "success",
                 duration_ms=duration_ms,
                 output_chars=len(result.output),
+                output_text=result.output,
             )
+            if on_tool_result is not None:
+                on_tool_result(call, result)
             current_results.append(result)
+            executed_calls += 1
         results = tuple(current_results)
 
     # 循环范围已覆盖所有分支，仅作为类型和未来修改的防御性兜底。

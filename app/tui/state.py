@@ -8,4 +8,5 @@ class RunStatus(str, Enum):
 
     READY = "Ready"
     THINKING = "Thinking"
+    AWAITING_APPROVAL = "Awaiting approval"
     ERROR = "Error"

@@ -1,6 +1,7 @@
 import asyncio
 from pathlib import Path
 
+import pytest
 from textual.geometry import Offset
 from textual.selection import SELECT_ALL, Selection
 from textual.widgets import RichLog, Static, TextArea
@@ -18,7 +19,10 @@ from app.tui import __main__ as tui_main
 from app.tui import application as tui_application
 from app.tui.application import ChatTuiApp
 from app.tui.state import RunStatus
+from app.tui.approval import ToolApprovalScreen
 from app.tui.widgets import SelectableRichLog
+from tools import ToolApprovalRequest, ToolCall, ToolResult
+from tools.workspace import WorkspacePolicy, create_workspace_registry
 
 
 ALIYUN_INFO = ChatRuntimeInfo("aliyun", "qwen3-max", True)
@@ -60,6 +64,128 @@ def test_tui_uses_selectable_logs_for_transcript_and_stream_output():
                 app.query_one("#stream-output", RichLog),
                 SelectableRichLog,
             )
+
+    asyncio.run(scenario())
+
+
+def test_workspace_approval_modal_defaults_to_reject_and_supports_y(tmp_path):
+    async def scenario():
+        decisions = []
+        request = ToolApprovalRequest(
+            call_id="call-1",
+            tool_name="apply_workspace_edits",
+            title="应用修改",
+            paths=("中文.txt",),
+            diff_text="--- a/中文.txt\n+++ b/中文.txt\n@@ -0,0 +1 @@\n+内容\n",
+            fingerprint="a" * 64,
+        )
+
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            decisions.append(await kwargs["on_tool_approval"](request))
+            return ChatResult("完成", "fake", "fake-model")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            workspace_registry=create_workspace_registry(WorkspacePolicy(tmp_path)),
+        )
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("修改文件")
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, ToolApprovalScreen):
+                    break
+            assert isinstance(app.screen, ToolApprovalScreen)
+            assert app.run_status is RunStatus.AWAITING_APPROVAL
+            assert app.screen.query_one("#reject").has_focus
+            await pilot.press("y")
+            await app.workers.wait_for_complete()
+
+            assert decisions == [True]
+            assert app.run_status is RunStatus.READY
+            assert "完成" in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("reject_action", ("n", "escape", "enter", "button"))
+def test_workspace_approval_modal_rejects_without_exiting_main_app(
+    tmp_path,
+    reject_action,
+):
+    async def scenario():
+        decisions = []
+        request = ToolApprovalRequest(
+            call_id="call-reject",
+            tool_name="apply_workspace_edits",
+            title="应用修改",
+            paths=("demo.txt",),
+            diff_text="+[bold]原样[/bold]\n+\x1b[31m红色标记\x1b[0m\n",
+            fingerprint="b" * 64,
+        )
+
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            decisions.append(await kwargs["on_tool_approval"](request))
+            return ChatResult("已拒绝", "fake", "fake-model")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            workspace_registry=create_workspace_registry(WorkspacePolicy(tmp_path)),
+        )
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("修改")
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, ToolApprovalScreen):
+                    break
+            modal = app.screen
+            assert isinstance(modal, ToolApprovalScreen)
+            diff_text = "\n".join(
+                line.text for line in modal.query_one("#approval-diff", RichLog).lines
+            )
+            assert "[bold]原样[/bold]" in diff_text
+            if reject_action == "button":
+                await pilot.click("#reject")
+            else:
+                await pilot.press(reject_action)
+            await app.workers.wait_for_complete()
+
+            assert decisions == [False]
+            assert app.run_status is RunStatus.READY
+            assert "已拒绝" in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
+def test_tui_reports_applied_paths_when_model_fails_after_write(tmp_path):
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            kwargs["on_tool_result"](
+                ToolCall("write-1", "apply_workspace_edits", "{}"),
+                ToolResult(
+                    "write-1",
+                    '{"ok":true,"data":{"change_id":"change-1","paths":["app/中文.py"]}}',
+                ),
+            )
+            raise ChatRuntimeError(ChatErrorCode.UPSTREAM, "Upstream failed")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            workspace_registry=create_workspace_registry(WorkspacePolicy(tmp_path)),
+        )
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("修改")
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+
+            text = transcript_text(app)
+            assert "Upstream failed" in text
+            assert "本轮已写入但尚未完成：app/中文.py" in text
 
     asyncio.run(scenario())
 
@@ -671,12 +797,16 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
         def run(self):
             observed["run"] = True
 
-    def fake_create_app(*, system_prompt, system_prompt_error):
+    def fake_create_app(*, system_prompt, system_prompt_error, workspace_registry, workspace_error):
         observed["kitty_keyboard_disabled"] = (
             tui_main.os.environ.get("TEXTUAL_DISABLE_KITTY_KEY")
         )
         observed["system_prompt"] = system_prompt
         observed["system_prompt_error"] = system_prompt_error
+        observed["workspace_tools"] = tuple(
+            definition.name for definition in workspace_registry.definitions
+        )
+        observed["workspace_error"] = workspace_error
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
@@ -704,6 +834,18 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
         "system_prompt_loads": [tmp_path],
         "system_prompt": system_prompt,
         "system_prompt_error": None,
+        "workspace_tools": (
+            "get_current_time",
+            "list_workspace_files",
+            "search_workspace_text",
+            "read_workspace_file",
+            "get_workspace_git_status",
+            "get_workspace_git_diff",
+            "apply_workspace_edits",
+            "run_project_check",
+            "undo_workspace_change",
+        ),
+        "workspace_error": None,
         "run": True,
     }
 
@@ -716,9 +858,11 @@ def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
         def run(self):
             observed["run"] = True
 
-    def fake_create_app(*, system_prompt, system_prompt_error):
+    def fake_create_app(*, system_prompt, system_prompt_error, workspace_registry, workspace_error):
         observed["system_prompt"] = system_prompt
         observed["system_prompt_error"] = system_prompt_error
+        observed["workspace_registry"] = workspace_registry is not None
+        observed["workspace_error"] = workspace_error
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
@@ -733,8 +877,38 @@ def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
         "system_prompt_error": (
             "AGENTS.md must be a readable UTF-8 file no larger than 32 KiB"
         ),
+        "workspace_registry": True,
+        "workspace_error": None,
         "run": True,
     }
+
+
+def test_tui_entrypoint_reports_workspace_failure_without_path(tmp_path, monkeypatch):
+    observed = {}
+
+    class FakeApp:
+        def run(self):
+            observed["run"] = True
+
+    def fail_registry(_policy):
+        raise ValueError(f"sensitive path: {tmp_path}")
+
+    def fake_create_app(**kwargs):
+        observed.update(kwargs)
+        return FakeApp()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(tui_main, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tui_main, "configure_model_logging", lambda: None)
+    monkeypatch.setattr(tui_main, "create_workspace_registry", fail_registry)
+    monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
+
+    tui_main.main()
+
+    assert observed["workspace_registry"] is None
+    assert observed["workspace_error"] == "Workspace tools are unavailable"
+    assert str(tmp_path) not in observed["workspace_error"]
+    assert observed["run"] is True
 
 
 def test_enter_submits_input():

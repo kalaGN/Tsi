@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import io
 import json
 import logging
@@ -7,6 +8,8 @@ import httpx
 import pytest
 
 from app.observability import model_logging
+from app.runtime.chat import run_chat_messages
+from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS
 from app.services.llm.aliyun import (
     ALIYUN_RESPONSES_URL,
     AliyunResponsesProvider,
@@ -31,6 +34,7 @@ from app.services.llm.factory import create_provider, resolve_provider_config
 from app.services.llm import deepseek, http_client
 from app.services.llm.http_client import post_json, post_sse
 from tools.contracts import ToolDefinition, ToolResult
+from tools.workspace import WorkspacePolicy, create_workspace_registry
 
 
 FAKE_API_KEY = "test-only-provider-key"
@@ -335,6 +339,261 @@ def test_aliyun_turn_declares_flat_tools_and_uses_array_input(monkeypatch):
             "tool_choice": "auto",
         }
     ]
+
+
+@pytest.mark.parametrize(
+    "provider",
+    (
+        AliyunResponsesProvider(FAKE_API_KEY, "qwen3-max"),
+        DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash"),
+    ),
+)
+def test_both_providers_send_all_workspace_schemas_without_host_metadata(
+    tmp_path,
+    monkeypatch,
+    provider,
+):
+    payloads = []
+    definitions = create_workspace_registry(
+        WorkspacePolicy(tmp_path)
+    ).definitions
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        if provider.name == "aliyun":
+            return httpx.Response(200, json={"output_text": "ok"})
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"content": "ok"}}]},
+        )
+
+    install_transport(monkeypatch, handler)
+    turn = provider.create_turn(user_messages(), definitions, request_id=REQUEST_ID)
+    assert asyncio.run(turn.next()).output_text == "ok"
+
+    declared = payloads[0]["tools"]
+    if provider.name == "deepseek":
+        declared = [item["function"] for item in declared]
+    assert {item["name"] for item in declared} == {
+        definition.name for definition in definitions
+    }
+    assert len(declared) == 9
+    assert all(
+        set(item) == {"name", "description", "parameters"}
+        or set(item) == {"type", "name", "description", "parameters"}
+        for item in declared
+    )
+    serialized = json.dumps(payloads[0])
+    assert "max_argument_bytes" not in serialized
+    assert '"effect"' not in serialized
+
+
+@pytest.mark.parametrize(
+    "provider",
+    (
+        AliyunResponsesProvider(FAKE_API_KEY, "qwen3-max"),
+        DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash"),
+    ),
+)
+def test_both_providers_accept_workspace_edit_arguments_above_eight_kib(
+    tmp_path,
+    monkeypatch,
+    provider,
+):
+    arguments = json.dumps(
+        {
+            "edits": [
+                {"mode": "create", "path": "large.txt", "content": "中" * 4000}
+            ]
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    assert 8 * 1024 < len(arguments.encode("utf-8")) < 64 * 1024
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        if provider.name == "aliyun":
+            return httpx.Response(
+                200,
+                json={
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "id": "large-1",
+                            "call_id": "large-1",
+                            "name": "apply_workspace_edits",
+                            "arguments": arguments,
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "large-1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "apply_workspace_edits",
+                                        "arguments": arguments,
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    install_transport(monkeypatch, handler)
+    definitions = create_workspace_registry(WorkspacePolicy(tmp_path)).definitions
+    step = asyncio.run(
+        provider.create_turn(
+            user_messages(),
+            definitions,
+            request_id=REQUEST_ID,
+        ).next()
+    )
+
+    assert step.tool_calls[0].name == "apply_workspace_edits"
+    assert step.tool_calls[0].arguments_json == arguments
+
+
+@pytest.mark.parametrize(
+    "provider",
+    (
+        AliyunResponsesProvider(FAKE_API_KEY, "qwen3-max"),
+        DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash"),
+    ),
+)
+def test_both_providers_complete_workspace_read_edit_check_loop(
+    tmp_path,
+    monkeypatch,
+    provider,
+):
+    source = tmp_path / "中文.txt"
+    source.write_text("旧内容\n", encoding="utf-8")
+    (tmp_path / ".venv" / "bin").mkdir(parents=True)
+    python = tmp_path / ".venv" / "bin" / "python"
+    python.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    python.chmod(0o755)
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    calls = [
+        ("read-1", "read_workspace_file", '{"path":"中文.txt"}'),
+        (
+            "write-1",
+            "apply_workspace_edits",
+            json.dumps(
+                {
+                    "edits": [
+                        {
+                            "mode": "replace",
+                            "path": "中文.txt",
+                            "expected_sha256": digest,
+                            "old_text": "旧内容",
+                            "new_text": "新内容",
+                        }
+                    ]
+                },
+                ensure_ascii=False,
+                separators=(",", ":"),
+            ),
+        ),
+        ("check-1", "run_project_check", '{"name":"pip_check"}'),
+    ]
+    payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        index = len(payloads) - 1
+        if index == len(calls):
+            if provider.name == "aliyun":
+                return httpx.Response(200, json={"output_text": "完成"})
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"content": "完成"}}]},
+            )
+        call_id, name, arguments = calls[index]
+        if provider.name == "aliyun":
+            return httpx.Response(
+                200,
+                json={
+                    "output": [
+                        {
+                            "type": "function_call",
+                            "id": call_id,
+                            "call_id": call_id,
+                            "name": name,
+                            "arguments": arguments,
+                        }
+                    ]
+                },
+            )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": call_id,
+                                    "type": "function",
+                                    "function": {
+                                        "name": name,
+                                        "arguments": arguments,
+                                    },
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+
+    async def approve(_request):
+        return True
+
+    install_transport(monkeypatch, handler)
+    result = asyncio.run(
+        run_chat_messages(
+            user_messages("修改并检查"),
+            provider=provider,
+            registry=create_workspace_registry(WorkspacePolicy(tmp_path)),
+            on_tool_approval=approve,
+            tool_loop_limits=WORKSPACE_TOOL_LOOP_LIMITS,
+        )
+    )
+
+    assert result.output_text == "完成"
+    assert source.read_text(encoding="utf-8") == "新内容\n"
+    assert len(payloads) == 4
+    serialized_continuations = json.dumps(payloads[1:], ensure_ascii=False)
+    assert "中文.txt" in serialized_continuations
+    assert '"change_id"' in serialized_continuations
+    nested_strings = []
+
+    def collect_strings(value):
+        if isinstance(value, str):
+            nested_strings.append(value)
+        elif isinstance(value, list):
+            for item in value:
+                collect_strings(item)
+        elif isinstance(value, dict):
+            for item in value.values():
+                collect_strings(item)
+
+    collect_strings(payloads)
+    assert any(
+        '"exit_code":0' in value.replace(" ", "")
+        for value in nested_strings
+    )
 
 
 def test_aliyun_turn_appends_each_function_call_next_to_its_output(

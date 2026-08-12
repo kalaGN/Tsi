@@ -63,14 +63,14 @@ python3 -m app.tui -> app.tui.application ------+
 - Router 负责 HTTP 请求校验、调用用例和响应转换，不实现上游协议细节。
 - Runtime 负责共享模型调用、TUI 单会话与中立错误，不依赖 FastAPI 或 Textual。
 - Runtime 通过有界循环编排 Provider Turn 与根目录工具 Registry，不导入具体 Provider 实现。
-- 根目录 `tools/` 只提供显式注册的只读工具，不依赖 Runtime、FastAPI、Textual 或具体 Provider。
+- 根目录 `tools/` 只提供显式注册的工具，不依赖 Runtime、FastAPI、Textual 或具体 Provider；HTTP 仅注册只读工具，TUI 可注册受 Workspace Policy 与本地审批保护的写工具。
 - `services.llm` 负责配置解析、共享网络错误、阿里云/DeepSeek 请求和文本提取，不依赖 Runtime、Router、TUI 或 Application。
 - TUI 负责输入、统一文本展示、状态和取消，不读取 Provider 专属密钥或解析上游 JSON，不依赖 Router 或 Application。
 - 业务逻辑增长前不创建空壳 Repository、Manager、Provider 或依赖注入层。
 - 新抽象必须解决已出现的重复、边界或替换需求，不得为单次调用预设计。
 - 当前仅有 `data/chat-session.json` 的本地会话持久化，无数据库或事务边界；扩展持久化前必须另建 Spec。
 - 网络 I/O 使用异步接口；同步根路由不承担阻塞工作。
-- 第一版工具自动执行，但必须无副作用；增加写操作、MCP、动态插件或权限机制前另建 Spec。
+- HTTP 工具自动执行且必须无副作用；TUI 只自动执行只读工具，写入和撤销必须先展示完整 Diff 并获得本地确认。增加 MCP、动态插件或扩大写入范围前另建 Spec。
 
 ## 5. HTTP Contract
 

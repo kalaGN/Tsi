@@ -1,5 +1,6 @@
 """Textual 多轮对话界面、状态切换与请求取消逻辑。"""
 
+import json
 import time
 from collections.abc import Awaitable, Callable
 from typing import Protocol
@@ -12,7 +13,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.reactive import reactive
 from textual.timer import Timer
-from textual.widgets import Footer, RichLog, Static, TextArea
+from textual.widgets import Button, Footer, RichLog, Static, TextArea
 from textual.worker import Worker, get_current_worker
 
 from app.runtime.chat import (
@@ -29,7 +30,13 @@ from app.services.llm.contracts import (
     TextResetHandler,
 )
 from app.tui.state import RunStatus
+from app.tui.approval import ToolApprovalScreen
 from app.tui.widgets import PromptTextArea, SelectableRichLog
+from app.runtime.tool_loop import (
+    DEFAULT_TOOL_LOOP_LIMITS,
+    WORKSPACE_TOOL_LOOP_LIMITS,
+)
+from tools import ToolApprovalRequest, ToolCall, ToolRegistry, ToolResult
 
 
 class ChatRunner(Protocol):
@@ -41,6 +48,8 @@ class ChatRunner(Protocol):
         *,
         on_text_delta: TextDeltaHandler | None = None,
         on_text_reset: TextResetHandler | None = None,
+        on_tool_approval=None,
+        on_tool_result=None,
     ) -> Awaitable[ChatResult]:
         ...
 
@@ -143,6 +152,8 @@ class ChatTuiApp(App[None]):
         chat_session: ChatSession | None = None,
         system_prompt: str | None = None,
         system_prompt_error: str | None = None,
+        workspace_registry: ToolRegistry | None = None,
+        workspace_error: str | None = None,
     ) -> None:
         """初始化运行时信息、可恢复会话以及可注入的测试边界。"""
 
@@ -151,6 +162,8 @@ class ChatTuiApp(App[None]):
         self._configuration_error: str | None = None
         self._history_error: str | None = None
         self._system_prompt_error = system_prompt_error
+        self._workspace_error = workspace_error
+        self._workspace_enabled = workspace_registry is not None
         if runtime_info is None:
             try:
                 runtime_info = get_chat_runtime_info()
@@ -165,6 +178,12 @@ class ChatTuiApp(App[None]):
                 chat_session = ChatSession.load(
                     store,
                     system_prompt=system_prompt,
+                    registry=workspace_registry,
+                    tool_loop_limits=(
+                        WORKSPACE_TOOL_LOOP_LIMITS
+                        if workspace_registry is not None
+                        else DEFAULT_TOOL_LOOP_LIMITS
+                    ),
                 )
             except ChatRuntimeError as exc:
                 # 保留损坏文件，只允许用户通过 /clear 显式删除。
@@ -172,6 +191,12 @@ class ChatTuiApp(App[None]):
                 chat_session = ChatSession(
                     store,
                     system_prompt=system_prompt,
+                    registry=workspace_registry,
+                    tool_loop_limits=(
+                        WORKSPACE_TOOL_LOOP_LIMITS
+                        if workspace_registry is not None
+                        else DEFAULT_TOOL_LOOP_LIMITS
+                    ),
                 )
         self.chat_session = chat_session
         self._system_prompt_loaded = (
@@ -252,6 +277,9 @@ class ChatTuiApp(App[None]):
         if self._system_prompt_error is not None:
             self.run_status = RunStatus.ERROR
             self._write_message("Error", self._system_prompt_error)
+        if self._workspace_error is not None:
+            self.run_status = RunStatus.ERROR
+            self._write_message("Error", self._workspace_error)
         self._update_status_bar()
 
     def watch_run_status(self) -> None:
@@ -271,10 +299,17 @@ class ChatTuiApp(App[None]):
             if self._system_prompt_error is not None
             else "loaded" if self._system_prompt_loaded else "none"
         )
+        if self._workspace_error is not None:
+            workspace_status = "error"
+        elif self._workspace_enabled:
+            workspace_status = "enabled"
+        else:
+            workspace_status = "disabled"
         self.query_one("#status-bar", Static).update(
             f"{_provider_display_name(self.runtime_info.provider)} | "
             f"{self.runtime_info.model} | "
             f"Key: {key_status} | AGENTS: {agents_status} | "
+            f"Workspace: {workspace_status} | "
             f"{self.run_status.value}"
         )
 
@@ -319,6 +354,11 @@ class ChatTuiApp(App[None]):
     def action_submit_prompt(self) -> None:
         """处理本地命令、输入校验，并启动唯一的异步对话请求。"""
 
+        if isinstance(self.screen, ToolApprovalScreen):
+            focused = self.screen.focused
+            if isinstance(focused, Button):
+                focused.press()
+            return
         prompt_widget = self.query_one("#prompt", TextArea)
         input_text = prompt_widget.text
         command = input_text.strip()
@@ -361,6 +401,11 @@ class ChatTuiApp(App[None]):
             self.run_status = RunStatus.ERROR
             return
 
+        if self._workspace_error is not None:
+            self._write_message("Error", self._workspace_error)
+            self.run_status = RunStatus.ERROR
+            return
+
         if not input_text.strip():
             self._write_message("System", "Input must not be blank")
             return
@@ -394,15 +439,25 @@ class ChatTuiApp(App[None]):
         """执行模型请求，并用请求代次阻止取消后的陈旧结果写回。"""
 
         worker = get_current_worker()
+        applied_changes: dict[str, tuple[str, ...]] = {}
+
+        def observe_tool_result(call, result) -> None:
+            self._record_workspace_result(call, result, applied_changes)
+
         try:
-            result = await self.chat_runner(
-                input_text,
-                on_text_delta=lambda delta: self._append_stream_delta(
+            runner_arguments = {
+                "on_text_delta": lambda delta: self._append_stream_delta(
                     delta,
                     generation,
                 ),
-                on_text_reset=lambda: self._reset_stream_step(generation),
-            )
+                "on_text_reset": lambda: self._reset_stream_step(generation),
+            }
+            if self._workspace_enabled:
+                runner_arguments["on_tool_approval"] = (
+                    lambda request: self._approve_tool(request, generation)
+                )
+                runner_arguments["on_tool_result"] = observe_tool_result
+            result = await self.chat_runner(input_text, **runner_arguments)
             # 取消会递增代次；即使底层协程晚返回，也不能写回陈旧结果。
             if worker.is_cancelled or generation != self._request_generation:
                 return
@@ -415,6 +470,7 @@ class ChatTuiApp(App[None]):
             if worker.is_cancelled or generation != self._request_generation:
                 return
             self._write_message("Error", exc.user_message)
+            self._write_applied_change_warning(applied_changes)
             self._write_elapsed_time(started_at)
             self.run_status = RunStatus.ERROR
         except Exception:
@@ -422,6 +478,7 @@ class ChatTuiApp(App[None]):
                 return
             # 未知异常只在界面显示中立文案，避免泄露堆栈或敏感上下文。
             self._write_message("Error", "Unexpected internal error")
+            self._write_applied_change_warning(applied_changes)
             self._write_elapsed_time(started_at)
             self.run_status = RunStatus.ERROR
         finally:
@@ -562,9 +619,72 @@ class ChatTuiApp(App[None]):
         """将固定文案、当前动画帧和耗时写入输入框上方状态栏。"""
 
         frame = self.SPINNER_FRAMES[self._spinner_index]
-        self.query_one("#activity-bar", Static).update(
-            f"{frame} 思考中 · {elapsed:.1f} 秒 · Esc 取消"
+        label = (
+            "等待审批"
+            if self.run_status is RunStatus.AWAITING_APPROVAL
+            else "思考中"
         )
+        self.query_one("#activity-bar", Static).update(
+            f"{frame} {label} · {elapsed:.1f} 秒 · Esc 取消"
+        )
+
+    async def _approve_tool(
+        self,
+        request: ToolApprovalRequest,
+        generation: int,
+    ) -> bool:
+        """在当前请求 Worker 中等待 Modal，并拒绝取消后的陈旧审批。"""
+
+        if generation != self._request_generation:
+            return False
+        self.run_status = RunStatus.AWAITING_APPROVAL
+        approved = await self.push_screen_wait(ToolApprovalScreen(request))
+        if generation != self._request_generation:
+            return False
+        self.run_status = RunStatus.THINKING
+        return approved is True
+
+    @staticmethod
+    def _record_workspace_result(
+        call: ToolCall,
+        result: ToolResult,
+        changes: dict[str, tuple[str, ...]],
+    ) -> None:
+        """跟踪已落盘批次，让后续模型失败不会掩盖磁盘变化。"""
+
+        if result.is_error or call.name not in {
+            "apply_workspace_edits",
+            "undo_workspace_change",
+        }:
+            return
+        try:
+            payload = json.loads(result.output)
+            data = payload["data"]
+            change_id = data["change_id"]
+            paths = tuple(data["paths"])
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(change_id, str) or not all(
+            isinstance(path, str) for path in paths
+        ):
+            return
+        if call.name == "apply_workspace_edits":
+            changes[change_id] = paths
+        else:
+            changes.pop(change_id, None)
+
+    def _write_applied_change_warning(
+        self,
+        changes: dict[str, tuple[str, ...]],
+    ) -> None:
+        """模型未完成时明确展示仍保留在磁盘上的相对路径。"""
+
+        paths = sorted({path for values in changes.values() for path in values})
+        if paths:
+            self._write_message(
+                "System",
+                "本轮已写入但尚未完成：" + "、".join(paths),
+            )
 
     def _stop_activity(self, expected_generation: int | None = None) -> None:
         """停止匹配请求的 Timer，并清空全部活动展示状态。"""
@@ -593,6 +713,10 @@ class ChatTuiApp(App[None]):
     def action_confirm_exit(self) -> None:
         """优先清空输入；输入为空时才进入取消请求和双 Esc 退出。"""
 
+        if isinstance(self.screen, ToolApprovalScreen):
+            # App 的高优先级 Esc 会先收到按键；审批界面必须把它收敛为拒绝。
+            self.screen.dismiss(False)
+            return
         prompt = self.query_one("#prompt", TextArea)
         if prompt.text:
             prompt.load_text("")

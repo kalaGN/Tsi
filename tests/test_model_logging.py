@@ -355,7 +355,7 @@ def test_http_log_events_never_leak_api_key_or_raw_details(tmp_path):
     assert "traceback" not in serialized.lower()
 
 
-def test_tool_events_use_metadata_only_whitelist(tmp_path):
+def test_tool_events_record_arguments_and_results_with_exact_whitelist(tmp_path):
     stream = io.StringIO()
     model_logging.configure_model_logging(
         stream=stream,
@@ -367,6 +367,7 @@ def test_tool_events_use_metadata_only_whitelist(tmp_path):
         call_id="call-time-1",
         tool_name="get_current_time",
         arguments_chars=28,
+        arguments_json='{"timezone":"Asia/Shanghai"}',
     )
     model_logging.log_model_tool_result(
         request_id="f" * 32,
@@ -375,6 +376,7 @@ def test_tool_events_use_metadata_only_whitelist(tmp_path):
         status="success",
         duration_ms=1.25,
         output_chars=91,
+        output_text='{"ok":true,"data":{"timezone":"Asia/Shanghai"}}',
     )
 
     call_event, result_event = map(
@@ -389,10 +391,12 @@ def test_tool_events_use_metadata_only_whitelist(tmp_path):
         "call_id",
         "tool_name",
         "arguments_chars",
+        "arguments_json",
     }
     assert call_event["event"] == "llm_tool_call"
     assert call_event["call_id"] == "call-time-1"
     assert call_event["arguments_chars"] == 28
+    assert call_event["arguments_json"] == '{"timezone":"Asia/Shanghai"}'
 
     assert set(result_event) == {
         "timestamp",
@@ -404,12 +408,49 @@ def test_tool_events_use_metadata_only_whitelist(tmp_path):
         "status",
         "duration_ms",
         "output_chars",
+        "output_text",
     }
     assert result_event["event"] == "llm_tool_result"
     assert result_event["status"] == "success"
     assert result_event["duration_ms"] == 1.25
     assert result_event["output_chars"] == 91
+    assert json.loads(result_event["output_text"])["ok"] is True
     serialized = json.dumps([call_event, result_event], ensure_ascii=False)
-    assert "Asia/Shanghai" not in serialized
-    assert "output_text" not in serialized
+    assert "Asia/Shanghai" in serialized
     assert "exception" not in serialized.lower()
+
+
+def test_tool_approval_event_uses_metadata_only_whitelist(tmp_path):
+    stream = io.StringIO()
+    model_logging.configure_model_logging(
+        stream=stream,
+        log_path=tmp_path / "model-calls.log",
+    )
+
+    model_logging.log_model_tool_approval(
+        request_id="a" * 32,
+        call_id="call-write-1",
+        tool_name="apply_workspace_edits",
+        approved=False,
+        paths_count=2,
+        diff_chars=123,
+        duration_ms=8.5,
+    )
+
+    event = json.loads(stream.getvalue())
+    assert set(event) == {
+        "timestamp",
+        "level",
+        "event",
+        "request_id",
+        "call_id",
+        "tool_name",
+        "approved",
+        "paths_count",
+        "diff_chars",
+        "duration_ms",
+    }
+    assert event["event"] == "llm_tool_approval"
+    assert event["approved"] is False
+    assert "diff_text" not in event
+    assert "path" not in event

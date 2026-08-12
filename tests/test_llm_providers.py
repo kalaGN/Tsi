@@ -387,6 +387,24 @@ def test_both_providers_send_all_workspace_schemas_without_host_metadata(
     assert "max_argument_bytes" not in serialized
     assert '"effect"' not in serialized
 
+    # 上游必须看到 Edit 的真实字段；只声明 array 会诱导模型生成执行器不认识的别名。
+    edit_schema = next(
+        item["parameters"]
+        for item in declared
+        if item["name"] == "apply_workspace_edits"
+    )
+    edit_items = edit_schema["properties"]["edits"]["items"]
+    assert edit_items["properties"]["mode"]["enum"] == ["create", "replace"]
+    assert set(edit_items["properties"]) == {
+        "mode",
+        "path",
+        "content",
+        "expected_sha256",
+        "old_text",
+        "new_text",
+    }
+    assert edit_items["additionalProperties"] is False
+
 
 @pytest.mark.parametrize(
     "provider",

@@ -8,7 +8,7 @@
 
 - `main.py`：从 `app.application` 导出 FastAPI 应用。
 - `app/application.py`：创建 FastAPI、注册根路由和 Chat Router。
-- `app/observability/model_logging.py`：配置模型/HTTP/工具 JSON 日志、stderr 输出、本地转储和事件白名单。
+- `app/observability/model_logging.py`：配置模型/HTTP/工具 JSON 日志、可选终端输出、本地转储和事件白名单。
 - `app/routers/chat.py`：校验 `POST /chat`，返回统一 `ChatResponse` 并映射 HTTP 错误。
 - `app/runtime/chat.py`：无状态入口、有序消息调用、默认工具 Registry、统一结果和安全错误语义。
 - `app/runtime/tool_loop.py`：默认/Workspace 循环预算、请求级审批上下文、串行工具编排和结果观察回调。
@@ -28,7 +28,7 @@
 - `app/tui/__main__.py`：加载根目录 `.env`，捕获一次启动目录，创建 Workspace Registry 并启动 Textual。
 - `app/tui/application.py`：终端输入与历史、消息展示、请求活动、审批回调、已落盘失败提醒、状态、耗时和取消。
 - `app/tui/approval.py`：默认拒绝且可复制的纯文本完整 Diff Modal。
-- `app/tui/widgets.py`：为 RichLog 补齐鼠标选择坐标、选择高亮和可见文本复制，并为输入框补充 `Cmd+A` / `Ctrl+A` 全选。
+- `app/tui/widgets.py`：为 RichLog 补齐鼠标选择坐标、选择高亮、可见文本复制及可选的双击单行复制，并为输入框补充 `Cmd+A` / `Ctrl+A` 全选。
 - `app/tui/state.py`：定义 `Ready`、`Thinking`、`Awaiting approval`、`Error`。
 - `tests/test_llm_providers.py`：Provider、工厂和共享 HTTP Mock 测试。
 - `tests/test_chat_runtime.py`：Runtime 单元测试。
@@ -144,13 +144,13 @@ TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只�
 - SSE 按字节切分边界并严格解码 UTF-8；取消沿调用栈传播并由 HTTPX 上下文关闭响应流。
 - 每次调用创建并关闭 HTTP Client；当前没有性能基线，不增加应用级连接生命周期。
 - 上游错误体、Authorization、密钥和内部堆栈不进入 HTTP/TUI。
-- 模型日志为单行 JSON；Runtime、所有模型步骤和工具事件共用同一 request ID，工具事件另用上游 call ID 关联。
+- 模型事件由固定字段白名单定义；HTTP stderr 渲染为单行 JSON，本地文件渲染为北京时间中文分块。Runtime、所有模型步骤和工具事件共用同一 request ID，工具事件另用上游 call ID 关联。
 - Runtime 生成 request ID 并显式经 Provider 传给共享 HTTP 层，不使用 ContextVar 或全局当前 ID。
-- 输入、输出和完整请求体以明文进入 stderr 和本地文件，多轮历史在每次调用时重复落盘；仍不记录环境 API Key、真实 `Authorization`、Provider 原始响应体、Cookie 或异常原文。
+- 输入、输出和完整请求体以明文进入本地文件，HTTP 入口还会写入 stderr，多轮历史在每次调用时重复落盘；仍不记录环境 API Key、真实 `Authorization`、Provider 原始响应体、Cookie 或异常原文。
 - TUI 系统提示词随完整 Provider 请求体明文进入模型日志；状态栏和 Runtime 摘要日志不回显正文。
 - HTTP 边界脱敏 Header 由日志层用固定值重建（`Authorization` 写为 `Bearer [REDACTED]`），从数据流上阻止密钥进入 Logger。
 - HTTP 耗时用 `time.monotonic()` 计算并保留两位毫秒；超时/连接失败只记录有限分类和耗时，不记录异常类名或堆栈。
-- 日志双写 stderr 和 UTF-8 `logs/model-calls.log`，单文件 10 MiB，保留 5 个备份；文件不可用时降级为 stderr。
+- HTTP 日志双写单行 JSON stderr 和 UTF-8 中文分块 `logs/model-calls.log`，文件不可用时降级为 stderr；TUI 只写该文件，文件不可用时静默放弃日志，避免任何日志覆盖全屏终端。文件内容使用北京时间，结构化正文以两空格 JSON 缩进展示；单文件 10 MiB，保留 5 个备份。
 - TUI 同时最多一个请求；Esc 优先清空非空输入且不启动退出计时，输入为空时第一次 Esc 取消请求，1.5 秒内第二次 Esc 退出，并用请求代次阻止陈旧结果写回。
 - TUI 每个活动请求最多创建一个 100 ms Timer，空闲时没有周期任务；Timer 回调同样校验捕获的请求代次。
 - TUI 上下键固定用于输入历史，历史不去重、不循环且没有独立持久化文件；`/clear` 同步清空。
@@ -158,7 +158,7 @@ TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只�
 - TUI 只在启动时读取当前目录直属 `AGENTS.md`，不递归、不热重载；system 消息与 Session schema 隔离。
 - TUI 只对 Assistant 原文做 Rich Markdown 展示，不执行代码、加载远程内容或改变 Session/HTTP 文本契约。
 - TUI 临时流只展示当前请求的纯文本；成功、错误、取消、工具 reset 和退出都会清理，部分文本不持久化。
-- TUI transcript 与临时流支持选择和复制当前可见文本；复制通道使用 Textual 内置剪贴板与终端 OSC 52，不调用系统命令。
+- TUI transcript 与临时流支持选择和复制当前可见文本；仅 transcript 启用双击复制命中的当前渲染行，并以内容坐标加纵向滚动偏移定位。复制通道使用 Textual 内置剪贴板与终端 OSC 52，不调用系统命令。
 - TUI 输入框以局部 TextArea 子类提供 `Cmd+A` / `Ctrl+A` 全选，兼容关闭 Kitty 扩展键盘协议后的终端按键降级。
 - 会话使用标准库 UTF-8 JSON 和同目录原子替换，不引入数据库或新依赖；历史明文且没有长度裁剪。
 - 当前不增加 Repository、Manager、数据库、缓存或其他无实际职责的层级。

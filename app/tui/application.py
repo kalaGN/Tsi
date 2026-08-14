@@ -99,6 +99,11 @@ class ChatTuiApp(App[None]):
     CSS = """
     Screen {
         layout: vertical;
+
+        & > .screen--selection {
+            background: #808080 50%;
+            color: transparent;
+        }
     }
 
     #title {
@@ -127,6 +132,11 @@ class ChatTuiApp(App[None]):
         height: 7;
         min-height: 4;
         border: solid $accent;
+
+        & .text-area--selection {
+            background: #808080 50%;
+            color: transparent;
+        }
     }
 
     #activity-bar {
@@ -240,6 +250,7 @@ class ChatTuiApp(App[None]):
             wrap=True,
             markup=False,
             auto_scroll=True,
+            copy_line_on_double_click=True,
         )
         yield SelectableRichLog(
             id="stream-output",

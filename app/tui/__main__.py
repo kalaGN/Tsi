@@ -37,7 +37,8 @@ def main() -> None:
     load_dotenv(project_root / ".env", override=False)
     # Report-all-keys 会干扰部分 macOS 中文输入法，因此项目不启用该协议。
     os.environ["TEXTUAL_DISABLE_KITTY_KEY"] = "1"
-    configure_model_logging()
+    # TUI 独占终端画面，模型日志只落本地文件，避免 stderr 覆盖输入区域。
+    configure_model_logging(enable_stream=False)
     try:
         system_prompt = load_system_prompt(startup_directory)
         system_prompt_error = None

@@ -56,14 +56,11 @@ def test_tui_uses_selectable_logs_for_transcript_and_stream_output():
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test():
-            assert isinstance(
-                app.query_one("#transcript", RichLog),
-                SelectableRichLog,
-            )
-            assert isinstance(
-                app.query_one("#stream-output", RichLog),
-                SelectableRichLog,
-            )
+            transcript = app.query_one("#transcript", SelectableRichLog)
+            stream = app.query_one("#stream-output", SelectableRichLog)
+
+            assert transcript.copy_line_on_double_click is True
+            assert stream.copy_line_on_double_click is False
 
     asyncio.run(scenario())
 
@@ -254,6 +251,118 @@ def test_selectable_log_supports_mouse_drag_and_ctrl_c_copy():
     asyncio.run(scenario())
 
 
+def test_transcript_double_click_copies_only_rendered_chinese_line():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during selection")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            transcript = app.query_one("#transcript", SelectableRichLog)
+            transcript.clear().write("第一行\n第二行\n第三行")
+            await pilot.pause()
+
+            content_x, content_y = transcript.gutter.top_left
+            assert await pilot.click(
+                transcript,
+                offset=(content_x + 1, content_y + 1),
+                times=2,
+            )
+            await pilot.pause()
+
+            assert app.clipboard == "第二行"
+            assert app.screen.get_selected_text() == "第二行"
+
+    asyncio.run(scenario())
+
+
+def test_transcript_double_click_uses_vertical_scroll_offset():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during selection")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test(size=(80, 18)) as pilot:
+            transcript = app.query_one("#transcript", SelectableRichLog)
+            transcript.clear().write("\n".join(f"第{index}行" for index in range(20)))
+            await pilot.pause()
+            transcript.scroll_to(y=5, animate=False, force=True)
+            await pilot.pause()
+
+            content_x, content_y = transcript.gutter.top_left
+            visible_line = transcript.scroll_offset.y
+            assert await pilot.click(
+                transcript,
+                offset=(content_x + 1, content_y),
+                times=2,
+            )
+            await pilot.pause()
+
+            assert visible_line > 0
+            assert app.clipboard == f"第{visible_line}行"
+
+    asyncio.run(scenario())
+
+
+def test_transcript_double_click_blank_line_keeps_clipboard_and_clears_select_all():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during selection")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            transcript = app.query_one("#transcript", SelectableRichLog)
+            transcript.clear().write("有内容\n\n下一行")
+            app.copy_to_clipboard("保留内容")
+            await pilot.pause()
+
+            content_x, content_y = transcript.gutter.top_left
+            assert await pilot.click(
+                transcript,
+                offset=(content_x + 1, content_y + 1),
+                times=2,
+            )
+            await pilot.pause()
+
+            assert app.clipboard == "保留内容"
+            assert app.screen.get_selected_text() is None
+
+    asyncio.run(scenario())
+
+
+def test_transcript_double_click_copies_rendered_markdown_without_source_markers():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during selection")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            transcript = app.query_one("#transcript", SelectableRichLog)
+            transcript.clear()
+            app._write_message("Assistant", "## 中文标题\n\n**重点内容**")
+            await pilot.pause()
+
+            target_line = next(
+                index
+                for index, line in enumerate(transcript.lines)
+                if "中文标题" in line.text
+            )
+            expected = transcript.lines[target_line].text
+            content_x, content_y = transcript.gutter.top_left
+            assert await pilot.click(
+                transcript,
+                offset=(content_x + 1, content_y + target_line),
+                times=2,
+            )
+            await pilot.pause()
+
+            assert app.clipboard == expected
+            assert "中文标题" in app.clipboard
+            assert "##" not in app.clipboard
+
+    asyncio.run(scenario())
+
+
 def test_selectable_log_copies_rendered_markdown_text_with_builtin_action():
     async def scenario():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
@@ -302,6 +411,29 @@ def test_selectable_log_renders_visible_selection_highlight():
                 "中",
                 "\n",
             )
+
+    asyncio.run(scenario())
+
+
+def test_transcript_and_prompt_selection_use_semitransparent_gray():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during startup")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test():
+            transcript_selection = app.screen.get_component_styles(
+                "screen--selection"
+            ).background
+            prompt = app.query_one("#prompt", TextArea)
+            prompt_selection = prompt.get_component_styles(
+                "text-area--selection"
+            ).background
+
+            assert transcript_selection.hex6 == "#808080"
+            assert prompt_selection.hex6 == "#808080"
+            assert transcript_selection.a == pytest.approx(0.5)
+            assert prompt_selection.a == pytest.approx(0.5)
 
     asyncio.run(scenario())
 
@@ -816,7 +948,7 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
     monkeypatch.setattr(
         tui_main,
         "configure_model_logging",
-        lambda: observed.setdefault("logging", "configured"),
+        lambda **kwargs: observed.setdefault("logging", kwargs),
     )
     monkeypatch.setattr(
         tui_main,
@@ -830,7 +962,7 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
     expected_root = Path(tui_main.__file__).resolve().parents[2]
     assert observed == {
         "dotenv": (expected_root / ".env", False),
-        "logging": "configured",
+        "logging": {"enable_stream": False},
         "kitty_keyboard_disabled": "1",
         "system_prompt_loads": [tmp_path],
         "system_prompt": system_prompt,
@@ -868,7 +1000,7 @@ def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tui_main, "load_dotenv", lambda *args, **kwargs: None)
-    monkeypatch.setattr(tui_main, "configure_model_logging", lambda: None)
+    monkeypatch.setattr(tui_main, "configure_model_logging", lambda **kwargs: None)
     monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
 
     tui_main.main()
@@ -900,7 +1032,7 @@ def test_tui_entrypoint_reports_workspace_failure_without_path(tmp_path, monkeyp
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tui_main, "load_dotenv", lambda *args, **kwargs: None)
-    monkeypatch.setattr(tui_main, "configure_model_logging", lambda: None)
+    monkeypatch.setattr(tui_main, "configure_model_logging", lambda **kwargs: None)
     monkeypatch.setattr(tui_main, "create_workspace_registry", fail_registry)
     monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
 

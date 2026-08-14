@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+import re
 from logging.handlers import RotatingFileHandler
 
 import pytest
@@ -30,7 +31,7 @@ def reset_model_logger():
     logger.propagate = original_propagate
 
 
-def test_model_input_and_output_are_single_line_json_in_stream_and_file(tmp_path):
+def test_stream_stays_json_while_file_uses_readable_model_blocks(tmp_path):
     stream = io.StringIO()
     log_path = tmp_path / "nested" / "model-calls.log"
     input_text = '你好\n请回答 "JSON"'
@@ -53,9 +54,8 @@ def test_model_input_and_output_are_single_line_json_in_stream_and_file(tmp_path
     )
 
     stream_lines = stream.getvalue().splitlines()
-    file_lines = log_path.read_text(encoding="utf-8").splitlines()
+    file_text = log_path.read_text(encoding="utf-8")
     assert len(stream_lines) == 2
-    assert file_lines == stream_lines
 
     request_event = json.loads(stream_lines[0])
     assert set(request_event) == {
@@ -93,6 +93,21 @@ def test_model_input_and_output_are_single_line_json_in_stream_and_file(tmp_path
     assert response_event["output_chars"] == len(output_text)
     assert response_event["output_text"] == output_text
 
+    assert re.search(
+        r"时间：\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} \+08:00",
+        file_text,
+    )
+    assert "事件：模型请求" in file_text
+    assert "事件：模型响应" in file_text
+    assert "请求ID：0123456789abcdef0123456789abcdef" in file_text
+    assert "Provider：deepseek" in file_text
+    assert "模型：deepseek-v4-flash" in file_text
+    assert f"输入长度：{len(input_text)} 字符" in file_text
+    assert f"输出长度：{len(output_text)} 字符" in file_text
+    assert f"【输入内容】\n{input_text}" in file_text
+    assert f"【输出内容】\n{output_text}" in file_text
+    assert file_text.count("=" * 80) == 2
+
 
 def test_configuration_is_idempotent_for_both_handlers(tmp_path):
     stream = io.StringIO()
@@ -112,7 +127,33 @@ def test_configuration_is_idempotent_for_both_handlers(tmp_path):
     assert len(logger.handlers) == 2
     assert logger.propagate is False
     assert len(stream.getvalue().splitlines()) == 1
-    assert len(log_path.read_text(encoding="utf-8").splitlines()) == 1
+    assert log_path.read_text(encoding="utf-8").count("=" * 80) == 1
+
+
+def test_file_only_configuration_removes_stream_handler(tmp_path):
+    stream = io.StringIO()
+    log_path = tmp_path / "model-calls.log"
+    model_logging.configure_model_logging(stream=stream, log_path=log_path)
+
+    # TUI 可能与其他入口运行在同一测试进程；切换后也必须移除已有终端输出。
+    model_logging.configure_model_logging(
+        stream=stream,
+        log_path=log_path,
+        enable_stream=False,
+    )
+    model_logging.log_model_request(
+        request_id="c" * 32,
+        provider="deepseek",
+        model="deepseek-v4-flash",
+        input_chars=2,
+        input_text="你好",
+    )
+
+    logger = logging.getLogger(model_logging.LOGGER_NAME)
+    assert stream.getvalue() == ""
+    assert len(logger.handlers) == 1
+    assert isinstance(logger.handlers[0], RotatingFileHandler)
+    assert "事件：模型请求" in log_path.read_text(encoding="utf-8")
 
 
 def test_rotating_file_keeps_at_most_configured_backups(tmp_path, monkeypatch):
@@ -207,8 +248,7 @@ def test_http_log_events_use_exact_whitelist_and_single_line_json(tmp_path):
     )
 
     stream_lines = stream.getvalue().splitlines()
-    file_lines = log_path.read_text(encoding="utf-8").splitlines()
-    assert file_lines == stream_lines
+    file_text = log_path.read_text(encoding="utf-8")
     assert len(stream_lines) == 3
 
     request_event = json.loads(stream_lines[0])
@@ -269,6 +309,22 @@ def test_http_log_events_use_exact_whitelist_and_single_line_json(tmp_path):
     assert error_event["event"] == "llm_http_error"
     assert error_event["error_type"] == "timeout"
     assert error_event["duration_ms"] == 9999.5
+
+    assert "事件：HTTP 请求" in file_text
+    assert "方法：POST" in file_text
+    assert "URL：https://api.deepseek.com/chat/completions" in file_text
+    assert "【请求 Header】" in file_text
+    assert '  "Authorization": "Bearer [REDACTED]"' in file_text
+    assert "【超时配置】" in file_text
+    assert '  "connect_seconds": 10.0' in file_text
+    assert "【请求体】" in file_text
+    assert '      "content": "你好"' in file_text
+    assert "事件：HTTP 响应" in file_text
+    assert "HTTP 状态：200" in file_text
+    assert "响应类型：application/json" in file_text
+    assert "事件：HTTP 错误" in file_text
+    assert "错误类型：超时" in file_text
+    assert file_text.count("=" * 80) == 3
 
 
 def test_http_request_body_preserves_multi_turn_chinese_newlines_and_quotes(
@@ -419,6 +475,18 @@ def test_tool_events_record_arguments_and_results_with_exact_whitelist(tmp_path)
     assert "Asia/Shanghai" in serialized
     assert "exception" not in serialized.lower()
 
+    file_text = (tmp_path / "model-calls.log").read_text(encoding="utf-8")
+    assert "事件：工具调用" in file_text
+    assert "调用ID：call-time-1" in file_text
+    assert "工具：get_current_time" in file_text
+    assert "参数长度：28 字符" in file_text
+    assert "【工具参数】\n{\n  \"timezone\": \"Asia/Shanghai\"\n}" in file_text
+    assert "事件：工具结果" in file_text
+    assert "状态：成功" in file_text
+    assert "耗时：1.25 ms" in file_text
+    assert "输出长度：91 字符" in file_text
+    assert '    "timezone": "Asia/Shanghai"' in file_text
+
 
 def test_tool_approval_event_uses_metadata_only_whitelist(tmp_path):
     stream = io.StringIO()
@@ -454,3 +522,32 @@ def test_tool_approval_event_uses_metadata_only_whitelist(tmp_path):
     assert event["approved"] is False
     assert "diff_text" not in event
     assert "path" not in event
+
+    file_text = (tmp_path / "model-calls.log").read_text(encoding="utf-8")
+    assert "事件：工具审批" in file_text
+    assert "审批结果：拒绝" in file_text
+    assert "路径数量：2" in file_text
+    assert "Diff 长度：123 字符" in file_text
+    assert "diff_text" not in file_text
+
+
+def test_readable_tool_content_falls_back_to_original_non_json_text(tmp_path):
+    log_path = tmp_path / "model-calls.log"
+    model_logging.configure_model_logging(
+        stream=io.StringIO(),
+        log_path=log_path,
+    )
+
+    model_logging.log_model_tool_result(
+        request_id="9" * 32,
+        call_id="call-plain",
+        tool_name="plain_result",
+        status="error",
+        duration_ms=0.5,
+        output_chars=7,
+        output_text="第一行\n第二行",
+    )
+
+    file_text = log_path.read_text(encoding="utf-8")
+    assert "状态：错误" in file_text
+    assert "【工具输出】\n第一行\n第二行" in file_text

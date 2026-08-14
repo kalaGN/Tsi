@@ -1,4 +1,4 @@
-"""模型输入输出的明文 JSON 日志与本地转储配置。"""
+"""模型事件的结构化 stderr 与人类可读本地日志配置。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Any, Mapping, TextIO
 from uuid import uuid4
+from zoneinfo import ZoneInfo
 
 
 LOGGER_NAME = "app.model_calls"
@@ -19,6 +20,8 @@ DEFAULT_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "model-calls.l
 
 _HANDLER_MARKER = "_model_log_handler_kind"
 _CONFIGURATION_LOCK = Lock()
+_LOCAL_LOG_TIMEZONE = ZoneInfo("Asia/Shanghai")
+_READABLE_SEPARATOR = "=" * 80
 # 日志层用固定脱敏值重建请求 Header，从数据流上阻止真实 API Key 进入 Logger。
 _REDACTED_REQUEST_HEADERS = {
     "Accept": "application/json",
@@ -114,6 +117,139 @@ class _ModelEventJsonFormatter(logging.Formatter):
         return json.dumps(event, ensure_ascii=False, separators=(",", ":"))
 
 
+class _ModelEventReadableFormatter(logging.Formatter):
+    """把同一白名单事件渲染为适合直接阅读的中文分块日志。"""
+
+    _EVENT_NAMES = {
+        "llm_request": "模型请求",
+        "llm_response": "模型响应",
+        "llm_http_request": "HTTP 请求",
+        "llm_http_response": "HTTP 响应",
+        "llm_http_error": "HTTP 错误",
+        "llm_tool_call": "工具调用",
+        "llm_tool_result": "工具结果",
+        "llm_tool_approval": "工具审批",
+    }
+    _ERROR_NAMES = {"timeout": "超时", "connection": "连接失败"}
+    _STATUS_NAMES = {"success": "成功", "error": "错误"}
+
+    def format(self, record: logging.LogRecord) -> str:
+        event_name = record.event
+        timestamp = datetime.fromtimestamp(
+            record.created,
+            timezone.utc,
+        ).astimezone(_LOCAL_LOG_TIMEZONE)
+        lines = [
+            f"时间：{timestamp.strftime('%Y-%m-%d %H:%M:%S.%f')[:-3]} "
+            f"{timestamp.strftime('%z')[:3]}:{timestamp.strftime('%z')[3:]}",
+            f"事件：{self._EVENT_NAMES[event_name]}",
+        ]
+        lines.extend(self._metadata_lines(record, event_name))
+        for title, value, parse_json in self._content_sections(record, event_name):
+            lines.extend(("", f"【{title}】", _render_log_content(value, parse_json)))
+        # 块间保留空行，长请求体和连续工具步骤更容易目视区分。
+        lines.extend((_READABLE_SEPARATOR, ""))
+        return "\n".join(lines)
+
+    def _metadata_lines(
+        self,
+        record: logging.LogRecord,
+        event_name: str,
+    ) -> list[str]:
+        """按事件类型输出稳定元数据，避免把 LogRecord 其他字段带入文件。"""
+
+        lines = [f"请求ID：{record.request_id}"]
+        if event_name.startswith("llm_http_") or event_name in {
+            "llm_request",
+            "llm_response",
+        }:
+            lines.extend((f"Provider：{record.provider}", f"模型：{record.model}"))
+        if event_name.startswith("llm_tool_"):
+            lines.extend((f"调用ID：{record.call_id}", f"工具：{record.tool_name}"))
+
+        if event_name == "llm_request":
+            lines.append(f"输入长度：{record.input_chars} 字符")
+        elif event_name == "llm_response":
+            lines.append(f"输出长度：{record.output_chars} 字符")
+        elif event_name == "llm_http_request":
+            lines.extend((f"方法：{record.method}", f"URL：{record.url}"))
+        elif event_name == "llm_http_response":
+            lines.extend(
+                (
+                    f"HTTP 状态：{record.status_code}",
+                    f"耗时：{record.duration_ms} ms",
+                    f"响应类型：{record.response_content_type or '-'}",
+                )
+            )
+        elif event_name == "llm_http_error":
+            lines.extend(
+                (
+                    f"错误类型：{self._ERROR_NAMES.get(record.error_type, record.error_type)}",
+                    f"耗时：{record.duration_ms} ms",
+                )
+            )
+        elif event_name == "llm_tool_call":
+            lines.append(f"参数长度：{record.arguments_chars} 字符")
+        elif event_name == "llm_tool_result":
+            lines.extend(
+                (
+                    f"状态：{self._STATUS_NAMES.get(record.status, record.status)}",
+                    f"耗时：{record.duration_ms} ms",
+                    f"输出长度：{record.output_chars} 字符",
+                )
+            )
+        elif event_name == "llm_tool_approval":
+            lines.extend(
+                (
+                    f"审批结果：{'通过' if record.approved else '拒绝'}",
+                    f"路径数量：{record.paths_count}",
+                    f"Diff 长度：{record.diff_chars} 字符",
+                    f"耗时：{record.duration_ms} ms",
+                )
+            )
+        return lines
+
+    @staticmethod
+    def _content_sections(
+        record: logging.LogRecord,
+        event_name: str,
+    ) -> tuple[tuple[str, object, bool], ...]:
+        """返回内容区标题、值以及是否尝试解析字符串 JSON。"""
+
+        if event_name == "llm_request":
+            return (("输入内容", record.input_text, False),)
+        if event_name == "llm_response":
+            return (("输出内容", record.output_text, False),)
+        if event_name == "llm_http_request":
+            return (
+                ("请求 Header", record.headers, False),
+                ("超时配置", record.timeout, False),
+                ("请求体", record.request_body, False),
+            )
+        if event_name == "llm_tool_call":
+            return (("工具参数", record.arguments_json, True),)
+        if event_name == "llm_tool_result":
+            return (("工具输出", record.output_text, True),)
+        return ()
+
+
+def _render_log_content(value: object, parse_json: bool) -> str:
+    """美化结构化正文；非 JSON 字符串保持原始内容和换行。"""
+
+    rendered_value = value
+    if parse_json and isinstance(value, str):
+        try:
+            rendered_value = json.loads(value)
+        except (TypeError, ValueError):
+            return value
+    if isinstance(rendered_value, (Mapping, list, tuple)):
+        try:
+            return json.dumps(rendered_value, ensure_ascii=False, indent=2)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(rendered_value)
+
+
 class _SafeRotatingFileHandler(RotatingFileHandler):
     """将日志文件写入错误隔离在诊断旁路，不影响业务请求。"""
 
@@ -125,21 +261,30 @@ def configure_model_logging(
     *,
     stream: TextIO | None = None,
     log_path: Path | None = None,
+    enable_stream: bool = True,
 ) -> None:
-    """幂等配置 stderr 和本地转储日志，文件不可用时自动降级。"""
+    """幂等配置本地日志，并按入口需要启用或关闭终端输出。"""
 
     logger = logging.getLogger(LOGGER_NAME)
-    formatter = _ModelEventJsonFormatter()
+    stream_formatter = _ModelEventJsonFormatter()
+    file_formatter = _ModelEventReadableFormatter()
     resolved_path = DEFAULT_LOG_PATH if log_path is None else Path(log_path)
 
     with _CONFIGURATION_LOCK:
         logger.setLevel(logging.INFO)
         logger.propagate = False
 
-        if not _has_handler(logger, "stream"):
+        if not enable_stream:
+            # Textual 独占终端绘制；移除本模块的 StreamHandler，避免日志覆盖 TUI。
+            for handler in list(logger.handlers):
+                if getattr(handler, _HANDLER_MARKER, None) != "stream":
+                    continue
+                logger.removeHandler(handler)
+                handler.close()
+        elif not _has_handler(logger, "stream"):
             stream_handler = logging.StreamHandler(stream)
             setattr(stream_handler, _HANDLER_MARKER, "stream")
-            stream_handler.setFormatter(formatter)
+            stream_handler.setFormatter(stream_formatter)
             logger.addHandler(stream_handler)
 
         if _has_handler(logger, "file"):
@@ -159,7 +304,7 @@ def configure_model_logging(
             return
 
         setattr(file_handler, _HANDLER_MARKER, "file")
-        file_handler.setFormatter(formatter)
+        file_handler.setFormatter(file_formatter)
         logger.addHandler(file_handler)
 
 

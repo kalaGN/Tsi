@@ -2,7 +2,7 @@
 
 ## Project
 
-- 轻量模型调用项目，上游统一使用流式协议；对外提供聚合 JSON 的无状态 FastAPI HTTP 接口和支持增量展示、可恢复单会话的本地 Textual TUI。
+- 项目正式名称为 `Tsi 助手`；这是一个轻量模型调用项目，上游统一使用流式协议，对外提供聚合 JSON 的无状态 FastAPI HTTP 接口和支持增量展示、可恢复单会话的本地 Textual TUI。
 - Python 3.11；依赖版本以 `requirements.txt` 为准。
 - 当前不是多 Agent 系统，不含数据库、缓存、消息队列或后台 Worker；TUI 仅用本地 JSON 持久化唯一当前会话，Textual Worker 只承担异步请求。
 

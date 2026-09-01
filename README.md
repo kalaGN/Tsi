@@ -1,6 +1,6 @@
-# FastAPI Demo
+# Tsi 助手
 
-这是一个轻量大模型调用项目，同时提供无状态 FastAPI HTTP 接口和可恢复上下文的 Textual TUI，支持阿里云 Responses API、DeepSeek Chat Completions API，以及带审批和撤销能力的本地项目工具。
+Tsi 助手是一个轻量大模型调用项目，同时提供无状态 FastAPI HTTP 接口和可恢复上下文的 Textual TUI，支持阿里云 Responses API、DeepSeek Chat Completions API，以及带审批和撤销能力的本地项目工具。
 
 ## 安装依赖
 

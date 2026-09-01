@@ -1,8 +1,8 @@
-# FastAPI Demo AI Coding Rules
+# Tsi 助手 AI Coding Rules
 
 ## 1. Scope and Facts
 
-本规则适用于当前 FastAPI Demo。项目是单仓库 Python 应用，提供 FastAPI HTTP 与本地 Textual TUI，使用 Application、Router、Runtime、Service、Tool 和 TUI 职责；不存在数据库、缓存、消息队列、后台 Worker、认证授权、CI 或部署配置。
+本规则适用于当前 Tsi 助手项目。项目是单仓库 Python 应用，提供 FastAPI HTTP 与本地 Textual TUI，使用 Application、Router、Runtime、Service、Tool 和 TUI 职责；不存在数据库、缓存、消息队列、后台 Worker、认证授权、CI 或部署配置。
 
 事实来源优先级：
 

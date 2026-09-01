@@ -485,6 +485,19 @@ def test_tui_initial_state_shows_provider_model_and_key_status():
     asyncio.run(scenario())
 
 
+def test_tui_uses_official_project_name_for_app_and_header():
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not be called during startup")
+
+        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test():
+            assert app.TITLE == "Tsi 助手"
+            assert str(app.query_one("#title", Static).content) == "Tsi 助手"
+
+    asyncio.run(scenario())
+
+
 def test_tui_status_shows_loaded_system_prompt_without_exposing_content():
     async def scenario():
         async def fake_runner(

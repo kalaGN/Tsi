@@ -1,8 +1,8 @@
-# Architecture
+# Tsi 助手 Architecture
 
 ## Overview
 
-这是一个基于 Python 3.11 的轻量模型调用项目，同时提供聚合 JSON 的无状态 FastAPI HTTP 和支持流式展示、可恢复单会话及项目自修改的 Textual TUI。两个入口共享 Chat Runtime，但使用隔离的 Registry 和循环预算：HTTP 仅有只读时间工具，TUI 绑定启动目录并提供读取、审批写入、固定检查和撤销工具。
+Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供聚合 JSON 的无状态 FastAPI HTTP 和支持流式展示、可恢复单会话及项目自修改的 Textual TUI。两个入口共享 Chat Runtime，但使用隔离的 Registry 和循环预算：HTTP 仅有只读时间工具，TUI 绑定启动目录并提供读取、审批写入、固定检查和撤销工具。
 
 ## Components
 

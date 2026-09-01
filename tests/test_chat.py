@@ -151,6 +151,14 @@ def test_root_behavior_is_preserved():
     assert response.json() == {"Hello": "World"}
 
 
+def test_fastapi_and_openapi_use_official_project_name():
+    response = client.get("/openapi.json")
+
+    assert application_app.title == "Tsi 助手"
+    assert response.status_code == 200
+    assert response.json()["info"]["title"] == "Tsi 助手"
+
+
 def test_get_item_endpoint_is_removed():
     assert client.get("/items/1").status_code == 404
 

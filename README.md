@@ -34,36 +34,6 @@ ALIYUN_MODEL=qwen3-max
 
 `ALIYUN_MODEL`、`DEEPSEEK_MODEL` 都是可选项，空白或未设置时使用示例中的默认模型。Provider 只能为 `aliyun` 或 `deepseek`；显式空白或其他值会返回配置错误。
 
-## 启动 HTTP 服务
-
-```bash
-.venv/bin/python -m uvicorn main:app --reload --env-file .env
-```
-
-启动后可访问：
-
-- 首页：http://127.0.0.1:8000/
-- Swagger：http://127.0.0.1:8000/docs
-- ReDoc：http://127.0.0.1:8000/redoc
-
-调用统一模型接口：
-
-```bash
-curl --location 'http://127.0.0.1:8000/chat' \
-  --header 'Content-Type: application/json' \
-  --data '{"input":"你是谁？"}'
-```
-
-无论使用哪个 Provider，成功响应都是：
-
-```json
-{
-  "output_text": "模型生成的文本"
-}
-```
-
-接口不再返回阿里云或 DeepSeek 的原始响应字段。
-
 ## 工具调用
 
 HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间工具；TUI 绑定启动目录，自动执行只读工具，创建、修改或撤销文件时展示完整 Diff 并等待本地确认。Runtime 会把每次结果回传同一个 Provider，直到模型给出最终文本。
@@ -116,6 +86,36 @@ TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统
 - `/quit`：取消运行中请求并退出。
 
 TUI 支持直接使用中文输入法。用户输入会用带背景的全宽卡片区分，但仍逐字显示、不解析 Markdown；Assistant 生成中按纯文本增量显示，完成后按 Markdown 美化，系统提示和错误信息保持纯文本。最终消息、流式临时文本和审批 Diff 都可选择复制；对话记录额外支持双击复制单个渲染行。上下键始终用于输入历史，不承担多行输入的垂直光标移动；粘贴的多行文本仍可原样发送。`/help` 和 `/chat` 不是本地命令，会作为普通文本发送给模型。当前不支持 HTML、远程图片、Mermaid、HTTP SSE、多会话管理、历史搜索、上下文压缩、任意命令工具或请求级模型切换。
+
+## 启动 HTTP 服务
+
+```bash
+.venv/bin/python -m uvicorn main:app --reload --env-file .env
+```
+
+启动后可访问：
+
+- 首页：http://127.0.0.1:8000/
+- Swagger：http://127.0.0.1:8000/docs
+- ReDoc：http://127.0.0.1:8000/redoc
+
+调用统一模型接口：
+
+```bash
+curl --location 'http://127.0.0.1:8000/chat' \
+  --header 'Content-Type: application/json' \
+  --data '{"input":"你是谁？"}'
+```
+
+无论使用哪个 Provider，成功响应都是：
+
+```json
+{
+  "output_text": "模型生成的文本"
+}
+```
+
+接口不再返回阿里云或 DeepSeek 的原始响应字段。
 
 ## TUI 会话历史
 

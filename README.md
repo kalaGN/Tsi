@@ -38,19 +38,17 @@ ALIYUN_MODEL=qwen3-max
 
 HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间工具；TUI 绑定启动目录，自动执行只读工具，创建、修改或撤销文件时展示完整 Diff 并等待本地确认。Runtime 会把每次结果回传同一个 Provider，直到模型给出最终文本。
 
-HTTP 工具：
-
-- `get_current_time(timezone)`：获取指定 IANA 时区（例如 `Asia/Shanghai`）的当前 ISO 8601 时间。
-
-TUI 在该工具之外提供：
-
-- `list_workspace_files`：分页列举允许读取的文件和目录。
-- `search_workspace_text`：按字面量搜索 UTF-8 文本。
-- `read_workspace_file`：按行读取文本并返回 SHA-256。
-- `get_workspace_git_status` / `get_workspace_git_diff`：查看 Git 状态和分页 Diff。
-- `apply_workspace_edits`：审批后创建文件或执行带哈希前置条件的精确替换。
-- `run_project_check`：只运行 `compile`、`test_all`、`pip_check`、`diff_check` 四个固定检查。
-- `undo_workspace_change`：审批后撤销当前进程最近一次 Agent 修改。
+| 使用入口 | 工具 | 作用 | 执行方式 |
+| --- | --- | --- | --- |
+| HTTP、TUI | `get_current_time(timezone)` | 获取指定 IANA 时区（例如 `Asia/Shanghai`）的当前 ISO 8601 时间 | 自动执行 |
+| 仅 TUI | `list_workspace_files` | 分页列举允许读取的文件和目录 | 自动执行 |
+| 仅 TUI | `search_workspace_text` | 按字面量搜索 UTF-8 文本 | 自动执行 |
+| 仅 TUI | `read_workspace_file` | 按行读取文本并返回 SHA-256 | 自动执行 |
+| 仅 TUI | `get_workspace_git_status` | 查看 Git 状态 | 自动执行 |
+| 仅 TUI | `get_workspace_git_diff` | 查看分页 Diff | 自动执行 |
+| 仅 TUI | `apply_workspace_edits` | 创建文件或执行带哈希前置条件的精确替换 | 本地审批后执行 |
+| 仅 TUI | `run_project_check` | 运行 `compile`、`test_all`、`pip_check`、`diff_check` 四个固定检查 | 自动执行 |
+| 仅 TUI | `undo_workspace_change` | 撤销当前进程最近一次 Agent 修改 | 本地审批后执行 |
 
 典型流程为：模型先列举、搜索、读取和检查现有差异，再提出结构化修改；TUI 显示相对路径和完整有界 Diff，默认焦点为拒绝。确认后模型可运行检查并继续修正。每个新写入和撤销都独立审批；Journal 最多保存 10 个批次且只存在当前 TUI 进程，重启后不能撤销旧批次。
 

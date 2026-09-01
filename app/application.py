@@ -10,7 +10,7 @@ def create_app() -> FastAPI:
     """创建应用并集中注册当前项目的 HTTP 路由。"""
 
     configure_model_logging()
-    application = FastAPI()
+    application = FastAPI(title="Tsi 助手")
     application.include_router(chat_router)
 
     @application.get("/")

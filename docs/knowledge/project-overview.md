@@ -1,8 +1,8 @@
-# Project Overview
+# Tsi 助手 Project Overview
 
 ## Goal
 
-本项目用于学习和验证 FastAPI、Textual、外部模型流式接口与受控 Function Calling。HTTP 提供聚合 JSON 的无状态文本调用和只读时间工具；本地全屏 TUI 提供流式展示、可恢复单会话，以及绑定启动目录的项目读取、审批修改、固定检查和撤销闭环。
+Tsi 助手用于学习和验证 FastAPI、Textual、外部模型流式接口与受控 Function Calling。HTTP 提供聚合 JSON 的无状态文本调用和只读时间工具；本地全屏 TUI 提供流式展示、可恢复单会话，以及绑定启动目录的项目读取、审批修改、固定检查和撤销闭环。
 
 ## Project Shape
 

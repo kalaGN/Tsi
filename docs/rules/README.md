@@ -2,7 +2,7 @@
 
 ## Documents
 
-- [FastAPI Demo AI Coding Rules](harness-engineering-rules.md)：项目架构、HTTP 契约、编码、测试、安全、可靠性、性能、Git 与 AI 工作流的长期强制规则。适用于功能开发、缺陷修复、重构、审查和文档维护。
+- [Tsi 助手 AI Coding Rules](harness-engineering-rules.md)：项目架构、HTTP 契约、编码、测试、安全、可靠性、性能、Git 与 AI 工作流的长期强制规则。适用于功能开发、缺陷修复、重构、审查和文档维护。
 
 ## Progressive Loading
 

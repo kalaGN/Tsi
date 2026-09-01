@@ -60,7 +60,7 @@ Clock = Callable[[], float]
 class ChatTuiApp(App[None]):
     """复用 Chat Runtime 的本地全屏多轮对话界面。"""
 
-    TITLE = "FastAPI Agent TUI"
+    TITLE = "Tsi 助手"
     ESCAPE_CONFIRM_SECONDS = 1.5
     ACTIVITY_INTERVAL_SECONDS = 0.1
     USER_MESSAGE_FOREGROUND = "#f2f2f2"

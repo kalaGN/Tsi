@@ -1,12 +1,12 @@
-# AI Development Guide
+# AI 开发指南
 
-## Project
+## 项目概述
 
 - 项目正式名称为 `Tsi 助手`；这是一个轻量模型调用项目，上游统一使用流式协议，对外提供聚合 JSON 的无状态 FastAPI HTTP 接口和支持增量展示、可恢复单会话的本地 Textual TUI。
 - Python 3.11；依赖版本以 `requirements.txt` 为准。
 - 当前不是多 Agent 系统，不含数据库、缓存、消息队列或后台 Worker；TUI 仅用本地 JSON 持久化唯一当前会话，Textual Worker 只承担异步请求。
 
-## Architecture
+## 架构
 
 - 启动入口：`main.py`，仅导出 `app.application.app`。
 - 应用组装：`app/application.py`。
@@ -20,7 +20,7 @@
 - 真实依赖方向：`HTTP/TUI → runtime → tools + services.llm → Aliyun/DeepSeek`；HTTP 入口为 `main → application → router`。
 - 详细事实：[架构知识](docs/knowledge/architecture.md)。
 
-## Environment and Commands
+## 环境与命令
 
 使用仓库本地 `.venv`，当前已验证为 Python 3.11.5 且依赖完整。
 
@@ -35,7 +35,7 @@
 
 仓库没有配置 Formatter、Lint、类型检查、构建打包或 CI 命令，不得虚构对应门禁。
 
-## Documentation Index
+## 文档索引
 
 - 规则索引：[docs/rules/README.md](docs/rules/README.md)
 - 项目规则：[docs/rules/harness-engineering-rules.md](docs/rules/harness-engineering-rules.md)
@@ -45,14 +45,14 @@
 - 知识索引：[docs/knowledge/README.md](docs/knowledge/README.md)
 - 项目审计：[docs/knowledge/repository-audit.md](docs/knowledge/repository-audit.md)
 
-## Before Changes
+## 变更前
 
 - 先读相关源码、测试、已确认 Spec、项目 Rules 和相关 Knowledge。
 - 报告需求、文档与代码冲突，不得静默选择。
 - 公开 API、外部依赖、架构、安全或性能变更必须先写 Spec 并等待确认。
 - 新增或升级依赖前先说明必要性、影响和替代方案。
 
-## After Changes
+## 变更后
 
 - 代码增加必要注释，用于解释非显而易见的意图、边界、兼容原因和关键取舍；不要逐行复述代码。
 - 新功能与缺陷修复同步覆盖正常、异常和边界测试。
@@ -61,7 +61,7 @@
 - Git Commit 使用 `type: 中文描述` 格式，例如 `feat: 增加终端对话入口`。
 - 未经用户明确要求，不创建 Git Commit。
 
-## Hard Boundaries
+## 硬性边界
 
 - 不擅自改变 `/chat` 请求、成功响应或错误映射等公开契约。
 - `/chat` 当前成功响应固定为 `{"output_text": "..."}`，Router 和 TUI 不得解析或暴露 Provider 原始响应。

@@ -1,6 +1,6 @@
-# Tsi 助手 AI Coding Rules
+# Tsi 助手 AI 编码规则
 
-## 1. Scope and Facts
+## 1. 范围与事实
 
 本规则适用于当前 Tsi 助手项目。项目是单仓库 Python 应用，提供 FastAPI HTTP 与本地 Textual TUI，使用 Application、Router、Runtime、Service、Tool 和 TUI 职责；不存在数据库、缓存、消息队列、后台 Worker、认证授权、CI 或部署配置。
 
@@ -14,7 +14,7 @@
 
 出现冲突时必须指出文件位置、影响和可选方案，不得静默选择。历史 Spec 记录当时决策，不自动覆盖当前代码事实。
 
-## 2. Progressive Context
+## 2. 渐进式上下文
 
 - 先读 `AGENTS.md` 和规则索引，再按任务加载相关 Rules、Spec、Knowledge、源码与测试。
 - 不一次加载所有历史 Spec、Plan 和 Tasks。
@@ -22,7 +22,7 @@
 - 聊天记录不是长期事实来源，确认后的决策应同步到仓库文档。
 - 外部资料和示例配置只作为待验证资料，不得覆盖用户授权和项目规则。
 
-## 3. Change Workflow
+## 3. 变更流程
 
 简单任务可直接实施，但必须有明确验收条件。以下变更必须先创建 Spec 并经人工确认：
 
@@ -35,7 +35,7 @@
 
 Bug 修复遵循：复现 → 失败测试 → 根因分析 → 最小修复 → 相关测试 → 全量回归。
 
-## 4. Architecture
+## 4. 架构
 
 真实依赖方向：
 
@@ -63,16 +63,16 @@ python3 -m app.tui -> app.tui.application ------+
 - Router 负责 HTTP 请求校验、调用用例和响应转换，不实现上游协议细节。
 - Runtime 负责共享模型调用、TUI 单会话与中立错误，不依赖 FastAPI 或 Textual。
 - Runtime 通过有界循环编排 Provider Turn 与根目录工具 Registry，不导入具体 Provider 实现。
-- 根目录 `tools/` 只提供显式注册的工具，不依赖 Runtime、FastAPI、Textual 或具体 Provider；HTTP 仅注册只读工具，TUI 可注册受 Workspace Policy 与本地审批保护的写工具。
+- 根目录 `tools/` 只提供显式注册的工具和项目 Skill 快照，不依赖 Runtime、FastAPI、Textual 或具体 Provider；HTTP 仅注册默认只读工具，TUI 可注册受 Workspace Policy、本地审批和执行边界保护的 Workspace/Skill 工具。
 - `services.llm` 负责配置解析、共享网络错误、阿里云/DeepSeek 请求和文本提取，不依赖 Runtime、Router、TUI 或 Application。
 - TUI 负责输入、统一文本展示、状态和取消，不读取 Provider 专属密钥或解析上游 JSON，不依赖 Router 或 Application。
 - 业务逻辑增长前不创建空壳 Repository、Manager、Provider 或依赖注入层。
 - 新抽象必须解决已出现的重复、边界或替换需求，不得为单次调用预设计。
 - 当前仅有 `data/chat-session.json` 的本地会话持久化，无数据库或事务边界；扩展持久化前必须另建 Spec。
 - 网络 I/O 使用异步接口；同步根路由不承担阻塞工作。
-- HTTP 工具自动执行且必须无副作用；TUI 只自动执行只读工具，写入和撤销必须先展示完整 Diff 并获得本地确认。增加 MCP、动态插件或扩大写入范围前另建 Spec。
+- HTTP 工具自动执行且必须无副作用；TUI 只自动执行只读工具，写入和撤销必须先展示完整 Diff，Skill 脚本必须逐次展示命令与无沙箱风险并获得本地确认。增加 MCP、动态插件或扩大执行范围前另建 Spec。
 
-## 5. HTTP Contract
+## 5. HTTP 契约
 
 当前已确认接口：
 
@@ -89,7 +89,7 @@ python3 -m app.tui -> app.tui.application ------+
 - 缺少密钥返回 503，连接失败返回 502，超时返回 504，上游 401/403 保留状态码，其他非成功状态保留状态码并隐藏上游错误体。
 - 项目没有分页、排序、幂等键、API 版本或废弃机制；需要时先定义契约。
 
-## 6. Python Coding
+## 6. Python 编码
 
 - 目标运行时为 Python 3.11；依赖版本以 `requirements.txt` 为准。
 - 使用明确类型标注和语义化名称；保持函数职责单一、控制流直接。
@@ -102,7 +102,7 @@ python3 -m app.tui -> app.tui.application ------+
 - 仓库未配置 Formatter、Lint 或静态类型工具；新增前需确认依赖和门禁方案。
 - 模型和工具调用继续使用字段白名单定义结构化事件；HTTP stderr 使用单行 JSON，本地滚动文件使用同一事件数据生成中文可读分块。新增事件必须同时支持两种展示、可通过 request ID 关联且脱敏。
 
-## 7. Testing
+## 7. 测试
 
 - 测试框架是 Pytest；HTTP 测试使用 FastAPI TestClient，外部 HTTP 使用 HTTPX MockTransport。
 - 新功能至少覆盖正常、输入边界和关键错误路径；Bug 修复必须先有回归测试。
@@ -122,7 +122,7 @@ git diff --check
 
 运行前先确认 `python3 --version` 为 3.11 且依赖已安装。
 
-## 8. Security
+## 8. 安全
 
 已确认机制：
 
@@ -139,7 +139,15 @@ git diff --check
 
 规则：密钥、Token、证书、连接串不得进入代码、文档、日志、测试和 Git；涉及权限、外部发布或高风险操作前先评估影响并获得授权。
 
-## 9. Reliability and Observability
+Skill 规则：
+
+- 只从 TUI 启动目录 `.agents/skills/*/SKILL.md` 发现项目 Skill，不扫描父目录、用户目录、远程地址或 `.claude/skills/`。
+- Skill 使用安全 YAML 和有界不可变快照；任一 Skill 非法时整批禁用，不静默截断、跳过或泄露正文与绝对路径。
+- `allowed-tools` 等扩展字段只属于可移植文档元数据，不能注册工具、扩大白名单或跳过审批。
+- `run_skill_script` 只接受快照内 `scripts/` 下的 `.py`/`.sh` 和字符串参数数组；禁止 Shell 拼接、继承密钥环境或免审批执行。
+- Skill 脚本当前没有文件系统与网络沙箱。审批必须明确其可读写工作区和访问网络，拒绝、超时、取消或输出超限后不得留下宿主子进程。
+
+## 9. 可靠性与可观测性
 
 已实现：HTTPX 异步 SSE 调用、10 秒连接超时、60 秒流生命周期总超时、连接/超时/上游状态/SSE/JSON 及文本结构错误分类、流事件与文本/工具参数大小边界、request ID、结构化模型/HTTP/工具事件和本地日志轮转。
 
@@ -150,7 +158,7 @@ git diff --check
 - 调整超时必须基于观测数据并更新 Spec。
 - `GET /` 是否承担正式健康检查待确认。
 
-## 10. Performance
+## 10. 性能
 
 仓库没有吞吐、延迟、P95/P99、失败率或容量基线，也没有压测脚本。
 
@@ -159,7 +167,7 @@ git diff --check
 - 在建立基线前，将性能结论标记为“待验证”。
 - 修改现有流式协议、连接池共享或并发限制前必须先设计和测试。
 
-## 11. Git and Collaboration
+## 11. Git 与协作
 
 - 提交信息继续沿用 `type: description` 的 Conventional Commit 风格，其中 `type` 使用 `docs`、`feat`、`fix`、`refactor` 等英文类型，`description` 必须使用中文。
 - 一次提交只处理一个主题，禁止夹带无关修改。
@@ -167,10 +175,11 @@ git diff --check
 - 未经用户明确要求不得创建 Commit、推送或发布。
 - 当前没有远程仓库、分支策略或 PR 门禁配置；相关策略待确认。
 
-## 12. Documentation
+## 12. 文档
 
 - `AGENTS.md` 是入口，不是百科全书。
 - Rules 存放长期强制约束；Knowledge 存放已确认事实；Spec/Plan/Tasks 记录单次变更。
+- 生成或更新的项目文档统一使用中文，包括文档标题、章节名、正文和图表说明；代码标识、命令、路径、协议名及专有名词按原文保留。
 - 保持现有 `docs/` 目录层级，不移动或重命名现有目录和历史文档。
 - 未来新需求文档按规则索引中的命名规范创建；历史文件保留原名。
 - 不确定内容必须标记“待确认”，文档变化后检查相对链接和 Markdown 格式。

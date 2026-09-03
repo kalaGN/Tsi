@@ -13,7 +13,7 @@ import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import Mapping
+from typing import TYPE_CHECKING, Mapping
 from uuid import uuid4
 
 from tools.contracts import (
@@ -24,6 +24,9 @@ from tools.contracts import (
     ToolErrorCode,
     ToolRejectedError,
 )
+
+if TYPE_CHECKING:
+    from tools.skills import SkillCatalog
 
 
 MAX_READ_FILE_BYTES = 1024 * 1024
@@ -952,6 +955,7 @@ class UndoWorkspaceChangeTool:
 def create_workspace_registry(
     policy: WorkspacePolicy,
     journal: WorkspaceChangeJournal | None = None,
+    skill_catalog: "SkillCatalog | None" = None,
 ):
     """创建仅由 TUI 入口显式加载的固定 Workspace 工具白名单。"""
 
@@ -961,8 +965,7 @@ def create_workspace_registry(
     from tools.registry import ToolRegistry
 
     active_journal = WorkspaceChangeJournal() if journal is None else journal
-    return ToolRegistry(
-        (
+    tools = [
             GetCurrentTimeTool(),
             ListWorkspaceFilesTool(policy),
             SearchWorkspaceTextTool(policy),
@@ -972,8 +975,22 @@ def create_workspace_registry(
             ApplyWorkspaceEditsTool(policy, active_journal),
             RunProjectCheckTool(policy),
             UndoWorkspaceChangeTool(policy, active_journal),
+    ]
+    if skill_catalog is not None and skill_catalog.count:
+        from tools.skills import (
+            LoadSkillTool,
+            ReadSkillResourceTool,
+            RunSkillScriptTool,
         )
-    )
+
+        tools.extend(
+            (
+                LoadSkillTool(skill_catalog),
+                ReadSkillResourceTool(skill_catalog),
+                RunSkillScriptTool(skill_catalog),
+            )
+        )
+    return ToolRegistry(tuple(tools))
 
 
 def _path_error(error: WorkspacePathError) -> Exception:

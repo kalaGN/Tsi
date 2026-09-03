@@ -40,3 +40,17 @@ def load_system_prompt(startup_directory: Path) -> str | None:
     except UnicodeDecodeError as exc:
         raise SystemPromptLoadError(SYSTEM_PROMPT_ERROR_MESSAGE) from exc
     return content if content.strip() else None
+
+
+def compose_system_prompt(
+    agents_prompt: str | None,
+    skill_catalog_prompt: str | None,
+) -> str | None:
+    """按固定顺序组合项目规则与 Skill 目录，且不制造空 system 消息。"""
+
+    parts = [
+        part
+        for part in (agents_prompt, skill_catalog_prompt)
+        if isinstance(part, str) and part.strip()
+    ]
+    return "\n\n---\n\n".join(parts) if parts else None

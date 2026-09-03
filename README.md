@@ -49,17 +49,22 @@ HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间�
 | 仅 TUI | `apply_workspace_edits` | 创建文件或执行带哈希前置条件的精确替换 | 本地审批后执行 |
 | 仅 TUI | `run_project_check` | 运行 `compile`、`test_all`、`pip_check`、`diff_check` 四个固定检查 | 自动执行 |
 | 仅 TUI | `undo_workspace_change` | 撤销当前进程最近一次 Agent 修改 | 本地审批后执行 |
+| 仅 TUI | `load_skill` | 按名称读取完整 `SKILL.md` 和资源清单 | 自动执行 |
+| 仅 TUI | `read_skill_resource` | 读取 Skill 快照中的 UTF-8 文本资源 | 自动执行 |
+| 仅 TUI | `run_skill_script` | 执行 Skill `scripts/` 中的 `.py` 或 `.sh` 文件 | 每次本地审批后执行 |
 
 典型流程为：模型先列举、搜索、读取和检查现有差异，再提出结构化修改；TUI 显示相对路径和完整有界 Diff，默认焦点为拒绝。确认后模型可运行检查并继续修正。每个新写入和撤销都独立审批；Journal 最多保存 10 个批次且只存在当前 TUI 进程，重启后不能撤销旧批次。
 
 安全和成本边界：
 
-- 工具只能从根目录 `tools/` 显式注册；不提供任意 Shell/Python、动态 import、网络、数据库、依赖安装或 Git 提交/推送。
+- 工具只能从根目录 `tools/` 显式注册；不提供模型自由拼接的 Shell/Python、动态 import、数据库、依赖安装或 Git 提交/推送。唯一脚本入口是 TUI 的 `run_skill_script`，且只能执行已发现 Skill 的固定文件。
 - Workspace 固定为 TUI 启动目录；绝对路径、`..`、符号链接、二进制和保护路径会被拒绝。
 - `.env*`、`.git/`、`.venv/`、`data/`、`logs/` 和缓存目录不可读写；`AGENTS.md`、Rules、依赖文件和 Workspace 安全实现额外禁止写入。
 - `apply_workspace_edits` 只支持创建已有目录下的 UTF-8 文件和精确替换，不支持删除、移动、重命名或创建目录。
 - HTTP 默认最多 5 个模型步骤、每步 4 次、总计 16 次工具调用；TUI 分别为 20、4、40。
 - 普通参数最多 8 KiB，编辑参数最多 64 KiB，结果最多 32 KiB；多个调用串行执行。
+- Skill 脚本使用参数数组而非 Shell 拼接，`.py` 固定使用当前 Python，`.sh` 固定使用 `/bin/sh`；运行环境不继承 API Key 等宿主变量，30 秒超时，stdout/stderr 合计最多 32 KiB。
+- Skill 脚本没有文件系统或网络沙箱，能够读取工作区、修改文件及访问网络；审批界面会展示解释器、相对脚本、逐项转义参数和该风险，每次调用都重新确认。
 - 达到上限时 `/chat` 返回安全的 502；TUI 显示安全错误。已确认并完成的磁盘修改不会因后续模型失败自动回滚，界面会列出仍保留的相对路径。
 
 ## 启动 TUI
@@ -71,6 +76,20 @@ TUI 会从项目根目录 `.env` 加载配置，Shell 中已设置的环境变�
 ```
 
 TUI 启动时还会读取命令执行目录直属的 `AGENTS.md`：有效的 UTF-8 普通文件会作为每轮请求唯一的首条 system 消息，文件缺失或空白时不启用，正文超过 32 KiB、编码非法或不可读取时会显示错误并阻止模型请求。状态栏以 `AGENTS: loaded|none|error` 展示本次启动结果，不回显正文；文件修改后需重启 TUI 才能生效。当前不递归父目录，不支持 `AGENTS.override.md` 或多文件合并。
+
+同一启动目录还可放置 Codex 兼容 Skill：
+
+```text
+.agents/skills/<skill-name>/
+├── SKILL.md
+├── scripts/       # 可选
+├── references/    # 可选
+└── assets/        # 可选
+```
+
+TUI 启动时只扫描这一层 `.agents/skills/`，使用安全 YAML 读取 `SKILL.md` 的 `name` 和 `description`，并把名称、描述、相对位置组成 Catalog 追加到 system 消息。模型匹配到能力后先调用 `load_skill`，需要配套文本时再调用 `read_skill_resource`；Skill 正文不会预先灌入上下文。状态栏以 `Skills: 数量|error` 展示结果。任一 Skill、资源、编码、大小或符号链接非法时整批 Skill 被禁用，但 `AGENTS.md`、普通对话和已有 Workspace 工具仍可使用；修改 Skill 后需重启 TUI。
+
+Skill 包以 Codex 的 `.agents/skills/` 发现约定为准，`SKILL.md` 与 `scripts/`、`references/`、`assets/` 结构遵循开放 Agent Skills 格式。同一个包可复制到 Claude Code 对应目录使用，但 Tsi 不扫描 `.claude/skills/`，也不采信 `allowed-tools` 等字段扩大权限。项目不内置示例 Skill，测试使用临时夹具验证完整流程。
 
 TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统提示词不会显示在对话区或写入 Session。模型生成期间，输入框上方会持续显示临时纯文本；完整响应到达后，该区域会被一份最终 Markdown 消息替换并美化为标题、列表、表格和代码块等结构。流式展示不会执行代码，也不会把半截回答写入会话历史。请求期间还会显示动画、`思考中`、实时耗时和 Esc 取消提示；成功或失败后仍会在对话记录中显示最终耗时，取消请求不记录最终耗时。HTTP `/chat` 仍是无状态单轮聚合 JSON 接口，不读取 `AGENTS.md`，也不与 TUI 共享历史。
 
@@ -127,7 +146,7 @@ data/chat-session.json
 
 输入历史在启动时从已成功保存的 user 消息恢复。本次进程内已经发出但最终失败或取消的输入也可以用上下键找回，但不会写入会话文件；`/clear` 会同时清空会话和输入历史。
 
-工具调用和工具结果只在当前请求内使用，不写入会话文件；一次工具循环完整成功后，只保存用户输入和模型最终回答。
+工具调用和工具结果只在当前请求内使用，不写入会话文件；Skill Catalog、正文、资源和脚本轨迹同样不持久化。一次工具循环完整成功后，只保存用户输入和模型最终回答。
 
 > 隐私警告：会话文件以明文保存输入和回答。`data/` 已被 Git 忽略，但具有本地文件读取权限的用户或进程仍可读取其内容。
 
@@ -185,7 +204,7 @@ llm_request -> llm_http_request -> llm_http_response -> llm_response
 
 日志不记录环境 API Key、真实 `Authorization`、Provider 原始响应体、Cookie 或异常原文。
 
-> 隐私警告：输入、输出、工具参数、工具结果、TUI 加载的 `AGENTS.md` 系统提示词和完整请求体都会以明文写入本地文件；HTTP 入口还会同步写入 stderr，且多轮历史会在每次调用时重复落盘。不要在提问、工具参数或 `AGENTS.md` 中放置密码、Token、个人隐私或其他不应发送和持久化的数据。具有本地文件读取权限的用户或进程可以读取日志内容。
+> 隐私警告：输入、输出、工具参数、工具结果、TUI 加载的 `AGENTS.md`、Skill Catalog/正文/文本资源、脚本参数及 stdout/stderr 和完整请求体都会以明文写入本地文件；HTTP 入口还会同步写入 stderr，且多轮历史会在每次调用时重复落盘。不要在这些位置放置密码、Token、个人隐私或其他不应发送和持久化的数据。具有本地文件读取权限的用户或进程可以读取日志内容。
 
 单文件转储阈值为 10 MiB，保留 5 个备份；`logs/` 已被 Git 忽略。由于正文不截断，单条超大记录可令当前文件暂时超过该阈值。日志失败不影响模型请求本身。
 

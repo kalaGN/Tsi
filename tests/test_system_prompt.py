@@ -5,8 +5,22 @@ import pytest
 from app.runtime.system_prompt import (
     MAX_SYSTEM_PROMPT_BYTES,
     SystemPromptLoadError,
+    compose_system_prompt,
     load_system_prompt,
 )
+
+
+@pytest.mark.parametrize(
+    ("agents", "skills", "expected"),
+    [
+        (None, None, None),
+        ("规则", None, "规则"),
+        (None, "目录", "目录"),
+        ("规则\n", "目录", "规则\n\n\n---\n\n目录"),
+    ],
+)
+def test_compose_system_prompt_keeps_stable_order(agents, skills, expected):
+    assert compose_system_prompt(agents, skills) == expected
 
 
 def test_missing_or_blank_agents_file_disables_system_prompt(tmp_path):

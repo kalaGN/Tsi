@@ -21,7 +21,12 @@ from app.tui.application import ChatTuiApp
 from app.tui.state import RunStatus
 from app.tui.approval import ToolApprovalScreen
 from app.tui.widgets import SelectableRichLog
-from tools import ToolApprovalRequest, ToolCall, ToolResult
+from tools import (
+    ScriptApprovalRequest,
+    ToolApprovalRequest,
+    ToolCall,
+    ToolResult,
+)
 from tools.workspace import WorkspacePolicy, create_workspace_registry
 
 
@@ -103,6 +108,58 @@ def test_workspace_approval_modal_defaults_to_reject_and_supports_y(tmp_path):
             assert decisions == [True]
             assert app.run_status is RunStatus.READY
             assert "完成" in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
+def test_skill_script_approval_shows_warning_command_and_execute_action():
+    async def scenario():
+        decisions = []
+        request = ScriptApprovalRequest(
+            call_id="script-1",
+            tool_name="run_skill_script",
+            title="执行 Skill 脚本",
+            skill_name="demo-skill",
+            script_path="scripts/run.py",
+            command_text="python scripts/run.py '甲 乙'",
+            warning_text="当前没有文件系统或网络沙箱。",
+            fingerprint="c" * 64,
+        )
+
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            decisions.append(await kwargs["on_tool_approval"](request))
+            return ChatResult("完成", "fake", "fake-model")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            workspace_registry=create_workspace_registry(
+                WorkspacePolicy(Path.cwd())
+            ),
+        )
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("执行脚本")
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, ToolApprovalScreen):
+                    break
+            modal = app.screen
+            assert isinstance(modal, ToolApprovalScreen)
+            preview = "\n".join(
+                line.text
+                for line in modal.query_one("#approval-diff", RichLog).lines
+            )
+            assert "没有文件系统或网络沙箱" in preview
+            assert "python scripts/run.py '甲 乙'" in preview
+            assert "Skill：demo-skill" in str(
+                modal.query_one("#approval-paths", Static).content
+            )
+            assert "执行 (Y)" in str(modal.query_one("#approve").label)
+            await pilot.press("y")
+            await app.workers.wait_for_complete()
+
+            assert decisions == [True]
 
     asyncio.run(scenario())
 
@@ -581,6 +638,33 @@ def test_tui_initial_state_supports_deepseek_status():
     asyncio.run(scenario())
 
 
+def test_tui_skill_error_is_visible_but_does_not_block_chat():
+    async def scenario():
+        received = []
+
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            received.append(input_text)
+            return ChatResult("仍可对话", "fake", "fake-model")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            skills_error="Project skills are unavailable",
+        )
+        async with app.run_test() as pilot:
+            status = str(app.query_one("#status-bar", Static).content)
+            assert "Skills: error" in status
+            assert "Project skills are unavailable" in transcript_text(app)
+            app.query_one("#prompt", TextArea).load_text("继续普通对话")
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+
+            assert received == ["继续普通对话"]
+            assert "仍可对话" in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
 def test_activity_bar_starts_empty_above_prompt_without_footer():
     async def scenario():
         async def fake_runner(
@@ -943,7 +1027,15 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
         def run(self):
             observed["run"] = True
 
-    def fake_create_app(*, system_prompt, system_prompt_error, workspace_registry, workspace_error):
+    def fake_create_app(
+        *,
+        system_prompt,
+        system_prompt_error,
+        workspace_registry,
+        workspace_error,
+        skills_count,
+        skills_error,
+    ):
         observed["kitty_keyboard_disabled"] = (
             tui_main.os.environ.get("TEXTUAL_DISABLE_KITTY_KEY")
         )
@@ -953,6 +1045,8 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
             definition.name for definition in workspace_registry.definitions
         )
         observed["workspace_error"] = workspace_error
+        observed["skills_count"] = skills_count
+        observed["skills_error"] = skills_error
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
@@ -992,6 +1086,8 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
             "undo_workspace_change",
         ),
         "workspace_error": None,
+        "skills_count": 0,
+        "skills_error": None,
         "run": True,
     }
 
@@ -1004,11 +1100,21 @@ def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
         def run(self):
             observed["run"] = True
 
-    def fake_create_app(*, system_prompt, system_prompt_error, workspace_registry, workspace_error):
+    def fake_create_app(
+        *,
+        system_prompt,
+        system_prompt_error,
+        workspace_registry,
+        workspace_error,
+        skills_count,
+        skills_error,
+    ):
         observed["system_prompt"] = system_prompt
         observed["system_prompt_error"] = system_prompt_error
         observed["workspace_registry"] = workspace_registry is not None
         observed["workspace_error"] = workspace_error
+        observed["skills_count"] = skills_count
+        observed["skills_error"] = skills_error
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
@@ -1025,8 +1131,84 @@ def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
         ),
         "workspace_registry": True,
         "workspace_error": None,
+        "skills_count": 0,
+        "skills_error": None,
         "run": True,
     }
+
+
+def test_tui_entrypoint_loads_skills_only_into_tui_registry(tmp_path, monkeypatch):
+    skill_root = tmp_path / ".agents" / "skills" / "demo-skill"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text(
+        "---\nname: demo-skill\ndescription: 演示能力\n---\n\n# 私有正文\n",
+        encoding="utf-8",
+    )
+    observed = {}
+
+    class FakeApp:
+        def run(self):
+            observed["run"] = True
+
+    def fake_create_app(**kwargs):
+        observed.update(kwargs)
+        return FakeApp()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(tui_main, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tui_main, "configure_model_logging", lambda **kwargs: None)
+    monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
+
+    tui_main.main()
+
+    names = tuple(
+        definition.name
+        for definition in observed["workspace_registry"].definitions
+    )
+    assert names[-3:] == (
+        "load_skill",
+        "read_skill_resource",
+        "run_skill_script",
+    )
+    assert observed["skills_count"] == 1
+    assert observed["skills_error"] is None
+    assert "demo-skill" in observed["system_prompt"]
+    assert "演示能力" in observed["system_prompt"]
+    assert "私有正文" not in observed["system_prompt"]
+    assert observed["run"] is True
+
+
+def test_tui_entrypoint_invalid_skill_keeps_workspace_tools(tmp_path, monkeypatch):
+    skill_root = tmp_path / ".agents" / "skills" / "bad-skill"
+    skill_root.mkdir(parents=True)
+    (skill_root / "SKILL.md").write_text("非法正文", encoding="utf-8")
+    observed = {}
+
+    class FakeApp:
+        def run(self):
+            observed["run"] = True
+
+    def fake_create_app(**kwargs):
+        observed.update(kwargs)
+        return FakeApp()
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(tui_main, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(tui_main, "configure_model_logging", lambda **kwargs: None)
+    monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
+
+    tui_main.main()
+
+    names = {
+        definition.name
+        for definition in observed["workspace_registry"].definitions
+    }
+    assert "read_workspace_file" in names
+    assert "load_skill" not in names
+    assert observed["skills_count"] == 0
+    assert observed["skills_error"] == "Project skills are unavailable"
+    assert observed["system_prompt"] is None
+    assert observed["run"] is True
 
 
 def test_tui_entrypoint_reports_workspace_failure_without_path(tmp_path, monkeypatch):
@@ -1036,7 +1218,7 @@ def test_tui_entrypoint_reports_workspace_failure_without_path(tmp_path, monkeyp
         def run(self):
             observed["run"] = True
 
-    def fail_registry(_policy):
+    def fail_registry(_policy, **_kwargs):
         raise ValueError(f"sensitive path: {tmp_path}")
 
     def fake_create_app(**kwargs):

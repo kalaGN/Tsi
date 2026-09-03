@@ -6,7 +6,12 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from app.observability.model_logging import configure_model_logging
-from app.runtime.system_prompt import SystemPromptLoadError, load_system_prompt
+from app.runtime.system_prompt import (
+    SystemPromptLoadError,
+    compose_system_prompt,
+    load_system_prompt,
+)
+from tools.skills import SkillLoadError, load_skill_catalog
 from tools.workspace import WorkspacePolicy, create_workspace_registry
 
 
@@ -16,6 +21,8 @@ def _create_app(
     system_prompt_error: str | None,
     workspace_registry,
     workspace_error: str | None,
+    skills_count: int,
+    skills_error: str | None,
 ):
     """延迟导入 Textual，确保终端兼容配置先于框架初始化生效。"""
 
@@ -26,6 +33,8 @@ def _create_app(
         system_prompt_error=system_prompt_error,
         workspace_registry=workspace_registry,
         workspace_error=workspace_error,
+        skills_count=skills_count,
+        skills_error=skills_error,
     )
 
 
@@ -40,23 +49,41 @@ def main() -> None:
     # TUI 独占终端画面，模型日志只落本地文件，避免 stderr 覆盖输入区域。
     configure_model_logging(enable_stream=False)
     try:
-        system_prompt = load_system_prompt(startup_directory)
+        agents_prompt = load_system_prompt(startup_directory)
         system_prompt_error = None
     except SystemPromptLoadError as exc:
-        system_prompt = None
+        agents_prompt = None
         system_prompt_error = str(exc)
     try:
+        skill_catalog = load_skill_catalog(startup_directory)
+        skills_error = None
+    except SkillLoadError as exc:
+        skill_catalog = None
+        skills_error = str(exc)
+    try:
         workspace_policy = WorkspacePolicy(startup_directory)
-        workspace_registry = create_workspace_registry(workspace_policy)
+        workspace_registry = create_workspace_registry(
+            workspace_policy,
+            skill_catalog=skill_catalog,
+        )
         workspace_error = None
+        skills_count = skill_catalog.count if skill_catalog is not None else 0
+        skill_prompt = (
+            skill_catalog.prompt if skill_catalog is not None else None
+        )
     except (OSError, ValueError):
         workspace_registry = None
         workspace_error = "Workspace tools are unavailable"
+        skills_count = 0
+        skill_prompt = None
+    system_prompt = compose_system_prompt(agents_prompt, skill_prompt)
     _create_app(
         system_prompt=system_prompt,
         system_prompt_error=system_prompt_error,
         workspace_registry=workspace_registry,
         workspace_error=workspace_error,
+        skills_count=skills_count,
+        skills_error=skills_error,
     ).run()
 
 

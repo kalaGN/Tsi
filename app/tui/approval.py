@@ -1,4 +1,4 @@
-"""工作区写操作的默认拒绝 Diff 审批界面。"""
+"""工作区写操作和 Skill 脚本的默认拒绝审批界面。"""
 
 from rich.text import Text
 from textual.app import ComposeResult
@@ -8,7 +8,11 @@ from textual.screen import ModalScreen
 from textual.widgets import Button, Label, RichLog
 
 from app.tui.widgets import SelectableRichLog
-from tools import ToolApprovalRequest
+from tools import (
+    AnyToolApprovalRequest,
+    ScriptApprovalRequest,
+    ToolApprovalRequest,
+)
 
 
 class ToolApprovalScreen(ModalScreen[bool]):
@@ -35,7 +39,7 @@ class ToolApprovalScreen(ModalScreen[bool]):
     #approval-actions Button { margin-left: 1; }
     """
 
-    def __init__(self, request: ToolApprovalRequest) -> None:
+    def __init__(self, request: AnyToolApprovalRequest) -> None:
         super().__init__()
         self.request = request
 
@@ -45,20 +49,34 @@ class ToolApprovalScreen(ModalScreen[bool]):
                 f"{self.request.title} · {self.request.tool_name}",
                 id="approval-title",
             )
-            yield Label(
-                "文件：" + "、".join(self.request.paths),
-                id="approval-paths",
-            )
+            if isinstance(self.request, ScriptApprovalRequest):
+                summary = (
+                    f"Skill：{self.request.skill_name} · "
+                    f"脚本：{self.request.script_path}"
+                )
+            else:
+                summary = "文件：" + "、".join(self.request.paths)
+            yield Label(summary, id="approval-paths")
             yield SelectableRichLog(id="approval-diff", wrap=False, markup=False)
             with Horizontal(id="approval-actions"):
                 yield Button("拒绝 (N/Esc)", id="reject", variant="error")
-                yield Button("应用 (Y)", id="approve", variant="success")
+                action = (
+                    "执行 (Y)"
+                    if isinstance(self.request, ScriptApprovalRequest)
+                    else "应用 (Y)"
+                )
+                yield Button(action, id="approve", variant="success")
 
     def on_mount(self) -> None:
         # Text 对象确保模型生成的 Markdown/ANSI 只作为可选择文字展示。
-        self.query_one("#approval-diff", RichLog).write(
-            Text(self.request.diff_text)
-        )
+        if isinstance(self.request, ScriptApprovalRequest):
+            preview = Text()
+            preview.append(self.request.warning_text, style="bold yellow")
+            preview.append("\n\n命令：\n")
+            preview.append(self.request.command_text)
+        else:
+            preview = Text(self.request.diff_text)
+        self.query_one("#approval-diff", RichLog).write(preview)
         self.query_one("#reject", Button).focus()
 
     def on_button_pressed(self, event: Button.Pressed) -> None:

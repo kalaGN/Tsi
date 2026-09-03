@@ -135,6 +135,16 @@ def test_registry_rejects_invalid_effect_limit_and_mutating_tool_without_preview
     with pytest.raises(ValueError):
         ToolRegistry([invalid_limit])
 
+    invalid_result_limit = FakeTool()
+    invalid_result_limit.definition = ToolDefinition(
+        "lookup",
+        "valid",
+        {"type": "object"},
+        max_result_bytes=0,
+    )
+    with pytest.raises(ValueError):
+        ToolRegistry([invalid_result_limit])
+
     missing_preview = FakeTool()
     missing_preview.definition = ToolDefinition(
         "lookup",
@@ -144,6 +154,16 @@ def test_registry_rejects_invalid_effect_limit_and_mutating_tool_without_preview
     )
     with pytest.raises(ValueError):
         ToolRegistry([missing_preview])
+
+    missing_execution_preview = FakeTool()
+    missing_execution_preview.definition = ToolDefinition(
+        "lookup",
+        "valid",
+        {"type": "object"},
+        effect=ToolEffect.EXECUTING,
+    )
+    with pytest.raises(ValueError):
+        ToolRegistry([missing_execution_preview])
 
 @pytest.mark.parametrize("arguments_json", ["not-json", "[]", '"text"'])
 def test_registry_returns_safe_error_for_invalid_arguments(arguments_json):

@@ -12,7 +12,7 @@
 - 应用组装：`app/application.py`。
 - HTTP 路由与请求校验：`app/routers/`。
 - HTTP/TUI 共享模型调用与中立错误，TUI Session、系统提示词读取及存储也位于：`app/runtime/`。
-- 根目录工具契约、Registry、Workspace 策略和固定检查：`tools/`。
+- 根目录工具契约、Registry、Workspace 策略、固定检查和 Codex 兼容 Skill 快照：`tools/`。
 - 多模型配置、协议适配和 Provider 错误：`app/services/llm/`。
 - 终端界面与启动入口：`app/tui/`。
 - TUI 可选择消息组件：`app/tui/widgets.py`。
@@ -55,6 +55,7 @@
 ## 变更后
 
 - 代码增加必要注释，用于解释非显而易见的意图、边界、兼容原因和关键取舍；不要逐行复述代码。
+- 生成或更新的项目文档统一使用中文，包括标题、章节名和说明文字；代码标识、命令、协议名及专有名词按原文保留。
 - 新功能与缺陷修复同步覆盖正常、异常和边界测试。
 - 运行真实可用的语法检查、全量测试、依赖检查和 `git diff --check`。
 - 同步更新受影响的 Spec、任务和 Knowledge。
@@ -65,7 +66,8 @@
 
 - 不擅自改变 `/chat` 请求、成功响应或错误映射等公开契约。
 - `/chat` 当前成功响应固定为 `{"output_text": "..."}`，Router 和 TUI 不得解析或暴露 Provider 原始响应。
-- 工具只能从根目录 `tools/` 显式注册；HTTP 仅自动执行无副作用工具。TUI 允许经完整 Diff 审批的结构化文件创建、精确替换和 LIFO 撤销，仍禁止任意 Shell、动态 import、删除/移动文件或数据库写操作。
+- 工具只能从根目录 `tools/` 显式注册；HTTP 仅自动执行无副作用工具。TUI 允许经完整 Diff 审批的结构化文件创建、精确替换和 LIFO 撤销；Skill 脚本仅能通过逐次审批的 `run_skill_script` 执行，不得提供任意命令、动态 import、删除/移动工具或数据库写操作。
+- TUI 只从启动目录 `.agents/skills/*/SKILL.md` 加载 Codex 兼容项目 Skill；Skill 文本和扩展字段不能注册工具、扩大权限或绕过审批，HTTP 不加载 Skill。
 - 密钥仅从环境变量读取；禁止进入代码、文档、日志、测试或 Git。
 - 不无需求增加层级、服务、基础设施或第三方依赖。
 - 自动化测试禁止调用真实付费或生产外部服务。

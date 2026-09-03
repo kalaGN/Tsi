@@ -1,4 +1,4 @@
-# Troubleshooting
+# 故障排查
 
 ## 阿里云返回 `Upstream service returned an invalid response`
 
@@ -11,6 +11,12 @@
 TUI 只在启动时读取命令执行目录直属的 `AGENTS.md`。确认它是可读取的 UTF-8 普通文件、正文不超过 32 KiB，且不是同名目录；错误期间普通输入不会调用模型，但 `/clear` 和 `/quit` 仍可使用。修复文件后重启 TUI，状态栏应显示 `AGENTS: loaded`；删除文件或保留空白文件后重启则显示 `AGENTS: none`。错误信息不会回显文件路径或正文。
 
 `AGENTS.md` 会作为 system 消息发送给外部模型，并进入现有完整请求日志。不要在其中保存密钥、Token 或隐私数据。
+
+## 状态栏显示 `Skills: error`
+
+TUI 只在启动时读取 `.agents/skills/*/SKILL.md`。检查每个目录名是否与 YAML `name` 完全一致、`description` 是否非空、Frontmatter 是否由 `---` 包围，以及入口和支持文件是否为有界的非符号链接普通文件。任一 Skill 非法会禁用整批项目 Skill，但不会阻止 `AGENTS.md`、普通对话和已有 Workspace 工具；修复后需重启 TUI。
+
+Skill Catalog、正文、资源和脚本输入输出会随系统提示词、工具结果及后续请求体明文进入 `logs/model-calls.log`。不要把密钥或隐私数据放入 Skill。脚本审批提示没有文件系统或网络沙箱：只有确认脚本及参数可信时才执行。
 
 ## 状态栏显示 `Workspace: error`
 

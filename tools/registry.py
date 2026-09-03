@@ -9,6 +9,8 @@ from pathlib import PurePosixPath
 
 from tools.contracts import (
     ApprovalTool,
+    SCRIPT_APPROVAL_WARNING_TEXT,
+    ScriptApprovalRequest,
     Tool,
     ToolApprovalRequest,
     ToolArgumentError,
@@ -26,8 +28,10 @@ from tools.contracts import (
 MAX_ARGUMENT_BYTES = 8 * 1024
 MAX_TOOL_ARGUMENT_BYTES = 64 * 1024
 MAX_RESULT_BYTES = 32 * 1024
+MAX_TOOL_RESULT_BYTES = 256 * 1024
 MAX_APPROVAL_DIFF_BYTES = 64 * 1024
 _TOOL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+_SKILL_NAME_PATTERN = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _FINGERPRINT_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _SAFE_ERROR_MESSAGES = {
     "invalid_arguments": "Tool arguments are invalid",
@@ -40,6 +44,8 @@ _SAFE_ERROR_MESSAGES = {
     "workspace_conflict": "Workspace content changed",
     "check_timeout": "Project check timed out",
     "check_unavailable": "Project check is unavailable",
+    "script_timeout": "Skill script timed out",
+    "script_output_too_large": "Skill script output is too large",
 }
 
 
@@ -56,11 +62,13 @@ class ToolRegistry:
         for tool in normalized:
             definition = tool.definition
             _validate_definition(definition)
-            if (
-                definition.effect is ToolEffect.MUTATING
-                and not isinstance(tool, ApprovalTool)
-            ):
-                raise ValueError("mutating tools must provide approval preview")
+            if definition.effect in {
+                ToolEffect.MUTATING,
+                ToolEffect.EXECUTING,
+            } and not isinstance(tool, ApprovalTool):
+                raise ValueError(
+                    "tools with side effects must provide approval preview"
+                )
             if definition.name in by_name:
                 raise ValueError("tool names must be unique")
             by_name[definition.name] = tool
@@ -108,7 +116,10 @@ class ToolRegistry:
         if not isinstance(arguments, dict):
             return _error_result(call.call_id, "invalid_arguments")
 
-        if tool.definition.effect is ToolEffect.MUTATING:
+        if tool.definition.effect in {
+            ToolEffect.MUTATING,
+            ToolEffect.EXECUTING,
+        }:
             approval_error = await self._request_approval(
                 call,
                 tool,
@@ -129,7 +140,7 @@ class ToolRegistry:
             # 工具实现属于不可信执行边界，底层异常不得回传模型。
             return _error_result(call.call_id, "execution_failed")
 
-        if len(output.encode("utf-8")) > MAX_RESULT_BYTES:
+        if len(output.encode("utf-8")) > tool.definition.max_result_bytes:
             return _error_result(call.call_id, "result_too_large")
         return ToolResult(call_id=call.call_id, output=output)
 
@@ -157,7 +168,10 @@ class ToolRegistry:
             return _error_result(call.call_id, "execution_failed")
         if context is None or context.approval_handler is None:
             return _error_result(call.call_id, "approval_unavailable")
-        if request.fingerprint in context.denied_fingerprints:
+        if (
+            isinstance(request, ToolApprovalRequest)
+            and request.fingerprint in context.denied_fingerprints
+        ):
             return _error_result(call.call_id, "approval_denied")
 
         try:
@@ -165,8 +179,9 @@ class ToolRegistry:
         except Exception:
             return _error_result(call.call_id, "approval_unavailable")
         if approved is not True:
-            if approved is False:
+            if approved is False and isinstance(request, ToolApprovalRequest):
                 context.denied_fingerprints.add(request.fingerprint)
+            if approved is False:
                 return _error_result(call.call_id, "approval_denied")
             return _error_result(call.call_id, "approval_unavailable")
         return None
@@ -195,6 +210,12 @@ def _validate_definition(definition: ToolDefinition) -> None:
         or not 1 <= definition.max_argument_bytes <= MAX_TOOL_ARGUMENT_BYTES
     ):
         raise ValueError("tool argument limit is invalid")
+    if (
+        not isinstance(definition.max_result_bytes, int)
+        or isinstance(definition.max_result_bytes, bool)
+        or not 1 <= definition.max_result_bytes <= MAX_TOOL_RESULT_BYTES
+    ):
+        raise ValueError("tool result limit is invalid")
 
 
 def _valid_approval_request(
@@ -203,6 +224,8 @@ def _valid_approval_request(
 ) -> bool:
     """防止写 Tool 伪造无界、错配或越界形状的审批对象。"""
 
+    if isinstance(request, ScriptApprovalRequest):
+        return _valid_script_approval_request(request, call)
     if not isinstance(request, ToolApprovalRequest):
         return False
     if request.call_id != call.call_id or request.tool_name != call.name:
@@ -226,6 +249,37 @@ def _valid_approval_request(
         isinstance(request.diff_text, str)
         and bool(request.diff_text)
         and len(request.diff_text.encode("utf-8")) <= MAX_APPROVAL_DIFF_BYTES
+        and isinstance(request.fingerprint, str)
+        and bool(_FINGERPRINT_PATTERN.fullmatch(request.fingerprint))
+    )
+
+
+def _valid_script_approval_request(
+    request: ScriptApprovalRequest,
+    call: ToolCall,
+) -> bool:
+    """只接受有界且不含绝对路径的 Skill 脚本审批预览。"""
+
+    script_path = PurePosixPath(request.script_path)
+    return (
+        request.call_id == call.call_id
+        and request.tool_name == call.name
+        and isinstance(request.title, str)
+        and bool(request.title.strip())
+        and len(request.title.encode("utf-8")) <= 1024
+        and isinstance(request.skill_name, str)
+        and bool(_SKILL_NAME_PATTERN.fullmatch(request.skill_name))
+        and isinstance(request.script_path, str)
+        and bool(request.script_path)
+        and len(request.script_path) <= 1024
+        and not script_path.is_absolute()
+        and ".." not in script_path.parts
+        and script_path.parts[:1] == ("scripts",)
+        and isinstance(request.command_text, str)
+        and bool(request.command_text)
+        and len(request.command_text.encode("utf-8")) <= MAX_APPROVAL_DIFF_BYTES
+        and isinstance(request.warning_text, str)
+        and request.warning_text == SCRIPT_APPROVAL_WARNING_TEXT
         and isinstance(request.fingerprint, str)
         and bool(_FINGERPRINT_PATTERN.fullmatch(request.fingerprint))
     )

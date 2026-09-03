@@ -6,11 +6,18 @@ from enum import Enum
 from typing import Mapping, Protocol, runtime_checkable
 
 
+SCRIPT_APPROVAL_WARNING_TEXT = (
+    "脚本会在本机执行，能够读取工作区、修改文件并访问网络。"
+    "当前版本不提供文件系统或网络沙箱，请确认命令及参数可信。"
+)
+
+
 class ToolEffect(str, Enum):
     """宿主用于决定是否必须审批的固定副作用等级。"""
 
     READ_ONLY = "read_only"
     MUTATING = "mutating"
+    EXECUTING = "executing"
 
 
 class ToolErrorCode(str, Enum):
@@ -20,6 +27,8 @@ class ToolErrorCode(str, Enum):
     WORKSPACE_CONFLICT = "workspace_conflict"
     CHECK_TIMEOUT = "check_timeout"
     CHECK_UNAVAILABLE = "check_unavailable"
+    SCRIPT_TIMEOUT = "script_timeout"
+    SCRIPT_OUTPUT_TOO_LARGE = "script_output_too_large"
 
 
 @dataclass(frozen=True)
@@ -31,6 +40,7 @@ class ToolDefinition:
     parameters: Mapping[str, object]
     effect: ToolEffect = ToolEffect.READ_ONLY
     max_argument_bytes: int = 8 * 1024
+    max_result_bytes: int = 32 * 1024
 
 
 @dataclass(frozen=True)
@@ -63,7 +73,22 @@ class ToolApprovalRequest:
     fingerprint: str
 
 
-ToolApprovalHandler = Callable[[ToolApprovalRequest], Awaitable[bool]]
+@dataclass(frozen=True)
+class ScriptApprovalRequest:
+    """Skill 脚本在执行前交给本地交互层的命令与风险预览。"""
+
+    call_id: str
+    tool_name: str
+    title: str
+    skill_name: str
+    script_path: str
+    command_text: str
+    warning_text: str
+    fingerprint: str
+
+
+AnyToolApprovalRequest = ToolApprovalRequest | ScriptApprovalRequest
+ToolApprovalHandler = Callable[[AnyToolApprovalRequest], Awaitable[bool]]
 ToolResultHandler = Callable[[ToolCall, ToolResult], None]
 
 
@@ -92,7 +117,7 @@ class ApprovalTool(Protocol):
         self,
         call_id: str,
         arguments: Mapping[str, object],
-    ) -> ToolApprovalRequest:
+    ) -> AnyToolApprovalRequest:
         ...
 
 

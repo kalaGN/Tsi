@@ -4,6 +4,7 @@
 
 ## Active and Historical Specs
 
+- [Skill 系统](20260902-Skill系统-需求.md)：以 Codex `.agents/skills/` 为基线，为本地 TUI 增加 Catalog 渐进式披露、资源读取和逐次审批脚本执行；已完成。
 - [Tsi 助手项目命名](20260901-Tsi助手项目命名-需求.md)：统一 README、TUI、Swagger/OpenAPI 和当前项目文档的正式展示名称；已完成。
 - [模型日志可读格式](20260812-模型日志可读格式-需求.md)：本地滚动文件使用中文多行分块格式，HTTP stderr 保持单行 JSON，TUI 继续只写文件；已完成。
 - [TUI 双击复制单行](20260812-TUI双击复制单行-需求.md)：双击对话记录中的可见渲染行时立即复制该行，保留现有拖选复制；已完成。

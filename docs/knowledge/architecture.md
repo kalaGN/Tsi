@@ -1,10 +1,10 @@
-# Tsi 助手 Architecture
+# Tsi 助手架构
 
-## Overview
+## 概览
 
 Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供聚合 JSON 的无状态 FastAPI HTTP 和支持流式展示、可恢复单会话及项目自修改的 Textual TUI。两个入口共享 Chat Runtime，但使用隔离的 Registry 和循环预算：HTTP 仅有只读时间工具，TUI 绑定启动目录并提供读取、审批写入、固定检查和撤销工具。
 
-## Components
+## 组件
 
 - `main.py`：从 `app.application` 导出 FastAPI 应用。
 - `app/application.py`：创建 FastAPI、注册根路由和 Chat Router。
@@ -24,8 +24,9 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `tools/builtin.py`：只读 `get_current_time(timezone)` 实现。
 - `tools/workspace.py`：Workspace 路径策略、文件/Git 工具、结构化编辑、Journal 和撤销。
 - `tools/project_checks.py`：无 Shell 的四个固定项目检查。
-- `app/runtime/system_prompt.py`：从 TUI 启动目录有界读取可选 `AGENTS.md` 系统提示词。
-- `app/tui/__main__.py`：加载根目录 `.env`，捕获一次启动目录，创建 Workspace Registry 并启动 Textual。
+- `tools/skills.py`：安全 YAML Skill Catalog、不可变资源快照、渐进读取工具及需审批的有界脚本执行器。
+- `app/runtime/system_prompt.py`：从 TUI 启动目录有界读取可选 `AGENTS.md`，并与 Skill Catalog 组合为单条系统提示词。
+- `app/tui/__main__.py`：加载根目录 `.env`，捕获一次启动目录，独立加载 Skill，创建 TUI Registry 并启动 Textual。
 - `app/tui/application.py`：终端输入与历史、消息展示、请求活动、审批回调、已落盘失败提醒、状态、耗时和取消。
 - `app/tui/approval.py`：默认拒绝且可复制的纯文本完整 Diff Modal。
 - `app/tui/widgets.py`：为 RichLog 补齐鼠标选择坐标、选择高亮、可见文本复制及可选的双击单行复制，并为输入框补充 `Cmd+A` / `Ctrl+A` 全选。
@@ -34,11 +35,12 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `tests/test_chat_runtime.py`：Runtime 单元测试。
 - `tests/test_tool_loop.py`、`tests/test_tools.py`：有界编排、审批、Registry 和内置工具测试。
 - `tests/test_workspace_tools.py`：路径、文件、Git、编辑、检查和撤销测试。
+- `tests/test_skills.py`：Skill 发现、快照、渐进读取、审批执行及进程清理测试。
 - `tests/test_model_logging.py`：日志格式、幂等、转储和失败降级测试。
 - `tests/test_chat.py`：HTTP 契约与 Provider 接线测试。
 - `tests/test_tui.py`：Textual 无头交互测试。
 
-## Dependency Direction
+## 依赖方向
 
 ```text
 main.py -> app.application -> app.routers.chat --------+
@@ -55,8 +57,8 @@ main.py -> app.application -> app.routers.chat --------+
                                                                  \          /
                                                                   shared HTTP
 
-python -m app.tui -> configure model logging -> app.tui.application
-                         -> Workspace Registry -> ChatSession -> app.runtime.chat
+python -m app.tui -> AGENTS + Skill Catalog -> app.tui.application
+                         -> TUI Registry -> ChatSession -> app.runtime.chat
 ```
 
 - Router 和 TUI 只依赖 Runtime，不理解外部响应结构。
@@ -68,7 +70,7 @@ python -m app.tui -> configure model logging -> app.tui.application
 - Provider 层不依赖 Runtime、Router、TUI 或 Application。
 - HTTP/TUI 启动入口幂等配置日志；Runtime 记录一次 `llm_request/llm_response`，每个模型步骤记录 HTTP 边界事件，每次本地执行记录 `llm_tool_call/llm_tool_result`，全链路共用同一 request ID。
 
-## HTTP Chat Flow
+## HTTP 对话流程
 
 ```text
 POST /chat
@@ -93,18 +95,20 @@ DeepSeek Turn 按 choice/tool index 拼接流式文本和工具参数，把 assi
 
 DeepSeek 必须收到合法终止原因和 `[DONE]`；阿里云必须收到成功的 `response.completed`。事件 JSON、UTF-8、终止标记、完成文本或工具结构不一致均属于无效上游响应并映射为 502。单 SSE 事件上限 96 KiB，单步文本上限 1 MiB，流解析层单工具参数上限 64 KiB；Registry 再按具体工具执行 8 KiB 或 64 KiB 上限。
 
-## TUI Chat Flow
+## TUI 对话流程
 
 ```text
 python -m app.tui
   -> load .env without overriding Shell variables
   -> read cwd/AGENTS.md once as an optional bounded system prompt
-  -> capture cwd once and create Workspace Policy, Journal and Registry
+  -> snapshot cwd/.agents/skills once and compose one system prompt
+  -> capture cwd once and create Workspace Policy, Journal and TUI Registry
   -> Runtime resolves Provider, model and safe key status
   -> load data/chat-session.json and restore complete turns
   -> Textual Worker calls ChatSession.send
   -> Runtime sends optional system + committed history + current user and runs tool loop
   -> read tools execute automatically; mutating tools preview a full bounded Diff
+  -> Skill scripts preview a command and no-sandbox warning on every execution
   -> Textual Modal defaults to reject and returns a request-scoped decision
   -> approved edit is revalidated, atomically applied and recorded in the Journal
   -> fixed checks run without Shell; undo uses the latest unchanged change_id
@@ -116,11 +120,11 @@ python -m app.tui
   -> TUI stops the Timer, clears activity and records final monotonic elapsed time
 ```
 
-TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只读取 `Path.cwd()/AGENTS.md` 一次，并把同一启动目录固定为 Workspace；二者都不热加载。系统提示词和工具轨迹不进入 Session，Session 仍只提交最终 user/assistant。审批期间状态为 `Awaiting approval`，Modal 只显示相对路径和纯文本 Diff；拒绝不会写盘，相同变更在一次请求内不会重复弹窗。成功编辑保留 `change_id`，Journal 最多 10 个批次且不跨重启；后续模型失败时 TUI 会列出本轮仍保留的相对路径。请求代次会阻止取消后的陈旧 Delta 或审批结果写回。HTTP `/chat` 不加载 Workspace 模块、不读取宿主规则或 TUI 会话文件，仍在 Runtime 汇总完成后返回 JSON。
+TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只读取 `Path.cwd()/AGENTS.md` 和 `.agents/skills/` 一次，并把同一启动目录固定为 Workspace；三者都不热加载。系统提示词、Skill 内容和工具轨迹不进入 Session，Session 仍只提交最终 user/assistant。文件审批 Modal 显示相对路径和完整 Diff；脚本审批显示 Skill、相对脚本、转义命令和无沙箱风险。脚本每次都重新审批，使用固定解释器、最小环境、30 秒超时和 32 KiB 合计输出边界，并在超时、输出超限或取消时终止进程组。成功编辑保留 `change_id`，Journal 最多 10 个批次且不跨重启；后续模型失败时 TUI 会列出本轮仍保留的相对路径。请求代次会阻止取消后的陈旧 Delta 或审批结果写回。HTTP `/chat` 不加载 Workspace/Skill 模块、不读取宿主规则或 TUI 会话文件，仍在 Runtime 汇总完成后返回 JSON。
 
 输入历史是 `ChatTuiApp` 内存状态：启动时从 Session 的 user 消息初始化，当前进程每次真正启动的请求立即追加，因此失败或取消输入也可临时召回；只有完整成功轮次由既有 Session 规则跨重启保存。高优先级 Up/Down Binding 负责不循环浏览和草稿恢复，不修改 Session schema。
 
-## Configuration
+## 配置
 
 | Provider | Selector | Key | Optional model | Default |
 | --- | --- | --- | --- | --- |
@@ -129,11 +133,11 @@ TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只�
 
 显式空白或未知 `LLM_PROVIDER` 是配置错误，不静默回退。模型变量空白时使用默认值。上游 URL 固定在相应适配器中，不能通过环境变量覆盖。
 
-## Design Decisions
+## 设计决策
 
 - HTTP 与 TUI 都只接触统一文本，原始 Provider JSON 只存在于 Provider 调用栈。
 - 所有请求统一通过 Provider Turn，不保留旧 `generate()` 或原始 ProviderResult 路径。
-- HTTP 默认 Registry 仅注册 `get_current_time(timezone)`；TUI Registry 另注册 8 个 Workspace 工具。工具名只能来自显式白名单，不支持反射、动态 import、任意 Shell 或 MCP。
+- HTTP 默认 Registry 仅注册 `get_current_time(timezone)`；TUI Registry 另注册 8 个 Workspace 工具，并在 Catalog 非空时追加 `load_skill`、`read_skill_resource`、`run_skill_script`。工具名只能来自显式白名单，不支持反射、动态 import、任意命令或 MCP。
 - HTTP 循环最多 5 步、每步 4 次、总计 16 次；TUI 最多 20 步、每步 4 次、总计 40 次。普通参数/结果上限为 8/32 KiB，编辑参数为 64 KiB。
 - 写 Tool 必须先生成完整有界 Diff；Registry 没有审批回调、用户拒绝或内容并发变化时均不会执行。
 - Workspace 拒绝越界、符号链接、保护路径、二进制和超限文件；编辑只支持 create/replace，固定检查不接受额外 argv、cwd 或环境。
@@ -156,6 +160,8 @@ TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只�
 - TUI 上下键固定用于输入历史，历史不去重、不循环且没有独立持久化文件；`/clear` 同步清空。
 - TUI 使用唯一 `data/chat-session.json` 保存完整轮次；启动恢复，`/clear` 删除，损坏历史不自动覆盖。
 - TUI 只在启动时读取当前目录直属 `AGENTS.md`，不递归、不热重载；system 消息与 Session schema 隔离。
+- TUI 只从 `.agents/skills/*/SKILL.md` 读取 Codex 兼容项目 Skill；Catalog 仅含名称、描述和相对位置，正文与资源按需读取，任一非法 Skill 会禁用整批但不影响其他能力。
+- Skill 脚本仅支持快照内 `.py`/`.sh`，每次审批，不使用 `shell=True`，不继承宿主密钥环境；当前无文件系统或网络沙箱，该风险必须由审批界面和文档明确展示。
 - TUI 只对 Assistant 原文做 Rich Markdown 展示，不执行代码、加载远程内容或改变 Session/HTTP 文本契约。
 - TUI 临时流只展示当前请求的纯文本；成功、错误、取消、工具 reset 和退出都会清理，部分文本不持久化。
 - TUI transcript 与临时流支持选择和复制当前可见文本；仅 transcript 启用双击复制命中的当前渲染行，并以内容坐标加纵向滚动偏移定位。复制通道使用 Textual 内置剪贴板与终端 OSC 52，不调用系统命令。

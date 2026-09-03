@@ -36,7 +36,7 @@ from app.runtime.tool_loop import (
     DEFAULT_TOOL_LOOP_LIMITS,
     WORKSPACE_TOOL_LOOP_LIMITS,
 )
-from tools import ToolApprovalRequest, ToolCall, ToolRegistry, ToolResult
+from tools import AnyToolApprovalRequest, ToolCall, ToolRegistry, ToolResult
 
 
 class ChatRunner(Protocol):
@@ -164,6 +164,8 @@ class ChatTuiApp(App[None]):
         system_prompt_error: str | None = None,
         workspace_registry: ToolRegistry | None = None,
         workspace_error: str | None = None,
+        skills_count: int = 0,
+        skills_error: str | None = None,
     ) -> None:
         """初始化运行时信息、可恢复会话以及可注入的测试边界。"""
 
@@ -174,6 +176,8 @@ class ChatTuiApp(App[None]):
         self._system_prompt_error = system_prompt_error
         self._workspace_error = workspace_error
         self._workspace_enabled = workspace_registry is not None
+        self._skills_count = skills_count
+        self._skills_error = skills_error
         if runtime_info is None:
             try:
                 runtime_info = get_chat_runtime_info()
@@ -290,6 +294,9 @@ class ChatTuiApp(App[None]):
         if self._workspace_error is not None:
             self.run_status = RunStatus.ERROR
             self._write_message("Error", self._workspace_error)
+        if self._skills_error is not None:
+            self.run_status = RunStatus.ERROR
+            self._write_message("Error", self._skills_error)
         self._update_status_bar()
 
     def watch_run_status(self) -> None:
@@ -320,6 +327,7 @@ class ChatTuiApp(App[None]):
             f"{self.runtime_info.model} | "
             f"Key: {key_status} | AGENTS: {agents_status} | "
             f"Workspace: {workspace_status} | "
+            f"Skills: {'error' if self._skills_error else self._skills_count} | "
             f"{self.run_status.value}"
         )
 
@@ -640,7 +648,7 @@ class ChatTuiApp(App[None]):
 
     async def _approve_tool(
         self,
-        request: ToolApprovalRequest,
+        request: AnyToolApprovalRequest,
         generation: int,
     ) -> bool:
         """在当前请求 Worker 中等待 Modal，并拒绝取消后的陈旧审批。"""

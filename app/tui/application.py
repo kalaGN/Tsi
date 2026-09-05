@@ -1,11 +1,9 @@
 """Textual 多轮对话界面、状态切换与请求取消逻辑。"""
 
-import json
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol
 
-from app.tui.transcript import Transcript, StreamOutput
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.reactive import reactive
@@ -26,17 +24,21 @@ from app.services.llm.contracts import (
     TextDeltaHandler,
     TextResetHandler,
 )
-from app.tui.state import RunStatus
-from app.tui.input_history import InputHistory
-from app.tui.activity_bar import ActivityBar
-from app.tui.command_palette import CommandPalette
-from app.tui.approval import ToolApprovalScreen
-from app.tui.widgets import PromptTextArea
 from app.runtime.tool_loop import (
     DEFAULT_TOOL_LOOP_LIMITS,
     WORKSPACE_TOOL_LOOP_LIMITS,
 )
-from tools import AnyToolApprovalRequest, ToolCall, ToolRegistry, ToolResult
+from app.tui.activity_bar import ActivityBar
+from app.tui.approval import ToolApprovalScreen
+from app.tui.command_palette import CommandPalette
+from app.tui.commands import LocalCommand, parse_local_command
+from app.tui.input_history import InputHistory
+from app.tui.state import RunStatus
+from app.tui.status_bar import StatusBar, StatusBarState
+from app.tui.transcript import StreamOutput, Transcript
+from app.tui.widgets import PromptTextArea
+from app.tui.workspace_changes import AppliedChangeTracker
+from tools import AnyToolApprovalRequest, ToolRegistry
 
 if TYPE_CHECKING:
     from app.runtime.skill_runtime import SkillRuntime
@@ -202,7 +204,7 @@ class ChatTuiApp(App[None]):
             soft_wrap=True,
             placeholder="Type a message. Enter: send, Esc x2: exit",
         )
-        yield Static(id="status-bar", markup=False)
+        yield StatusBar()
 
     def on_mount(self) -> None:
         """挂载后恢复历史，并把配置或历史错误转换为安全界面状态。"""
@@ -242,27 +244,19 @@ class ChatTuiApp(App[None]):
     def _update_status_bar(self) -> None:
         """显示 Provider、模型、密钥是否配置以及当前运行状态。"""
 
-        key_status = (
-            "configured" if self.runtime_info.api_key_configured else "missing"
-        )
-        agents_status = (
-            "error"
-            if self._system_prompt_error is not None
-            else "loaded" if self._system_prompt_loaded else "none"
-        )
-        if self._workspace_error is not None:
-            workspace_status = "error"
-        elif self._workspace_enabled:
-            workspace_status = "enabled"
-        else:
-            workspace_status = "disabled"
-        self.query_one("#status-bar", Static).update(
-            f"{_provider_display_name(self.runtime_info.provider)} | "
-            f"{self.runtime_info.model} | "
-            f"Key: {key_status} | AGENTS: {agents_status} | "
-            f"Workspace: {workspace_status} | "
-            f"Skills: {'error' if self._skills_error else self._skills_count} | "
-            f"{self.run_status.value}"
+        self.query_one(StatusBar).show_status(
+            StatusBarState(
+                provider=self.runtime_info.provider,
+                model=self.runtime_info.model,
+                api_key_configured=self.runtime_info.api_key_configured,
+                system_prompt_loaded=self._system_prompt_loaded,
+                system_prompt_error=self._system_prompt_error,
+                workspace_enabled=self._workspace_enabled,
+                workspace_error=self._workspace_error,
+                skills_count=self._skills_count,
+                skills_error=self._skills_error,
+                run_status=self.run_status,
+            )
         )
 
     def _write_message(self, role: str, content: str) -> None:
@@ -274,73 +268,101 @@ class ChatTuiApp(App[None]):
         """处理本地命令、输入校验，并启动唯一的异步对话请求。"""
 
         if isinstance(self.screen, ToolApprovalScreen):
-            focused = self.screen.focused
-            if isinstance(focused, Button):
-                focused.press()
+            self._submit_focused_approval_action()
             return
         prompt_widget = self.query_one("#prompt", TextArea)
         if self.query_one(CommandPalette).is_open:
             self.action_complete_command()
             return
         input_text = prompt_widget.text
-        command = input_text.strip()
-        if command == "/quit":
+        command = parse_local_command(input_text)
+        if command is LocalCommand.QUIT:
             self._cancel_active_request(show_message=False)
             self.exit()
             return
-
         if self._active_worker is not None:
             return
-
-        if command == "/clear":
-            try:
-                if self.chat_session is not None:
-                    self.chat_session.clear()
-            except ChatRuntimeError as exc:
-                self._write_message("Error", exc.user_message)
-                self.run_status = RunStatus.ERROR
-                return
-            self._history_error = None
-            self._input_history.clear()
-            self._finish_stream_output()
-            prompt_widget.load_text("")
-            self.query_one("#transcript", RichLog).clear()
-            self.run_status = (
-                RunStatus.ERROR
-                if self._system_prompt_error is not None
-                else RunStatus.READY
-            )
+        if self._handle_local_command(command, prompt_widget):
             return
+        if not self._can_start_prompt(input_text):
+            return
+        self._start_prompt_request(input_text, prompt_widget)
 
-        if command == "/skills":
-            prompt_widget.load_text("")
+    def _submit_focused_approval_action(self) -> None:
+        """把 Enter 交给审批界面当前聚焦的按钮。"""
+
+        focused = self.screen.focused
+        if isinstance(focused, Button):
+            focused.press()
+
+    def _handle_local_command(
+        self,
+        command: LocalCommand | None,
+        prompt: TextArea,
+    ) -> bool:
+        """在空闲状态执行本地命令，并报告输入是否已被消费。"""
+
+        if command is LocalCommand.CLEAR:
+            self._clear_conversation(prompt)
+            return True
+        if command is LocalCommand.SKILLS:
+            prompt.load_text("")
             self._write_available_skills()
+            return True
+        return False
+
+    def _clear_conversation(self, prompt: TextArea) -> None:
+        """先清理持久化会话，成功后再重置界面与内存历史。"""
+
+        try:
+            if self.chat_session is not None:
+                self.chat_session.clear()
+        except ChatRuntimeError as exc:
+            self._write_message("Error", exc.user_message)
+            self.run_status = RunStatus.ERROR
             return
+        self._history_error = None
+        self._input_history.clear()
+        self._finish_stream_output()
+        prompt.load_text("")
+        self.query_one("#transcript", RichLog).clear()
+        self.run_status = (
+            RunStatus.ERROR
+            if self._system_prompt_error is not None
+            else RunStatus.READY
+        )
+
+    def _can_start_prompt(self, input_text: str) -> bool:
+        """按既有优先级展示阻断原因，避免启动无效请求。"""
 
         if self._history_error is not None:
             self._write_message("Error", self._history_error)
             self._write_message("System", "Use /clear to reset saved conversation")
-            return
+            return False
 
         if self._system_prompt_error is not None:
             self._write_message("Error", self._system_prompt_error)
             self.run_status = RunStatus.ERROR
-            return
+            return False
 
         if self._workspace_error is not None:
             self._write_message("Error", self._workspace_error)
             self.run_status = RunStatus.ERROR
-            return
+            return False
 
         if not input_text.strip():
             self._write_message("System", "Input must not be blank")
-            return
+            return False
+        return True
+
+    def _start_prompt_request(self, input_text: str, prompt: TextArea) -> None:
+        """提交输入并创建该请求唯一的 Worker、流缓冲与活动计时。"""
 
         started_at = self.clock()
         # 新请求重新开始双 Esc 手势，避免上一次取消被误判为本次的退出确认。
         self._last_escape_at = None
         self._input_history.append(input_text)
-        prompt_widget.load_text("")
+        prompt.load_text("")
         self._write_message("You", input_text)
         self.run_status = RunStatus.THINKING
         self._request_generation += 1
@@ -411,10 +433,7 @@ class ChatTuiApp(App[None]):
         """执行模型请求，并用请求代次阻止取消后的陈旧结果写回。"""
 
         worker = get_current_worker()
-        applied_changes: dict[str, tuple[str, ...]] = {}
-
-        def observe_tool_result(call, result) -> None:
-            self._record_workspace_result(call, result, applied_changes)
+        applied_changes = AppliedChangeTracker()
 
         try:
             runner_arguments = {
@@ -428,7 +447,7 @@ class ChatTuiApp(App[None]):
                 runner_arguments["on_tool_approval"] = (
                     lambda request: self._approve_tool(request, generation)
                 )
-                runner_arguments["on_tool_result"] = observe_tool_result
+                runner_arguments["on_tool_result"] = applied_changes.observe
             result = await self.chat_runner(input_text, **runner_arguments)
             # 取消会递增代次；即使底层协程晚返回，也不能写回陈旧结果。
             if worker.is_cancelled or generation != self._request_generation:
@@ -442,7 +461,7 @@ class ChatTuiApp(App[None]):
             if worker.is_cancelled or generation != self._request_generation:
                 return
             self._write_message("Error", exc.user_message)
-            self._write_applied_change_warning(applied_changes)
+            self._write_applied_change_warning(applied_changes.paths())
             self._write_elapsed_time(started_at)
             self.run_status = RunStatus.ERROR
         except Exception:
@@ -450,7 +469,7 @@ class ChatTuiApp(App[None]):
                 return
             # 未知异常只在界面显示中立文案，避免泄露堆栈或敏感上下文。
             self._write_message("Error", "Unexpected internal error")
-            self._write_applied_change_warning(applied_changes)
+            self._write_applied_change_warning(applied_changes.paths())
             self._write_elapsed_time(started_at)
             self.run_status = RunStatus.ERROR
         finally:
@@ -513,7 +532,6 @@ class ChatTuiApp(App[None]):
         prompt.load_text(input_text)
         prompt.move_cursor(prompt.document.end)
 
-
     def _refresh_activity(self, generation: int) -> None:
         """按单调时钟刷新当前请求的动画帧和已等待时间。"""
 
@@ -572,7 +590,6 @@ class ChatTuiApp(App[None]):
         if self.is_mounted:
             self.query_one(StreamOutput).reset_output()
 
-
     async def _approve_tool(
         self,
         request: AnyToolApprovalRequest,
@@ -589,42 +606,12 @@ class ChatTuiApp(App[None]):
         self.run_status = RunStatus.THINKING
         return approved is True
 
-    @staticmethod
-    def _record_workspace_result(
-        call: ToolCall,
-        result: ToolResult,
-        changes: dict[str, tuple[str, ...]],
-    ) -> None:
-        """跟踪已落盘批次，让后续模型失败不会掩盖磁盘变化。"""
-
-        if result.is_error or call.name not in {
-            "apply_workspace_edits",
-            "undo_workspace_change",
-        }:
-            return
-        try:
-            payload = json.loads(result.output)
-            data = payload["data"]
-            change_id = data["change_id"]
-            paths = tuple(data["paths"])
-        except (KeyError, TypeError, json.JSONDecodeError):
-            return
-        if not isinstance(change_id, str) or not all(
-            isinstance(path, str) for path in paths
-        ):
-            return
-        if call.name == "apply_workspace_edits":
-            changes[change_id] = paths
-        else:
-            changes.pop(change_id, None)
-
     def _write_applied_change_warning(
         self,
-        changes: dict[str, tuple[str, ...]],
+        paths: tuple[str, ...],
     ) -> None:
         """模型未完成时明确展示仍保留在磁盘上的相对路径。"""
 
-        paths = sorted({path for values in changes.values() for path in values})
         if paths:
             self._write_message(
                 "System",
@@ -706,11 +693,3 @@ class ChatTuiApp(App[None]):
         if show_message:
             self._write_message("System", "Request cancelled")
         self.query_one("#prompt", TextArea).focus()
-
-
-def _provider_display_name(provider: str) -> str:
-    """保留 DeepSeek 品牌大小写，其余名称使用常规标题格式。"""
-
-    if provider == "deepseek":
-        return "DeepSeek"
-    return provider.title()

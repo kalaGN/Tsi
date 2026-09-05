@@ -18,7 +18,8 @@
 - TUI 可选择消息组件：`app/tui/widgets.py`。
 - TUI 消息角色渲染与流式文本缓冲：`app/tui/transcript.py`。
 - TUI 输入历史状态：`app/tui/input_history.py`；活动提示：`app/tui/activity_bar.py`。
-- TUI 命令候选组件：`app/tui/command_palette.py`；布局样式：`app/tui/styles/*.tcss`。
+- TUI 底部运行摘要：`app/tui/status_bar.py`；请求内已应用变更追踪：`app/tui/workspace_changes.py`。
+- TUI 本地命令目录与解析：`app/tui/commands.py`；命令候选组件：`app/tui/command_palette.py`；布局样式：`app/tui/styles/*.tcss`。
 - 测试：`tests/`。
 - 真实依赖方向：`HTTP/TUI → runtime → tools + services.llm → Aliyun/DeepSeek`；HTTP 入口为 `main → application → router`。
 - 详细事实：[架构知识](docs/knowledge/architecture.md)。

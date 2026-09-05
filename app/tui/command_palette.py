@@ -3,12 +3,7 @@
 from rich.text import Text
 from textual.widgets import Static
 
-
-COMMANDS = (
-    ("/clear", "清空对话、上下文和历史"),
-    ("/skills", "查看可用技能"),
-    ("/quit", "退出 TUI"),
-)
+from app.tui.commands import CommandSpec, suggest_local_commands
 
 
 class CommandPalette(Static):
@@ -16,7 +11,7 @@ class CommandPalette(Static):
 
     def __init__(self, *, id: str = "command-preview") -> None:
         super().__init__(id=id, markup=False)
-        self._candidates: list[tuple[str, str]] = []
+        self._candidates: list[CommandSpec] = []
         self._index = 0
         self._dismissed_text: str | None = None
 
@@ -31,14 +26,8 @@ class CommandPalette(Static):
 
         self._candidates = []
         self._index = 0
-        if (
-            enabled
-            and value != self._dismissed_text
-            and value.startswith("/")
-            and not any(character.isspace() for character in value)
-            and value not in {name for name, _ in COMMANDS}
-        ):
-            self._candidates = [item for item in COMMANDS if item[0].startswith(value)]
+        if enabled and value != self._dismissed_text:
+            self._candidates = list(suggest_local_commands(value))
         if value != self._dismissed_text:
             self._dismissed_text = None
         self._render_candidates()
@@ -55,7 +44,7 @@ class CommandPalette(Static):
 
         if not self._candidates:
             return None
-        command = self._candidates[self._index][0]
+        command = self._candidates[self._index].command.value
         self._candidates = []
         self._render_candidates()
         return command
@@ -71,10 +60,11 @@ class CommandPalette(Static):
         """渲染有限的纯文本列表并高亮选择。"""
 
         content = Text()
-        for index, (name, description) in enumerate(self._candidates):
+        for index, spec in enumerate(self._candidates):
             selected = index == self._index
             content.append(
-                f"{'›' if selected else ' '} {name}  {description}\n",
+                f"{'›' if selected else ' '} {spec.command.value}  "
+                f"{spec.description}\n",
                 style="bold reverse" if selected else "",
             )
         self.update(content)

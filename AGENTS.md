@@ -16,6 +16,7 @@
 - 多模型配置、协议适配和 Provider 错误：`app/services/llm/`。
 - 终端界面与启动入口：`app/tui/`。
 - TUI 可选择消息组件：`app/tui/widgets.py`。
+- TUI 消息角色渲染与流式文本缓冲：`app/tui/transcript.py`。
 - TUI 命令候选组件：`app/tui/command_palette.py`；布局样式：`app/tui/styles/*.tcss`。
 - 测试：`tests/`。
 - 真实依赖方向：`HTTP/TUI → runtime → tools + services.llm → Aliyun/DeepSeek`；HTTP 入口为 `main → application → router`。

@@ -5,10 +5,7 @@ import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol
 
-from rich import box
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.text import Text
+from app.tui.transcript import Transcript, StreamOutput
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.reactive import reactive
@@ -32,7 +29,7 @@ from app.services.llm.contracts import (
 from app.tui.state import RunStatus
 from app.tui.command_palette import CommandPalette
 from app.tui.approval import ToolApprovalScreen
-from app.tui.widgets import PromptTextArea, SelectableRichLog
+from app.tui.widgets import PromptTextArea
 from app.runtime.tool_loop import (
     DEFAULT_TOOL_LOOP_LIMITS,
     WORKSPACE_TOOL_LOOP_LIMITS,
@@ -67,9 +64,6 @@ class ChatTuiApp(App[None]):
     TITLE = "Tsi 助手"
     ESCAPE_CONFIRM_SECONDS = 1.5
     ACTIVITY_INTERVAL_SECONDS = 0.1
-    USER_MESSAGE_FOREGROUND = "#f2f2f2"
-    USER_MESSAGE_BACKGROUND = "#2b2b2b"
-    USER_MESSAGE_BORDER = "#666666"
     SPINNER_FRAMES = (
         "⠋",
         "⠙",
@@ -195,8 +189,6 @@ class ChatTuiApp(App[None]):
         self._activity_started_at: float | None = None
         self._activity_generation: int | None = None
         self._spinner_index = 0
-        self._stream_fragments: list[str] = []
-        self._stream_dirty = False
         self._stream_generation: int | None = None
         self._input_history: list[str] = (
             [
@@ -214,19 +206,8 @@ class ChatTuiApp(App[None]):
         """声明标题、对话记录、输入框和状态栏布局。"""
 
         yield Static(self.TITLE, id="title", markup=False)
-        yield SelectableRichLog(
-            id="transcript",
-            wrap=True,
-            markup=False,
-            auto_scroll=True,
-            copy_line_on_double_click=True,
-        )
-        yield SelectableRichLog(
-            id="stream-output",
-            wrap=True,
-            markup=False,
-            auto_scroll=True,
-        )
+        yield Transcript()
+        yield StreamOutput()
         yield Static(id="activity-bar", markup=False)
         yield CommandPalette()
         yield PromptTextArea(
@@ -298,42 +279,9 @@ class ChatTuiApp(App[None]):
         )
 
     def _write_message(self, role: str, content: str) -> None:
-        """按角色写入消息，并为用户和 Assistant 应用各自的展示样式。"""
+        """将消息交给展示组件，应用只协调消息产生的时机。"""
 
-        if role == "You":
-            self._write_user_message(content)
-            return
-
-        if role == "Assistant":
-            transcript = self.query_one("#transcript", RichLog)
-            transcript.write(Text(role, style="bold"))
-            # Markdown 仅属于 Assistant 展示层；Session 和模型上下文保留原文。
-            transcript.write(Markdown(content))
-            return
-
-        message = Text()
-        message.append(role, style="bold")
-        message.append("\n")
-        message.append(content)
-        self.query_one("#transcript", RichLog).write(message)
-
-    def _write_user_message(self, content: str) -> None:
-        """用全宽深色卡片区分用户原文，不解析其中的 Markdown。"""
-
-        message = Panel(
-            Text(content),
-            title=Text("You", style="bold"),
-            title_align="left",
-            box=box.ROUNDED,
-            border_style=self.USER_MESSAGE_BORDER,
-            style=(
-                f"{self.USER_MESSAGE_FOREGROUND} "
-                f"on {self.USER_MESSAGE_BACKGROUND}"
-            ),
-            padding=(0, 1),
-            expand=True,
-        )
-        self.query_one("#transcript", RichLog).write(message)
+        self.query_one(Transcript).write_message(role, content)
 
     def action_submit_prompt(self) -> None:
         """处理本地命令、输入校验，并启动唯一的异步对话请求。"""
@@ -631,31 +579,21 @@ class ChatTuiApp(App[None]):
             or generation != self._request_generation
         ):
             return
-        self._stream_fragments.append(delta)
-        self._stream_dirty = True
+        self.query_one(StreamOutput).append_delta(delta)
 
     def _flush_stream_output(self, generation: int) -> None:
         """把当前步骤完整纯文本批量写入可滚动临时区域。"""
 
-        if generation != self._stream_generation or not self._stream_dirty:
-            return
-        stream_output = self.query_one("#stream-output", RichLog)
-        stream_output.clear()
-        stream_output.write(Text("".join(self._stream_fragments)))
-        stream_output.display = True
-        self._stream_dirty = False
+        if generation == self._stream_generation:
+            self.query_one(StreamOutput).flush()
 
     def _reset_stream_step(self, generation: int) -> None:
         """撤销工具中间步骤的临时文本，并允许同一请求继续输出。"""
 
         if generation != self._stream_generation:
             return
-        self._stream_fragments.clear()
-        self._stream_dirty = False
         if self.is_mounted:
-            stream_output = self.query_one("#stream-output", RichLog)
-            stream_output.clear()
-            stream_output.display = False
+            self.query_one(StreamOutput).reset_output()
 
     def _finish_stream_output(self, expected_generation: int | None = None) -> None:
         """清空匹配请求的临时内容，并结束其后续 Delta 接收。"""
@@ -665,13 +603,9 @@ class ChatTuiApp(App[None]):
             and expected_generation != self._stream_generation
         ):
             return
-        self._stream_fragments.clear()
-        self._stream_dirty = False
         self._stream_generation = None
         if self.is_mounted:
-            stream_output = self.query_one("#stream-output", RichLog)
-            stream_output.clear()
-            stream_output.display = False
+            self.query_one(StreamOutput).reset_output()
 
     def _render_activity(self, elapsed: float) -> None:
         """将固定文案、当前动画帧和耗时写入输入框上方状态栏。"""

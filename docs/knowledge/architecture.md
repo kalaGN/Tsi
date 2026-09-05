@@ -32,6 +32,7 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `app/tui/application.py`：终端输入与历史、消息展示、请求活动、审批回调、已落盘失败提醒、状态、耗时和取消。
 - `app/tui/approval.py`：默认拒绝且可复制的纯文本完整 Diff Modal。
 - `app/tui/command_palette.py`：封装命令候选定义、前缀过滤、循环选择、补全消费与关闭状态；不执行命令，不调用 Runtime。
+- `app/tui/transcript.py`：`Transcript` 渲染用户卡片、Assistant Markdown 和系统纯文本；`StreamOutput` 管理流式纯文本缓冲、批量绘制与清理。主应用仍拥有请求代次与取消校验。
 - `app/tui/styles/application.tcss`、`approval.tcss`：分别由 App 和审批 Screen 的 `CSS_PATH` 加载，维护布局与外观；Rich 消息卡片样式仍由消息渲染代码负责。
 - `app/tui/widgets.py`：为 RichLog 补齐鼠标选择坐标、选择高亮、可见文本复制及可选的双击单行复制，并为输入框补充 `Cmd+A` / `Ctrl+A` 全选。
 - `app/tui/state.py`：定义 `Ready`、`Thinking`、`Awaiting approval`、`Error`。

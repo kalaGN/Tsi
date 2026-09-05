@@ -4,6 +4,7 @@
 
 ## Documents
 
+- [TUI 职责拆分设计](20260905-TUI职责拆分-设计.md)：第一轮外置 TCSS 并组件化命令候选，保持现有交互。
 - [TUI 技能命令设计](20260905-TUI技能命令-设计.md)：通过 Skill Runtime 的只读内存摘要实现 `/skills`，并保留现有 `/clear` 语义；已完成。
 - [Skill 安装与刷新设计](20260904-Skill安装与刷新-设计.md)：设计 TUI 专属安装审批、公开 GitHub 与个人 Codex Skill 来源、原子提交和下一请求热刷新；已完成。
 - [Skill 系统设计](20260902-Skill系统-设计.md)：以 Codex `.agents/skills/` 为基线，设计安全 YAML Catalog、渐进式资源加载、逐次审批脚本执行和 TUI 装配；已完成。

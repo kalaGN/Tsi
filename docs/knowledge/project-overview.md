@@ -68,6 +68,7 @@ git diff --check
 - TUI 启动目录 `.agents/skills/*/SKILL.md` 的安全 YAML Catalog、渐进读取，以及每次审批的 `.py`/`.sh` 脚本执行。
 - TUI 经逐次审批从公开 GitHub 目录或当前用户 `~/.codex/skills` 直属目录原子安装 Skill；成功后下一次请求热刷新。
 - `/skills` 只读当前运行时已发布 Catalog 的名称、描述和相对入口，不调用模型、不进入会话历史，也不触发磁盘重扫。
+- TUI 输入 `/` 或命令前缀时预览 `/clear`、`/skills`、`/quit`；方向键选择，Tab/Enter 补全，Esc 关闭。完整命令直接回车执行，候选补全后再次回车执行。
 - 上下键输入历史、草稿恢复，以及从成功 Session user 消息恢复历史。
 - 用户消息以不解析 Markdown 的全宽背景卡片展示；Assistant 支持标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；系统和错误保持纯文本。
 - 最终消息和流式临时文本支持鼠标选择，并通过 `Cmd+C` / `Ctrl+C` 复制渲染后的可见文字；对话记录还可双击立即复制当前渲染行。

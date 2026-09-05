@@ -30,6 +30,7 @@ from app.services.llm.contracts import (
     TextResetHandler,
 )
 from app.tui.state import RunStatus
+from app.tui.command_palette import CommandPalette
 from app.tui.approval import ToolApprovalScreen
 from app.tui.widgets import PromptTextArea, SelectableRichLog
 from app.runtime.tool_loop import (
@@ -82,6 +83,7 @@ class ChatTuiApp(App[None]):
         "⠏",
     )
     BINDINGS = [
+        Binding("tab", "complete_command", "Complete", show=False, priority=True),
         Binding("enter", "submit_prompt", "Send", show=False, priority=True),
         Binding("escape", "confirm_exit", "Exit (x2)", show=False, priority=True),
         Binding(
@@ -99,61 +101,7 @@ class ChatTuiApp(App[None]):
             priority=True,
         ),
     ]
-    CSS = """
-    Screen {
-        layout: vertical;
-
-        & > .screen--selection {
-            background: #808080 50%;
-            color: transparent;
-        }
-    }
-
-    #title {
-        height: 3;
-        padding: 1 2;
-        text-style: bold;
-        background: $primary;
-        color: $text;
-    }
-
-    #transcript {
-        height: 1fr;
-        padding: 1 2;
-        border: solid $primary-background;
-    }
-
-    #stream-output {
-        display: none;
-        height: 8;
-        max-height: 8;
-        padding: 0 2;
-        border: round $primary-background;
-    }
-
-    #prompt {
-        height: 7;
-        min-height: 4;
-        border: solid $accent;
-
-        & .text-area--selection {
-            background: #808080 50%;
-            color: transparent;
-        }
-    }
-
-    #activity-bar {
-        height: 1;
-        padding: 0 1;
-        color: $text-muted;
-    }
-
-    #status-bar {
-        height: 1;
-        padding: 0 1;
-        background: $panel;
-    }
-    """
+    CSS_PATH = "styles/application.tcss"
 
     run_status = reactive(RunStatus.READY)
 
@@ -280,6 +228,7 @@ class ChatTuiApp(App[None]):
             auto_scroll=True,
         )
         yield Static(id="activity-bar", markup=False)
+        yield CommandPalette()
         yield PromptTextArea(
             id="prompt",
             soft_wrap=True,
@@ -395,6 +344,9 @@ class ChatTuiApp(App[None]):
                 focused.press()
             return
         prompt_widget = self.query_one("#prompt", TextArea)
+        if self.query_one(CommandPalette).is_open:
+            self.action_complete_command()
+            return
         input_text = prompt_widget.text
         command = input_text.strip()
         if command == "/quit":
@@ -495,6 +447,28 @@ class ChatTuiApp(App[None]):
             )
         self._write_message("System", "\n".join(lines))
 
+    def on_text_area_changed(self, event: TextArea.Changed) -> None:
+        """将输入变化交给命令组件，应用只提供请求是否空闲。"""
+
+        if event.text_area.id == "prompt":
+            self.query_one(CommandPalette).filter_input(
+                event.text_area.text, enabled=self._active_worker is None
+            )
+
+    def action_complete_command(self) -> None:
+        """应用候选补全文本，命令执行留给下一次提交。"""
+
+        if isinstance(self.screen, ToolApprovalScreen):
+            self.screen.focus_next()
+            return
+        command = self.query_one(CommandPalette).take_selection()
+        if command is None:
+            self.screen.focus_next()
+            return
+        prompt = self.query_one("#prompt", TextArea)
+        prompt.load_text(command)
+        prompt.move_cursor(prompt.document.end)
+
     async def _run_prompt(
         self,
         input_text: str,
@@ -581,6 +555,10 @@ class ChatTuiApp(App[None]):
     def action_previous_input(self) -> None:
         """向更早的已发送输入移动，并在首次浏览时保存当前草稿。"""
 
+        palette = self.query_one(CommandPalette)
+        if palette.is_open:
+            palette.move_selection(-1)
+            return
         if not self._input_history:
             return
         if self._history_index is None:
@@ -593,6 +571,10 @@ class ChatTuiApp(App[None]):
     def action_next_input(self) -> None:
         """向更新的输入移动，并在越过末项时恢复浏览前草稿。"""
 
+        palette = self.query_one(CommandPalette)
+        if palette.is_open:
+            palette.move_selection(1)
+            return
         index = self._history_index
         if index is None:
             return
@@ -794,6 +776,11 @@ class ChatTuiApp(App[None]):
             self.screen.dismiss(False)
             return
         prompt = self.query_one("#prompt", TextArea)
+        palette = self.query_one(CommandPalette)
+        if palette.is_open:
+            palette.dismiss(prompt.text)
+            self._last_escape_at = None
+            return
         if prompt.text:
             prompt.load_text("")
             self._reset_history_navigation()

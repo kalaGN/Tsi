@@ -24,21 +24,7 @@ class ToolApprovalScreen(ModalScreen[bool]):
         Binding("n", "reject", "拒绝", priority=True),
         Binding("escape", "reject", "拒绝", priority=True),
     ]
-    CSS = """
-    ToolApprovalScreen { align: center middle; }
-    #approval-dialog {
-        width: 92%;
-        height: 88%;
-        border: round $warning;
-        background: $surface;
-        padding: 1 2;
-    }
-    #approval-title { height: 2; text-style: bold; }
-    #approval-paths { height: auto; max-height: 5; }
-    #approval-diff { height: 1fr; border: solid $primary-background; }
-    #approval-actions { height: 3; align-horizontal: right; padding-top: 1; }
-    #approval-actions Button { margin-left: 1; }
-    """
+    CSS_PATH = "styles/approval.tcss"
 
     def __init__(self, request: AnyToolApprovalRequest) -> None:
         super().__init__()

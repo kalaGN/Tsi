@@ -58,6 +58,60 @@ def transcript_text(app: ChatTuiApp) -> str:
     )
 
 
+def test_command_preview_filters_selects_completes_and_executes_locally():
+    async def scenario():
+        received = []
+
+        async def runner(text, **kwargs):
+            received.append(text)
+            return ChatResult("answer", "fake", "fake")
+
+        app = ChatTuiApp(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            preview = app.query_one("#command-preview", Static)
+            await pilot.press("/")
+            assert preview.display
+            assert "/clear" in str(preview.content)
+            await pilot.press("down", "tab")
+            assert prompt.text == "/skills"
+            assert not preview.display
+            assert transcript_text(app) == ""
+            await pilot.press("enter")
+            assert "技能列表不可用" in transcript_text(app)
+            await pilot.press("/", "s", "k")
+            assert "/skills" in str(preview.content)
+            assert "/clear" not in str(preview.content)
+            await pilot.press("enter")
+            assert prompt.text == "/skills"
+            assert received == []
+            assert app._input_history == []
+
+    asyncio.run(scenario())
+
+
+def test_command_preview_escape_closes_before_clearing_input():
+    async def scenario():
+        async def runner(text, **kwargs):
+            raise AssertionError("local interaction must not call model")
+
+        app = ChatTuiApp(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            preview = app.query_one("#command-preview", Static)
+            await pilot.press("/")
+            await pilot.press("escape")
+            assert prompt.text == "/"
+            assert not preview.display
+            assert app._last_escape_at is None
+            await pilot.press("escape")
+            assert prompt.text == ""
+            await pilot.press("/", "h")
+            assert not preview.display
+
+    asyncio.run(scenario())
+
+
 def test_tui_uses_selectable_logs_for_transcript_and_stream_output():
     async def scenario():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:

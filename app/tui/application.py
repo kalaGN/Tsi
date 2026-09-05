@@ -27,6 +27,8 @@ from app.services.llm.contracts import (
     TextResetHandler,
 )
 from app.tui.state import RunStatus
+from app.tui.input_history import InputHistory
+from app.tui.activity_bar import ActivityBar
 from app.tui.command_palette import CommandPalette
 from app.tui.approval import ToolApprovalScreen
 from app.tui.widgets import PromptTextArea
@@ -64,18 +66,6 @@ class ChatTuiApp(App[None]):
     TITLE = "Tsi 助手"
     ESCAPE_CONFIRM_SECONDS = 1.5
     ACTIVITY_INTERVAL_SECONDS = 0.1
-    SPINNER_FRAMES = (
-        "⠋",
-        "⠙",
-        "⠹",
-        "⠸",
-        "⠼",
-        "⠴",
-        "⠦",
-        "⠧",
-        "⠇",
-        "⠏",
-    )
     BINDINGS = [
         Binding("tab", "complete_command", "Complete", show=False, priority=True),
         Binding("enter", "submit_prompt", "Send", show=False, priority=True),
@@ -188,9 +178,8 @@ class ChatTuiApp(App[None]):
         self._activity_timer: Timer | None = None
         self._activity_started_at: float | None = None
         self._activity_generation: int | None = None
-        self._spinner_index = 0
         self._stream_generation: int | None = None
-        self._input_history: list[str] = (
+        self._input_history = InputHistory(
             [
                 message.content
                 for message in chat_session.messages
@@ -199,8 +188,6 @@ class ChatTuiApp(App[None]):
             if chat_session is not None
             else []
         )
-        self._history_index: int | None = None
-        self._history_draft = ""
 
     def compose(self) -> ComposeResult:
         """声明标题、对话记录、输入框和状态栏布局。"""
@@ -208,7 +195,7 @@ class ChatTuiApp(App[None]):
         yield Static(self.TITLE, id="title", markup=False)
         yield Transcript()
         yield StreamOutput()
-        yield Static(id="activity-bar", markup=False)
+        yield ActivityBar()
         yield CommandPalette()
         yield PromptTextArea(
             id="prompt",
@@ -315,7 +302,6 @@ class ChatTuiApp(App[None]):
                 return
             self._history_error = None
             self._input_history.clear()
-            self._reset_history_navigation()
             self._finish_stream_output()
             prompt_widget.load_text("")
             self.query_one("#transcript", RichLog).clear()
@@ -354,7 +340,6 @@ class ChatTuiApp(App[None]):
         # 新请求重新开始双 Esc 手势，避免上一次取消被误判为本次的退出确认。
         self._last_escape_at = None
         self._input_history.append(input_text)
-        self._reset_history_navigation()
         prompt_widget.load_text("")
         self._write_message("You", input_text)
         self.run_status = RunStatus.THINKING
@@ -492,8 +477,7 @@ class ChatTuiApp(App[None]):
         self._stop_activity()
         self._activity_started_at = started_at
         self._activity_generation = generation
-        self._spinner_index = 0
-        self._render_activity(0.0)
+        self.query_one(ActivityBar).show_activity(0.0, self.run_status)
         self._activity_timer = self.set_interval(
             self.ACTIVITY_INTERVAL_SECONDS,
             lambda: self._refresh_activity(generation),
@@ -507,14 +491,9 @@ class ChatTuiApp(App[None]):
         if palette.is_open:
             palette.move_selection(-1)
             return
-        if not self._input_history:
-            return
-        if self._history_index is None:
-            self._history_draft = self.query_one("#prompt", TextArea).text
-            self._history_index = len(self._input_history) - 1
-        else:
-            self._history_index = max(0, self._history_index - 1)
-        self._load_history_input(self._input_history[self._history_index])
+        previous = self._input_history.previous(self.query_one("#prompt", TextArea).text)
+        if previous is not None:
+            self._load_history_input(previous)
 
     def action_next_input(self) -> None:
         """向更新的输入移动，并在越过末项时恢复浏览前草稿。"""
@@ -523,17 +502,9 @@ class ChatTuiApp(App[None]):
         if palette.is_open:
             palette.move_selection(1)
             return
-        index = self._history_index
-        if index is None:
-            return
-        if index < len(self._input_history) - 1:
-            self._history_index = index + 1
-            self._load_history_input(self._input_history[self._history_index])
-            return
-
-        draft = self._history_draft
-        self._reset_history_navigation()
-        self._load_history_input(draft)
+        following = self._input_history.next()
+        if following is not None:
+            self._load_history_input(following)
 
     def _load_history_input(self, input_text: str) -> None:
         """加载历史原文，并把光标放到多行文档末尾便于继续编辑。"""
@@ -542,11 +513,6 @@ class ChatTuiApp(App[None]):
         prompt.load_text(input_text)
         prompt.move_cursor(prompt.document.end)
 
-    def _reset_history_navigation(self) -> None:
-        """退出历史浏览并丢弃仅用于恢复的临时草稿。"""
-
-        self._history_index = None
-        self._history_draft = ""
 
     def _refresh_activity(self, generation: int) -> None:
         """按单调时钟刷新当前请求的动画帧和已等待时间。"""
@@ -558,9 +524,8 @@ class ChatTuiApp(App[None]):
             or generation != self._request_generation
         ):
             return
-        self._spinner_index = (self._spinner_index + 1) % len(self.SPINNER_FRAMES)
         elapsed = max(0.0, self.clock() - started_at)
-        self._render_activity(elapsed)
+        self.query_one(ActivityBar).show_activity(elapsed, self.run_status, advance=True)
         self._flush_stream_output(generation)
 
     def _begin_stream_output(self, generation: int) -> None:
@@ -607,18 +572,6 @@ class ChatTuiApp(App[None]):
         if self.is_mounted:
             self.query_one(StreamOutput).reset_output()
 
-    def _render_activity(self, elapsed: float) -> None:
-        """将固定文案、当前动画帧和耗时写入输入框上方状态栏。"""
-
-        frame = self.SPINNER_FRAMES[self._spinner_index]
-        label = (
-            "等待审批"
-            if self.run_status is RunStatus.AWAITING_APPROVAL
-            else "思考中"
-        )
-        self.query_one("#activity-bar", Static).update(
-            f"{frame} {label} · {elapsed:.1f} 秒 · Esc 取消"
-        )
 
     async def _approve_tool(
         self,
@@ -692,9 +645,8 @@ class ChatTuiApp(App[None]):
         self._activity_timer = None
         self._activity_started_at = None
         self._activity_generation = None
-        self._spinner_index = 0
         if self.is_mounted:
-            self.query_one("#activity-bar", Static).update("")
+            self.query_one(ActivityBar).reset_activity()
 
     def _write_elapsed_time(self, started_at: float) -> None:
         """在请求结果后显示不受系统时间调整影响的单轮耗时。"""
@@ -717,7 +669,7 @@ class ChatTuiApp(App[None]):
             return
         if prompt.text:
             prompt.load_text("")
-            self._reset_history_navigation()
+            self._input_history.reset_navigation()
             self._last_escape_at = None
             prompt.focus()
             return

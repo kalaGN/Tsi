@@ -85,7 +85,7 @@ def test_command_preview_filters_selects_completes_and_executes_locally():
             await pilot.press("enter")
             assert prompt.text == "/skills"
             assert received == []
-            assert app._input_history == []
+            assert app._input_history.entries == []
 
     asyncio.run(scenario())
 
@@ -717,7 +717,7 @@ def test_tui_system_prompt_error_blocks_normal_request_but_keeps_input():
 
             assert received_inputs == []
             assert prompt.text == "hello"
-            assert app._input_history == []
+            assert app._input_history.entries == []
             assert app.run_status is RunStatus.ERROR
             assert "AGENTS: error" in str(
                 app.query_one("#status-bar", Static).content
@@ -1501,7 +1501,7 @@ def test_empty_input_history_keeps_current_draft():
             await pilot.press("down")
 
             assert prompt.text == "当前草稿"
-            assert app._history_index is None
+            assert app._input_history.index is None
 
     asyncio.run(scenario())
 
@@ -1816,7 +1816,7 @@ def test_blank_input_is_rejected_without_calling_runner():
 
             assert app.run_status is RunStatus.READY
             assert "Input must not be blank" in transcript_text(app)
-            assert app._input_history == []
+            assert app._input_history.entries == []
 
     asyncio.run(scenario())
 
@@ -1874,7 +1874,7 @@ def test_clear_command_clears_transcript_without_calling_runner():
             assert transcript_text(app) == ""
             assert received_inputs == ["hello"]
             assert app.run_status is RunStatus.READY
-            assert app._input_history == []
+            assert app._input_history.entries == []
             prompt.load_text("clear 后草稿")
             await pilot.press("up")
             assert prompt.text == "clear 后草稿"
@@ -1920,7 +1920,7 @@ def test_skills_command_lists_current_runtime_without_calling_runner(tmp_path):
             assert ".agents/skills/demo-skill/SKILL.md" in transcript
             assert prompt.text == ""
             assert received_inputs == []
-            assert app._input_history == []
+            assert app._input_history.entries == []
 
     asyncio.run(scenario())
 
@@ -2334,7 +2334,7 @@ def test_quit_command_exits_without_calling_runner():
             await pilot.press("enter")
 
         assert exit_called
-        assert app._input_history == []
+        assert app._input_history.entries == []
 
     asyncio.run(scenario())
 

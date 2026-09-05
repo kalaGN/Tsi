@@ -10,7 +10,9 @@ from pathlib import PurePosixPath
 from tools.contracts import (
     ApprovalTool,
     SCRIPT_APPROVAL_WARNING_TEXT,
+    SKILL_INSTALL_APPROVAL_WARNING_TEXT,
     ScriptApprovalRequest,
+    SkillInstallApprovalRequest,
     Tool,
     ToolApprovalRequest,
     ToolArgumentError,
@@ -46,6 +48,11 @@ _SAFE_ERROR_MESSAGES = {
     "check_unavailable": "Project check is unavailable",
     "script_timeout": "Skill script timed out",
     "script_output_too_large": "Skill script output is too large",
+    "skill_already_exists": "Skill is already installed",
+    "skill_source_unavailable": "Skill source is unavailable",
+    "skill_download_timeout": "Skill download timed out",
+    "skill_package_invalid": "Skill package is invalid",
+    "skill_refresh_failed": "Skill refresh failed",
 }
 
 
@@ -226,6 +233,8 @@ def _valid_approval_request(
 
     if isinstance(request, ScriptApprovalRequest):
         return _valid_script_approval_request(request, call)
+    if isinstance(request, SkillInstallApprovalRequest):
+        return _valid_skill_install_approval_request(request, call)
     if not isinstance(request, ToolApprovalRequest):
         return False
     if request.call_id != call.call_id or request.tool_name != call.name:
@@ -280,6 +289,53 @@ def _valid_script_approval_request(
         and len(request.command_text.encode("utf-8")) <= MAX_APPROVAL_DIFF_BYTES
         and isinstance(request.warning_text, str)
         and request.warning_text == SCRIPT_APPROVAL_WARNING_TEXT
+        and isinstance(request.fingerprint, str)
+        and bool(_FINGERPRINT_PATTERN.fullmatch(request.fingerprint))
+    )
+
+
+def _valid_skill_install_approval_request(
+    request: SkillInstallApprovalRequest,
+    call: ToolCall,
+) -> bool:
+    """只接受固定来源类型、相对目标和有界展示文本。"""
+
+    target = PurePosixPath(request.target_path)
+    source_is_safe = (
+        isinstance(request.source_display, str)
+        and bool(request.source_display)
+        and len(request.source_display.encode("utf-8")) <= 2048
+        and not any(ord(character) < 32 for character in request.source_display)
+    )
+    if request.source_type == "github":
+        source_is_safe = source_is_safe and request.source_display.startswith(
+            "https://github.com/"
+        )
+    elif request.source_type == "codex_home":
+        local_name = request.source_display.removeprefix("~/.codex/skills/")
+        source_is_safe = (
+            source_is_safe
+            and request.source_display == f"~/.codex/skills/{local_name}"
+            and bool(local_name)
+            and "/" not in local_name
+            and "\\" not in local_name
+        )
+    return (
+        request.call_id == call.call_id
+        and request.tool_name == call.name
+        and isinstance(request.title, str)
+        and bool(request.title.strip())
+        and len(request.title.encode("utf-8")) <= 1024
+        and request.source_type in {"github", "codex_home"}
+        and source_is_safe
+        and isinstance(request.target_path, str)
+        and target.parts[:2] == (".agents", "skills")
+        and len(target.parts) == 3
+        and target.as_posix() == request.target_path
+        and bool(_SKILL_NAME_PATTERN.fullmatch(target.parts[2]))
+        and isinstance(request.network_access, bool)
+        and request.network_access == (request.source_type == "github")
+        and request.warning_text == SKILL_INSTALL_APPROVAL_WARNING_TEXT
         and isinstance(request.fingerprint, str)
         and bool(_FINGERPRINT_PATTERN.fullmatch(request.fingerprint))
     )

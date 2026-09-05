@@ -11,6 +11,7 @@ from app.runtime.system_prompt import (
     compose_system_prompt,
     load_system_prompt,
 )
+from app.runtime.skill_runtime import SkillRuntime
 from tools.skills import SkillLoadError, load_skill_catalog
 from tools.workspace import WorkspacePolicy, create_workspace_registry
 
@@ -23,6 +24,7 @@ def _create_app(
     workspace_error: str | None,
     skills_count: int,
     skills_error: str | None,
+    skill_runtime: SkillRuntime | None = None,
 ):
     """延迟导入 Textual，确保终端兼容配置先于框架初始化生效。"""
 
@@ -35,6 +37,7 @@ def _create_app(
         workspace_error=workspace_error,
         skills_count=skills_count,
         skills_error=skills_error,
+        skill_runtime=skill_runtime,
     )
 
 
@@ -62,21 +65,26 @@ def main() -> None:
         skills_error = str(exc)
     try:
         workspace_policy = WorkspacePolicy(startup_directory)
-        workspace_registry = create_workspace_registry(
+        skill_runtime = SkillRuntime(
+            startup_directory,
+            agents_prompt,
             workspace_policy,
-            skill_catalog=skill_catalog,
+            skill_catalog,
+            initial_error=skills_error,
+            registry_factory=create_workspace_registry,
         )
+        initial_snapshot = skill_runtime.snapshot()
+        workspace_registry = initial_snapshot.registry
         workspace_error = None
-        skills_count = skill_catalog.count if skill_catalog is not None else 0
-        skill_prompt = (
-            skill_catalog.prompt if skill_catalog is not None else None
-        )
+        skill_status = skill_runtime.status()
+        skills_count = skill_status.skills_count
+        system_prompt = initial_snapshot.system_prompt
     except (OSError, ValueError):
         workspace_registry = None
+        skill_runtime = None
         workspace_error = "Workspace tools are unavailable"
         skills_count = 0
-        skill_prompt = None
-    system_prompt = compose_system_prompt(agents_prompt, skill_prompt)
+        system_prompt = compose_system_prompt(agents_prompt, None)
     _create_app(
         system_prompt=system_prompt,
         system_prompt_error=system_prompt_error,
@@ -84,6 +92,7 @@ def main() -> None:
         workspace_error=workspace_error,
         skills_count=skills_count,
         skills_error=skills_error,
+        skill_runtime=skill_runtime,
     ).run()
 
 

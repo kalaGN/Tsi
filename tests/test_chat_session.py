@@ -4,7 +4,7 @@ import pytest
 
 from app.runtime import session as session_module
 from app.runtime.chat import ChatErrorCode, ChatResult, ChatRuntimeError
-from app.runtime.session import ChatSession
+from app.runtime.session import ChatExecutionSnapshot, ChatSession
 from app.runtime.session_store import SessionStore, SessionStoreError
 from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS
 from app.services.llm.contracts import (
@@ -132,6 +132,37 @@ def test_restored_session_uses_current_startup_system_prompt(tmp_path):
             ChatMessage(ChatRole.ASSISTANT, "old answer"),
             ChatMessage(ChatRole.USER, "new question"),
         )
+
+    asyncio.run(scenario())
+
+
+def test_chat_session_reads_one_execution_snapshot_per_send(tmp_path):
+    async def scenario():
+        provider = RecordingProvider(["第一答", "第二答"])
+        prompts = iter(("规则一", "规则二"))
+        snapshot_calls = []
+
+        def snapshot_provider():
+            prompt = next(prompts)
+            snapshot_calls.append(prompt)
+            return ChatExecutionSnapshot(
+                system_prompt=prompt,
+                registry=create_default_registry(),
+                version=len(snapshot_calls),
+            )
+
+        session = ChatSession(
+            SessionStore(tmp_path / "chat-session.json"),
+            provider=provider,
+            execution_snapshot_provider=snapshot_provider,
+        )
+
+        await session.send("第一问")
+        await session.send("第二问")
+
+        assert snapshot_calls == ["规则一", "规则二"]
+        assert provider.calls[0][0] == ChatMessage(ChatRole.SYSTEM, "规则一")
+        assert provider.calls[1][0] == ChatMessage(ChatRole.SYSTEM, "规则二")
 
     asyncio.run(scenario())
 

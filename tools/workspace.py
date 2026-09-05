@@ -26,6 +26,7 @@ from tools.contracts import (
 )
 
 if TYPE_CHECKING:
+    from tools.skill_installation import InstallSkillTool
     from tools.skills import SkillCatalog
 
 
@@ -956,6 +957,7 @@ def create_workspace_registry(
     policy: WorkspacePolicy,
     journal: WorkspaceChangeJournal | None = None,
     skill_catalog: "SkillCatalog | None" = None,
+    install_skill_tool: "InstallSkillTool | None" = None,
 ):
     """创建仅由 TUI 入口显式加载的固定 Workspace 工具白名单。"""
 
@@ -976,6 +978,8 @@ def create_workspace_registry(
             RunProjectCheckTool(policy),
             UndoWorkspaceChangeTool(policy, active_journal),
     ]
+    if install_skill_tool is not None:
+        tools.append(install_skill_tool)
     if skill_catalog is not None and skill_catalog.count:
         from tools.skills import (
             LoadSkillTool,

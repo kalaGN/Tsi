@@ -13,6 +13,7 @@ from app.runtime.chat import (
     ChatRuntimeInfo,
 )
 from app.runtime.session import ChatSession
+from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.session_store import SessionStore, SessionStoreError
 from app.services.llm.contracts import ChatMessage, ChatRole
 from app.tui import __main__ as tui_main
@@ -22,12 +23,15 @@ from app.tui.state import RunStatus
 from app.tui.approval import ToolApprovalScreen
 from app.tui.widgets import SelectableRichLog
 from tools import (
+    SKILL_INSTALL_APPROVAL_WARNING_TEXT,
     ScriptApprovalRequest,
+    SkillInstallApprovalRequest,
     ToolApprovalRequest,
     ToolCall,
     ToolResult,
 )
 from tools.workspace import WorkspacePolicy, create_workspace_registry
+from tools.skills import load_skill_catalog
 
 
 ALIYUN_INFO = ChatRuntimeInfo("aliyun", "qwen3-max", True)
@@ -159,6 +163,58 @@ def test_skill_script_approval_shows_warning_command_and_execute_action():
             await pilot.press("y")
             await app.workers.wait_for_complete()
 
+            assert decisions == [True]
+
+    asyncio.run(scenario())
+
+
+def test_skill_install_approval_shows_source_target_and_install_action():
+    async def scenario():
+        decisions = []
+        request = SkillInstallApprovalRequest(
+            call_id="install-1",
+            tool_name="install_skill",
+            title="安装 Skill",
+            source_type="github",
+            source_display="https://github.com/acme/repo/tree/main/skills/demo",
+            target_path=".agents/skills/demo-skill",
+            network_access=True,
+            warning_text=SKILL_INSTALL_APPROVAL_WARNING_TEXT,
+            fingerprint="d" * 64,
+        )
+
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            decisions.append(await kwargs["on_tool_approval"](request))
+            return ChatResult("完成", "fake", "fake-model")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            workspace_registry=create_workspace_registry(
+                WorkspacePolicy(Path.cwd())
+            ),
+        )
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("安装技能")
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, ToolApprovalScreen):
+                    break
+            modal = app.screen
+            assert isinstance(modal, ToolApprovalScreen)
+            summary = str(modal.query_one("#approval-paths", Static).content)
+            preview = "\n".join(
+                line.text
+                for line in modal.query_one("#approval-diff", RichLog).lines
+            )
+            assert "github.com/acme/repo" in summary
+            assert ".agents/skills/demo-skill" in summary
+            assert "访问网络：是" in summary
+            assert "安装批准不会批准" in preview
+            assert "安装 (Y)" in str(modal.query_one("#approve").label)
+            await pilot.press("y")
+            await app.workers.wait_for_complete()
             assert decisions == [True]
 
     asyncio.run(scenario())
@@ -665,6 +721,49 @@ def test_tui_skill_error_is_visible_but_does_not_block_chat():
     asyncio.run(scenario())
 
 
+def test_tui_refreshes_skill_count_from_runtime_after_request(tmp_path):
+    async def scenario():
+        runtime = SkillRuntime(
+            tmp_path,
+            None,
+            WorkspacePolicy(tmp_path),
+            load_skill_catalog(tmp_path),
+            codex_skills_root=tmp_path / "codex-skills",
+        )
+
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            skill = tmp_path / ".agents/skills/demo-skill"
+            skill.mkdir(parents=True)
+            (skill / "SKILL.md").write_text(
+                "---\nname: demo-skill\ndescription: Demo\n---\n",
+                encoding="utf-8",
+            )
+            runtime.publish(load_skill_catalog(tmp_path))
+            return ChatResult("安装完成", "fake", "fake-model")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            skill_runtime=runtime,
+        )
+        async with app.run_test() as pilot:
+            assert "Skills: 0" in str(
+                app.query_one("#status-bar", Static).content
+            )
+            app.query_one("#prompt", TextArea).load_text("安装技能")
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+
+            assert "Skills: 1" in str(
+                app.query_one("#status-bar", Static).content
+            )
+            app.query_one("#prompt", TextArea).load_text("/skills")
+            await pilot.press("enter")
+            assert "demo-skill" in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
 def test_activity_bar_starts_empty_above_prompt_without_footer():
     async def scenario():
         async def fake_runner(
@@ -1035,6 +1134,7 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
         workspace_error,
         skills_count,
         skills_error,
+        skill_runtime,
     ):
         observed["kitty_keyboard_disabled"] = (
             tui_main.os.environ.get("TEXTUAL_DISABLE_KITTY_KEY")
@@ -1047,6 +1147,7 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
         observed["workspace_error"] = workspace_error
         observed["skills_count"] = skills_count
         observed["skills_error"] = skills_error
+        observed["skill_runtime"] = skill_runtime is not None
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
@@ -1084,10 +1185,12 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
             "apply_workspace_edits",
             "run_project_check",
             "undo_workspace_change",
+            "install_skill",
         ),
         "workspace_error": None,
         "skills_count": 0,
         "skills_error": None,
+        "skill_runtime": True,
         "run": True,
     }
 
@@ -1108,6 +1211,7 @@ def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
         workspace_error,
         skills_count,
         skills_error,
+        skill_runtime,
     ):
         observed["system_prompt"] = system_prompt
         observed["system_prompt_error"] = system_prompt_error
@@ -1115,6 +1219,7 @@ def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
         observed["workspace_error"] = workspace_error
         observed["skills_count"] = skills_count
         observed["skills_error"] = skills_error
+        observed["skill_runtime"] = skill_runtime is not None
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
@@ -1133,6 +1238,7 @@ def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
         "workspace_error": None,
         "skills_count": 0,
         "skills_error": None,
+        "skill_runtime": True,
         "run": True,
     }
 
@@ -1205,6 +1311,7 @@ def test_tui_entrypoint_invalid_skill_keeps_workspace_tools(tmp_path, monkeypatc
     }
     assert "read_workspace_file" in names
     assert "load_skill" not in names
+    assert "install_skill" in names
     assert observed["skills_count"] == 0
     assert observed["skills_error"] == "Project skills are unavailable"
     assert observed["system_prompt"] is None
@@ -1717,6 +1824,117 @@ def test_clear_command_clears_transcript_without_calling_runner():
             prompt.load_text("clear 后草稿")
             await pilot.press("up")
             assert prompt.text == "clear 后草稿"
+
+    asyncio.run(scenario())
+
+
+def test_skills_command_lists_current_runtime_without_calling_runner(tmp_path):
+    async def scenario():
+        received_inputs = []
+        skill_root = tmp_path / ".agents/skills/demo-skill"
+        skill_root.mkdir(parents=True)
+        (skill_root / "SKILL.md").write_text(
+            "---\nname: demo-skill\ndescription: 演示技能\n---\n",
+            encoding="utf-8",
+        )
+        runtime = SkillRuntime(
+            tmp_path,
+            None,
+            WorkspacePolicy(tmp_path),
+            load_skill_catalog(tmp_path),
+            codex_skills_root=tmp_path / "codex-skills",
+        )
+
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            received_inputs.append(input_text)
+            return ChatResult("answer", "fake", "fake-model")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=ALIYUN_INFO,
+            skill_runtime=runtime,
+        )
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text(" /skills \n")
+            await pilot.press("enter")
+
+            transcript = transcript_text(app)
+            assert "可用技能（1）" in transcript
+            assert "demo-skill" in transcript
+            assert "演示技能" in transcript
+            assert ".agents/skills/demo-skill/SKILL.md" in transcript
+            assert prompt.text == ""
+            assert received_inputs == []
+            assert app._input_history == []
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("runtime_factory", "expected"),
+    (
+        (
+            lambda root: SkillRuntime(
+                root,
+                None,
+                WorkspacePolicy(root),
+                load_skill_catalog(root),
+                codex_skills_root=root / "codex-skills",
+            ),
+            "当前没有可用技能",
+        ),
+        (lambda _root: None, "技能列表不可用"),
+    ),
+)
+def test_skills_command_handles_empty_catalog_and_missing_runtime(
+    tmp_path,
+    runtime_factory,
+    expected,
+):
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not receive /skills")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=ALIYUN_INFO,
+            skill_runtime=runtime_factory(tmp_path),
+        )
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("/skills")
+            await pilot.press("enter")
+
+            assert expected in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
+def test_skills_command_reports_safe_runtime_catalog_error(tmp_path):
+    async def scenario():
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            raise AssertionError("runner should not receive /skills")
+
+        runtime = SkillRuntime(
+            tmp_path,
+            None,
+            WorkspacePolicy(tmp_path),
+            None,
+            initial_error="Project skills are unavailable",
+            codex_skills_root=tmp_path / "codex-skills",
+        )
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=ALIYUN_INFO,
+            skill_runtime=runtime,
+        )
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("/skills")
+            await pilot.press("enter")
+
+            transcript = transcript_text(app)
+            assert "技能列表不可用" in transcript
+            assert "Project skills are unavailable" in transcript
 
     asyncio.run(scenario())
 

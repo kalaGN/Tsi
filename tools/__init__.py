@@ -3,8 +3,10 @@
 from tools.builtin import GetCurrentTimeTool
 from tools.contracts import (
     AnyToolApprovalRequest,
+    SKILL_INSTALL_APPROVAL_WARNING_TEXT,
     SCRIPT_APPROVAL_WARNING_TEXT,
     ScriptApprovalRequest,
+    SkillInstallApprovalRequest,
     ToolApprovalHandler,
     ToolApprovalRequest,
     Tool,
@@ -38,7 +40,9 @@ __all__ = [
     "GetCurrentTimeTool",
     "AnyToolApprovalRequest",
     "ScriptApprovalRequest",
+    "SkillInstallApprovalRequest",
     "SCRIPT_APPROVAL_WARNING_TEXT",
+    "SKILL_INSTALL_APPROVAL_WARNING_TEXT",
     "LoadSkillTool",
     "ReadSkillResourceTool",
     "RunSkillScriptTool",

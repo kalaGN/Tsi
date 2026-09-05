@@ -14,9 +14,21 @@ TUI 只在启动时读取命令执行目录直属的 `AGENTS.md`。确认它是�
 
 ## 状态栏显示 `Skills: error`
 
-TUI 只在启动时读取 `.agents/skills/*/SKILL.md`。检查每个目录名是否与 YAML `name` 完全一致、`description` 是否非空、Frontmatter 是否由 `---` 包围，以及入口和支持文件是否为有界的非符号链接普通文件。任一 Skill 非法会禁用整批项目 Skill，但不会阻止 `AGENTS.md`、普通对话和已有 Workspace 工具；修复后需重启 TUI。
+TUI 启动时读取 `.agents/skills/*/SKILL.md`。检查每个目录名是否与 YAML `name` 完全一致、`description` 是否非空、Frontmatter 是否由 `---` 包围，以及入口和支持文件是否为有界的非符号链接普通文件。任一 Skill 非法会禁用整批项目 Skill，但不会阻止 `AGENTS.md`、普通对话、已有 Workspace 工具和 `install_skill`；手动修复后需重启 TUI。
 
 Skill Catalog、正文、资源和脚本输入输出会随系统提示词、工具结果及后续请求体明文进入 `logs/model-calls.log`。不要把密钥或隐私数据放入 Skill。脚本审批提示没有文件系统或网络沙箱：只有确认脚本及参数可信时才执行。
+
+## `install_skill` 返回错误
+
+- `skill_already_exists`：`.agents/skills/<expected_name>` 已存在。本版本不覆盖或升级；先人工确认已有目录，不要要求模型绕过冲突。
+- `skill_source_unavailable`：个人 Codex 直属目录不存在或不可读，或者公开 GitHub Contents API 返回不可用状态。第一版不支持私有仓库、Token、GitHub Enterprise 和任意下载 URL。
+- `skill_download_timeout`：匿名 GitHub 获取超过固定时限。确认网络可访问 `api.github.com` 后重试，每次仍需重新审批。
+- `skill_package_invalid`：候选包的 YAML、名称、编码、普通文件类型、符号链接、数量或大小不符合现有 Skill 规则。
+- `skill_refresh_failed`：目标曾提交但全量 Catalog 刷新失败，安装事务会删除本次目标并继续使用旧 Runtime。
+
+GitHub URL 必须使用 `https://github.com/<owner>/<repo>/tree/<ref>/<skill-directory>`，第一版 `ref` 不能含 `/`。个人来源参数只写 `~/.codex/skills` 下的直属目录名，`expected_name` 必须与候选 `SKILL.md` 的 `name` 完全一致。安装成功后状态栏可立即更新，但必须发送下一条用户消息后模型才能使用新 Skill；当前请求不能直接运行刚安装的脚本。手动修改目录不会触发热刷新。
+
+排查安装时可按同一 request ID 查看 `llm_tool_call`、`llm_tool_approval` 和 `llm_tool_result`：它们分别回答“请求了什么来源”“是否获批”“成功或属于哪类安全失败”。日志会明文保存 URL、个人目录名和目标名称，不记录真实 Home 绝对路径、GitHub 响应正文或凭据。
 
 ## 状态栏显示 `Workspace: error`
 

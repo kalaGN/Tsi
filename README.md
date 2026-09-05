@@ -49,6 +49,7 @@ HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间�
 | 仅 TUI | `apply_workspace_edits` | 创建文件或执行带哈希前置条件的精确替换 | 本地审批后执行 |
 | 仅 TUI | `run_project_check` | 运行 `compile`、`test_all`、`pip_check`、`diff_check` 四个固定检查 | 自动执行 |
 | 仅 TUI | `undo_workspace_change` | 撤销当前进程最近一次 Agent 修改 | 本地审批后执行 |
+| 仅 TUI | `install_skill` | 从公开 GitHub Skill 目录或当前用户 `~/.codex/skills` 直属目录安装 Skill | 每次本地审批后安装，下一次请求生效 |
 | 仅 TUI | `load_skill` | 按名称读取完整 `SKILL.md` 和资源清单 | 自动执行 |
 | 仅 TUI | `read_skill_resource` | 读取 Skill 快照中的 UTF-8 文本资源 | 自动执行 |
 | 仅 TUI | `run_skill_script` | 执行 Skill `scripts/` 中的 `.py` 或 `.sh` 文件 | 每次本地审批后执行 |
@@ -65,6 +66,7 @@ HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间�
 - 普通参数最多 8 KiB，编辑参数最多 64 KiB，结果最多 32 KiB；多个调用串行执行。
 - Skill 脚本使用参数数组而非 Shell 拼接，`.py` 固定使用当前 Python，`.sh` 固定使用 `/bin/sh`；运行环境不继承 API Key 等宿主变量，30 秒超时，stdout/stderr 合计最多 32 KiB。
 - Skill 脚本没有文件系统或网络沙箱，能够读取工作区、修改文件及访问网络；审批界面会展示解释器、相对脚本、逐项转义参数和该风险，每次调用都重新确认。
+- `install_skill` 只接受公开 `github.com` HTTPS Skill 目录和 `~/.codex/skills` 直属目录；不读取私有仓库凭据，不覆盖同名目标，不执行安装包中的脚本或安装依赖。安装审批与脚本审批相互独立。
 - 达到上限时 `/chat` 返回安全的 502；TUI 显示安全错误。已确认并完成的磁盘修改不会因后续模型失败自动回滚，界面会列出仍保留的相对路径。
 
 ## 启动 TUI
@@ -87,7 +89,24 @@ TUI 启动时还会读取命令执行目录直属的 `AGENTS.md`：有效的 UTF
 └── assets/        # 可选
 ```
 
-TUI 启动时只扫描这一层 `.agents/skills/`，使用安全 YAML 读取 `SKILL.md` 的 `name` 和 `description`，并把名称、描述、相对位置组成 Catalog 追加到 system 消息。模型匹配到能力后先调用 `load_skill`，需要配套文本时再调用 `read_skill_resource`；Skill 正文不会预先灌入上下文。状态栏以 `Skills: 数量|error` 展示结果。任一 Skill、资源、编码、大小或符号链接非法时整批 Skill 被禁用，但 `AGENTS.md`、普通对话和已有 Workspace 工具仍可使用；修改 Skill 后需重启 TUI。
+TUI 启动时扫描这一层 `.agents/skills/`，使用安全 YAML 读取 `SKILL.md` 的 `name` 和 `description`，并把名称、描述、相对位置组成 Catalog 追加到 system 消息。模型匹配到能力后先调用 `load_skill`，需要配套文本时再调用 `read_skill_resource`；Skill 正文不会预先灌入上下文。状态栏以 `Skills: 数量|error` 展示结果。任一 Skill、资源、编码、大小或符号链接非法时整批 Skill 被禁用，但 `AGENTS.md`、普通对话和已有 Workspace 工具仍可使用。
+
+可以直接在 TUI 中要求模型安装 Skill。个人 Codex 目录示例：
+
+```text
+请调用 install_skill，从 codex_home 的 skill-using-superpowers 目录安装 Skill，
+expected_name 使用 using-superpowers。
+```
+
+公开 GitHub 目录示例：
+
+```text
+请调用 install_skill，来源类型 github，来源为
+https://github.com/acme/skills/tree/main/skills/demo-skill，
+expected_name 使用 demo-skill。
+```
+
+审批框会显示来源、固定目标 `.agents/skills/<expected_name>` 以及是否访问网络。拒绝时不会读取来源或写项目；批准后先在项目临时目录校验完整包，再原子安装。成功后状态栏立即更新数量，新 Skill 从下一次用户发送开始进入 system prompt 和工具快照，不会混入当前模型工具循环。手动增删改 `.agents/skills/` 仍不会热刷新，需要重启 TUI；热刷新只由成功的 `install_skill` 触发。
 
 Skill 包以 Codex 的 `.agents/skills/` 发现约定为准，`SKILL.md` 与 `scripts/`、`references/`、`assets/` 结构遵循开放 Agent Skills 格式。同一个包可复制到 Claude Code 对应目录使用，但 Tsi 不扫描 `.claude/skills/`，也不采信 `allowed-tools` 等字段扩大权限。项目不内置示例 Skill，测试使用临时夹具验证完整流程。
 
@@ -100,6 +119,7 @@ TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统
 - 在对话记录中双击某一可见行：立即复制该行的渲染文字；流式输出和审批 Diff 仍使用拖选复制。
 - `Esc`：输入框非空时先清空输入；输入为空时第一次取消运行中请求并提示，1.5 秒内再次按下退出。
 - `/clear`：清空界面、模型上下文和本地持久化历史。
+- `/skills`：列出当前运行时已发布的 Skill 名称、描述和项目相对入口；不会调用模型或重新扫描磁盘。
 - `/quit`：取消运行中请求并退出。
 
 TUI 支持直接使用中文输入法。用户输入会用带背景的全宽卡片区分，但仍逐字显示、不解析 Markdown；Assistant 生成中按纯文本增量显示，完成后按 Markdown 美化，系统提示和错误信息保持纯文本。最终消息、流式临时文本和审批 Diff 都可选择复制；对话记录额外支持双击复制单个渲染行。上下键始终用于输入历史，不承担多行输入的垂直光标移动；粘贴的多行文本仍可原样发送。`/help` 和 `/chat` 不是本地命令，会作为普通文本发送给模型。当前不支持 HTML、远程图片、Mermaid、HTTP SSE、多会话管理、历史搜索、上下文压缩、任意命令工具或请求级模型切换。
@@ -198,7 +218,7 @@ llm_request -> llm_http_request -> llm_http_response -> llm_response
 - `llm_tool_call`：call ID、工具名、参数字符数和完整 JSON 参数。
 - `llm_tool_result`：call ID、成功/错误状态、耗时、输出字符数和完整工具结果。
 
-工具参数和结果会直接记录在专用工具事件中；实际回传模型的完整工具结果还会出现在下一次 `llm_http_request.request_body` 中。审批事件只记录决定、文件数和 Diff 字符数，不额外记录审批 Diff 正文。
+工具参数和结果会直接记录在专用工具事件中；实际回传模型的完整工具结果还会出现在下一次 `llm_http_request.request_body` 中。审批事件只记录决定、文件数和 Diff 字符数，不额外记录审批正文。调用 `install_skill` 时，GitHub URL、个人 Skill 目录名、目标名称和安全安装结果也会作为工具参数及结果明文记录，但真实 Home 绝对路径、GitHub 响应正文和凭据不会记录。
 
 连接超时或网络失败时，`llm_http_request` 后写一条 `llm_http_error`，仅包含 `timeout` 或 `connection` 安全分类和耗时，不记录异常类名、异常原文或 Traceback。非 2xx 已收到响应，只写 `llm_http_response`，不再写 `llm_http_error`。
 

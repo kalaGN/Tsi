@@ -12,6 +12,8 @@ from app.runtime.tool_loop import (
 )
 from app.services.llm.contracts import ModelStep
 from tools.contracts import (
+    SKILL_INSTALL_APPROVAL_WARNING_TEXT,
+    SkillInstallApprovalRequest,
     ToolApprovalRequest,
     ToolCall,
     ToolDefinition,
@@ -72,6 +74,28 @@ class ApprovalRecordingTool(RecordingTool):
             paths=("demo.txt",),
             diff_text="--- a/demo.txt\n+++ b/demo.txt\n@@ -0,0 +1 @@\n+中文\n",
             fingerprint="a" * 64,
+        )
+
+
+class InstallApprovalRecordingTool(RecordingTool):
+    definition = ToolDefinition(
+        "install_test",
+        "Install a test value",
+        {"type": "object", "properties": {}},
+        effect=ToolEffect.MUTATING,
+    )
+
+    async def preview(self, call_id, arguments):
+        return SkillInstallApprovalRequest(
+            call_id=call_id,
+            tool_name=self.definition.name,
+            title="安装 Skill",
+            source_type="codex_home",
+            source_display="~/.codex/skills/demo",
+            target_path=".agents/skills/demo",
+            network_access=False,
+            warning_text=SKILL_INSTALL_APPROVAL_WARNING_TEXT,
+            fingerprint="b" * 64,
         )
 
 
@@ -369,3 +393,32 @@ def test_tool_loop_reports_each_completed_tool_result_to_host():
     assert json.loads(observed[0][1].output)["data"]["received"] == {
         "value": "中文"
     }
+
+
+def test_tool_loop_logs_non_file_approval_without_assuming_diff_fields(monkeypatch):
+    tool = InstallApprovalRecordingTool()
+    turn = FakeTurn(
+        [tool_step(ToolCall("call-install", "install_test", "{}")), final_step()]
+    )
+    logged = []
+
+    monkeypatch.setattr(
+        tool_loop,
+        "log_model_tool_approval",
+        lambda **fields: logged.append(fields),
+    )
+
+    async def approve(_request):
+        return True
+
+    asyncio.run(
+        run_tool_loop(
+            turn,
+            ToolRegistry([tool]),
+            request_id="6" * 32,
+            on_tool_approval=approve,
+        )
+    )
+
+    assert logged[0]["paths_count"] == 0
+    assert logged[0]["diff_chars"] == 0

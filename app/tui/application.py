@@ -3,7 +3,7 @@
 import json
 import time
 from collections.abc import Awaitable, Callable
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from rich import box
 from rich.markdown import Markdown
@@ -37,6 +37,9 @@ from app.runtime.tool_loop import (
     WORKSPACE_TOOL_LOOP_LIMITS,
 )
 from tools import AnyToolApprovalRequest, ToolCall, ToolRegistry, ToolResult
+
+if TYPE_CHECKING:
+    from app.runtime.skill_runtime import SkillRuntime
 
 
 class ChatRunner(Protocol):
@@ -166,6 +169,7 @@ class ChatTuiApp(App[None]):
         workspace_error: str | None = None,
         skills_count: int = 0,
         skills_error: str | None = None,
+        skill_runtime: "SkillRuntime | None" = None,
     ) -> None:
         """初始化运行时信息、可恢复会话以及可注入的测试边界。"""
 
@@ -175,7 +179,14 @@ class ChatTuiApp(App[None]):
         self._history_error: str | None = None
         self._system_prompt_error = system_prompt_error
         self._workspace_error = workspace_error
-        self._workspace_enabled = workspace_registry is not None
+        self._skill_runtime = skill_runtime
+        self._workspace_enabled = (
+            workspace_registry is not None or skill_runtime is not None
+        )
+        if skill_runtime is not None:
+            skill_status = skill_runtime.status()
+            skills_count = skill_status.skills_count
+            skills_error = skill_status.error
         self._skills_count = skills_count
         self._skills_error = skills_error
         if runtime_info is None:
@@ -193,6 +204,9 @@ class ChatTuiApp(App[None]):
                     store,
                     system_prompt=system_prompt,
                     registry=workspace_registry,
+                    execution_snapshot_provider=(
+                        skill_runtime.snapshot if skill_runtime is not None else None
+                    ),
                     tool_loop_limits=(
                         WORKSPACE_TOOL_LOOP_LIMITS
                         if workspace_registry is not None
@@ -206,6 +220,9 @@ class ChatTuiApp(App[None]):
                     store,
                     system_prompt=system_prompt,
                     registry=workspace_registry,
+                    execution_snapshot_provider=(
+                        skill_runtime.snapshot if skill_runtime is not None else None
+                    ),
                     tool_loop_limits=(
                         WORKSPACE_TOOL_LOOP_LIMITS
                         if workspace_registry is not None
@@ -409,6 +426,11 @@ class ChatTuiApp(App[None]):
             )
             return
 
+        if command == "/skills":
+            prompt_widget.load_text("")
+            self._write_available_skills()
+            return
+
         if self._history_error is not None:
             self._write_message("Error", self._history_error)
             self._write_message("System", "Use /clear to reset saved conversation")
@@ -447,6 +469,31 @@ class ChatTuiApp(App[None]):
             exit_on_error=False,
         )
         self._start_activity(started_at, generation)
+
+    def _write_available_skills(self) -> None:
+        """展示当前已发布 Skill 摘要，不触发模型请求或磁盘扫描。"""
+
+        if self._skill_runtime is None:
+            self._write_message("System", "技能列表不可用。")
+            return
+        status = self._skill_runtime.status()
+        if status.error is not None:
+            self._write_message("System", f"技能列表不可用：{status.error}")
+            return
+        skills = self._skill_runtime.available_skills()
+        if not skills:
+            self._write_message("System", "当前没有可用技能。")
+            return
+        lines = [f"可用技能（{len(skills)}）："]
+        for skill in skills:
+            lines.extend(
+                (
+                    f"- {skill.name}",
+                    f"  描述：{skill.description}",
+                    f"  入口：{skill.relative_entrypoint}",
+                )
+            )
+        self._write_message("System", "\n".join(lines))
 
     async def _run_prompt(
         self,
@@ -501,10 +548,21 @@ class ChatTuiApp(App[None]):
             self.run_status = RunStatus.ERROR
         finally:
             if generation == self._request_generation:
+                self._refresh_skill_status()
                 self._finish_stream_output(generation)
                 self._stop_activity(generation)
                 self._active_worker = None
                 self.query_one("#prompt", TextArea).focus()
+
+    def _refresh_skill_status(self) -> None:
+        """安装完成后只读取进程内状态，不扫描项目 Skill 目录。"""
+
+        if self._skill_runtime is None:
+            return
+        status = self._skill_runtime.status()
+        self._skills_count = status.skills_count
+        self._skills_error = status.error
+        self._update_status_bar()
 
     def _start_activity(self, started_at: float, generation: int) -> None:
         """为当前请求创建实时思考提示和专属周期 Timer。"""

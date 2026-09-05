@@ -11,6 +11,7 @@ from app.tui.widgets import SelectableRichLog
 from tools import (
     AnyToolApprovalRequest,
     ScriptApprovalRequest,
+    SkillInstallApprovalRequest,
     ToolApprovalRequest,
 )
 
@@ -54,17 +55,23 @@ class ToolApprovalScreen(ModalScreen[bool]):
                     f"Skill：{self.request.skill_name} · "
                     f"脚本：{self.request.script_path}"
                 )
+            elif isinstance(self.request, SkillInstallApprovalRequest):
+                network = "是" if self.request.network_access else "否"
+                summary = (
+                    f"来源：{self.request.source_display}\n"
+                    f"目标：{self.request.target_path} · 访问网络：{network}"
+                )
             else:
                 summary = "文件：" + "、".join(self.request.paths)
             yield Label(summary, id="approval-paths")
             yield SelectableRichLog(id="approval-diff", wrap=False, markup=False)
             with Horizontal(id="approval-actions"):
                 yield Button("拒绝 (N/Esc)", id="reject", variant="error")
-                action = (
-                    "执行 (Y)"
-                    if isinstance(self.request, ScriptApprovalRequest)
-                    else "应用 (Y)"
-                )
+                action = "应用 (Y)"
+                if isinstance(self.request, ScriptApprovalRequest):
+                    action = "执行 (Y)"
+                elif isinstance(self.request, SkillInstallApprovalRequest):
+                    action = "安装 (Y)"
                 yield Button(action, id="approve", variant="success")
 
     def on_mount(self) -> None:
@@ -74,6 +81,8 @@ class ToolApprovalScreen(ModalScreen[bool]):
             preview.append(self.request.warning_text, style="bold yellow")
             preview.append("\n\n命令：\n")
             preview.append(self.request.command_text)
+        elif isinstance(self.request, SkillInstallApprovalRequest):
+            preview = Text(self.request.warning_text, style="bold yellow")
         else:
             preview = Text(self.request.diff_text)
         self.query_one("#approval-diff", RichLog).write(preview)

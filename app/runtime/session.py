@@ -1,6 +1,8 @@
 """将有序模型调用与本地持久化组合为当前会话。"""
 
 import asyncio
+from collections.abc import Callable
+from dataclasses import dataclass
 
 from app.runtime.chat import (
     ChatErrorCode,
@@ -20,6 +22,18 @@ from app.services.llm.contracts import (
 from tools import ToolApprovalHandler, ToolRegistry, ToolResultHandler
 
 
+@dataclass(frozen=True)
+class ChatExecutionSnapshot:
+    """一次发送从开始到结束共用的系统提示词与工具快照。"""
+
+    system_prompt: str | None
+    registry: ToolRegistry | None
+    version: int = 0
+
+
+ExecutionSnapshotProvider = Callable[[], ChatExecutionSnapshot]
+
+
 class ChatSession:
     """只提交 Provider 调用和持久化都成功的完整轮次。"""
 
@@ -30,6 +44,7 @@ class ChatSession:
         messages: tuple[ChatMessage, ...] = (),
         system_prompt: str | None = None,
         registry: ToolRegistry | None = None,
+        execution_snapshot_provider: ExecutionSnapshotProvider | None = None,
         tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
     ) -> None:
         if system_prompt is not None and (
@@ -41,6 +56,7 @@ class ChatSession:
         self._messages = messages
         self._system_prompt = system_prompt
         self._registry = registry
+        self._execution_snapshot_provider = execution_snapshot_provider
         self._tool_loop_limits = tool_loop_limits
         self._send_lock = asyncio.Lock()
 
@@ -51,6 +67,7 @@ class ChatSession:
         provider: LlmProvider | None = None,
         system_prompt: str | None = None,
         registry: ToolRegistry | None = None,
+        execution_snapshot_provider: ExecutionSnapshotProvider | None = None,
         tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
     ) -> "ChatSession":
         try:
@@ -63,6 +80,7 @@ class ChatSession:
             messages=messages,
             system_prompt=system_prompt,
             registry=registry,
+            execution_snapshot_provider=execution_snapshot_provider,
             tool_loop_limits=tool_loop_limits,
         )
 
@@ -94,13 +112,21 @@ class ChatSession:
             )
 
         async with self._send_lock:
+            snapshot = (
+                self._execution_snapshot_provider()
+                if self._execution_snapshot_provider is not None
+                else ChatExecutionSnapshot(
+                    system_prompt=self._system_prompt,
+                    registry=self._registry,
+                )
+            )
             user_message = ChatMessage(ChatRole.USER, input_text)
             candidate_request = self._messages + (user_message,)
             result = await run_chat_messages(
                 candidate_request,
                 provider=self._provider,
-                registry=self._registry,
-                system_prompt=self._system_prompt,
+                registry=snapshot.registry,
+                system_prompt=snapshot.system_prompt,
                 on_text_delta=on_text_delta,
                 on_text_reset=on_text_reset,
                 on_tool_approval=on_tool_approval,

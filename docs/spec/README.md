@@ -4,6 +4,8 @@
 
 ## Active and Historical Specs
 
+- [TUI 技能命令](20260905-TUI技能命令-需求.md)：保留 `/clear` 完整清理能力，并增加只读当前运行时 Catalog 的 `/skills` 本地命令；已完成。
+- [Skill 安装与刷新](20260903-Skill安装与刷新-需求.md)：为 TUI 增加来自公开 GitHub URL 和 `~/.codex/skills` 的逐次审批安装，以及仅安装成功触发的下一请求热刷新；已完成。
 - [Skill 系统](20260902-Skill系统-需求.md)：以 Codex `.agents/skills/` 为基线，为本地 TUI 增加 Catalog 渐进式披露、资源读取和逐次审批脚本执行；已完成。
 - [Tsi 助手项目命名](20260901-Tsi助手项目命名-需求.md)：统一 README、TUI、Swagger/OpenAPI 和当前项目文档的正式展示名称；已完成。
 - [模型日志可读格式](20260812-模型日志可读格式-需求.md)：本地滚动文件使用中文多行分块格式，HTTP stderr 保持单行 JSON，TUI 继续只写文件；已完成。

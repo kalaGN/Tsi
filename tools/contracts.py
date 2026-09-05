@@ -10,6 +10,10 @@ SCRIPT_APPROVAL_WARNING_TEXT = (
     "脚本会在本机执行，能够读取工作区、修改文件并访问网络。"
     "当前版本不提供文件系统或网络沙箱，请确认命令及参数可信。"
 )
+SKILL_INSTALL_APPROVAL_WARNING_TEXT = (
+    "安装会读取外部 Skill 内容并写入当前项目。Skill 内容不受信任，"
+    "安装批准不会批准其中脚本的执行。"
+)
 
 
 class ToolEffect(str, Enum):
@@ -29,6 +33,11 @@ class ToolErrorCode(str, Enum):
     CHECK_UNAVAILABLE = "check_unavailable"
     SCRIPT_TIMEOUT = "script_timeout"
     SCRIPT_OUTPUT_TOO_LARGE = "script_output_too_large"
+    SKILL_ALREADY_EXISTS = "skill_already_exists"
+    SKILL_SOURCE_UNAVAILABLE = "skill_source_unavailable"
+    SKILL_DOWNLOAD_TIMEOUT = "skill_download_timeout"
+    SKILL_PACKAGE_INVALID = "skill_package_invalid"
+    SKILL_REFRESH_FAILED = "skill_refresh_failed"
 
 
 @dataclass(frozen=True)
@@ -87,7 +96,24 @@ class ScriptApprovalRequest:
     fingerprint: str
 
 
-AnyToolApprovalRequest = ToolApprovalRequest | ScriptApprovalRequest
+@dataclass(frozen=True)
+class SkillInstallApprovalRequest:
+    """Skill 安装前展示的来源、目标和网络访问风险。"""
+
+    call_id: str
+    tool_name: str
+    title: str
+    source_type: str
+    source_display: str
+    target_path: str
+    network_access: bool
+    warning_text: str
+    fingerprint: str
+
+
+AnyToolApprovalRequest = (
+    ToolApprovalRequest | ScriptApprovalRequest | SkillInstallApprovalRequest
+)
 ToolApprovalHandler = Callable[[AnyToolApprovalRequest], Awaitable[bool]]
 ToolResultHandler = Callable[[ToolCall, ToolResult], None]
 

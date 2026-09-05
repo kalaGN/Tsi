@@ -36,8 +36,9 @@ Tsi 助手用于学习和验证 FastAPI、Textual、外部模型流式接口与�
 - `app/routers/chat.py`：`POST /chat` 请求与统一响应。
 - `app/runtime/chat.py`：HTTP/TUI 共享用例、结果和错误语义。
 - `app/runtime/tool_loop.py`：有界模型步骤和串行工具执行编排。
+- `app/runtime/skill_runtime.py`：TUI Skill Catalog 版本、安装器和请求级执行快照。
 - `app/services/llm/`：配置工厂、共享网络边界、阿里云与 DeepSeek Provider。
-- `tools/`：Provider 中立契约、Registry、`get_current_time`、Workspace 策略、文件/Git 工具、固定项目检查和 Skill 快照/执行工具。
+- `tools/`：Provider 中立契约、Registry、`get_current_time`、Workspace 策略、文件/Git 工具、固定项目检查以及 Skill 快照、安装和执行工具。
 - `app/tui/`：Textual 应用、状态和模块启动入口。
 - `tests/test_llm_providers.py`：Provider 协议与错误测试。
 - `tests/test_chat.py`、`tests/test_chat_runtime.py`、`tests/test_tui.py`：对应交互边界测试。
@@ -62,14 +63,16 @@ git diff --check
 - 严格非空的单轮文本输入。
 - 部署级选择 `aliyun` 或 `deepseek`，以及 Provider 专属模型覆盖。
 - 两家上游均使用 SSE；HTTP 聚合后固定返回 `{"output_text": "..."}`，TUI 增量展示纯文本并在完成后用同一原文渲染 Assistant Markdown。
-- 中文输入、`Cmd+A` / `Ctrl+A` 全选输入、Esc 清空输入、最终耗时统计、请求中动画与实时耗时、请求取消、`/clear`、`/quit`、Enter 和双击 Esc。
+- 中文输入、`Cmd+A` / `Ctrl+A` 全选输入、Esc 清空输入、最终耗时统计、请求中动画与实时耗时、请求取消、`/clear`、`/skills`、`/quit`、Enter 和双击 Esc。
 - TUI 启动目录直属 `AGENTS.md` 的 32 KiB UTF-8 有界读取，以及不持久化的 Provider 标准 system 消息。
 - TUI 启动目录 `.agents/skills/*/SKILL.md` 的安全 YAML Catalog、渐进读取，以及每次审批的 `.py`/`.sh` 脚本执行。
+- TUI 经逐次审批从公开 GitHub 目录或当前用户 `~/.codex/skills` 直属目录原子安装 Skill；成功后下一次请求热刷新。
+- `/skills` 只读当前运行时已发布 Catalog 的名称、描述和相对入口，不调用模型、不进入会话历史，也不触发磁盘重扫。
 - 上下键输入历史、草稿恢复，以及从成功 Session user 消息恢复历史。
 - 用户消息以不解析 Markdown 的全宽背景卡片展示；Assistant 支持标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；系统和错误保持纯文本。
 - 最终消息和流式临时文本支持鼠标选择，并通过 `Cmd+C` / `Ctrl+C` 复制渲染后的可见文字；对话记录还可双击立即复制当前渲染行。
 - 环境变量密钥、固定上游 URL、显式超时和脱敏错误分类。
-- HTTP 自动执行只读当前时间工具；TUI 自动执行 Workspace/Skill 只读工具，审批每次写入、撤销和 Skill 脚本。
+- HTTP 自动执行只读当前时间工具；TUI 自动执行 Workspace/Skill 只读工具，审批每次写入、撤销、Skill 安装和 Skill 脚本。
 - TUI 支持结构化 create/replace、哈希冲突保护、原子批次、固定项目检查和进程内 LIFO 撤销。
 - request ID 关联的结构化模型、HTTP 和工具日志。
 - 完整上游请求日志包含实际 system 消息；HTTP `/chat` 不加载本地项目规则。
@@ -77,7 +80,7 @@ git diff --check
 明确不支持：
 
 - HTML、远程图片、Mermaid、Markdown 代码执行、HTTP SSE、请求级 Provider/模型选择、多会话管理、上下文压缩、任意 Shell、MCP、动态插件、多 Agent 和多模态。
-- 文件删除、移动、重命名、自动依赖安装、Git Commit/Tag/Push、Skill 热加载/安装和跨重启撤销。
+- 文件删除、移动、重命名、自动依赖安装、Git Commit/Tag/Push、Skill 覆盖/升级/卸载、手动目录监控和跨重启撤销。
 - 自动重试、降级、负载均衡、熔断、限流、用户认证授权和任务队列。
 - 容器、反向代理、进程管理、CI/CD、Trace、指标、告警、远程日志采集和正式健康检查。
 

@@ -11,7 +11,7 @@
 - 启动入口：`main.py`，仅导出 `app.application.app`。
 - 应用组装：`app/application.py`。
 - HTTP 路由与请求校验：`app/routers/`。
-- HTTP/TUI 共享模型调用与中立错误，TUI Session、系统提示词读取及存储也位于：`app/runtime/`。
+- HTTP/TUI 共享模型调用与中立错误，TUI Session、系统提示词读取、Skill Runtime 及存储也位于：`app/runtime/`。
 - 根目录工具契约、Registry、Workspace 策略、固定检查和 Codex 兼容 Skill 快照：`tools/`。
 - 多模型配置、协议适配和 Provider 错误：`app/services/llm/`。
 - 终端界面与启动入口：`app/tui/`。
@@ -67,7 +67,7 @@
 - 不擅自改变 `/chat` 请求、成功响应或错误映射等公开契约。
 - `/chat` 当前成功响应固定为 `{"output_text": "..."}`，Router 和 TUI 不得解析或暴露 Provider 原始响应。
 - 工具只能从根目录 `tools/` 显式注册；HTTP 仅自动执行无副作用工具。TUI 允许经完整 Diff 审批的结构化文件创建、精确替换和 LIFO 撤销；Skill 脚本仅能通过逐次审批的 `run_skill_script` 执行，不得提供任意命令、动态 import、删除/移动工具或数据库写操作。
-- TUI 只从启动目录 `.agents/skills/*/SKILL.md` 加载 Codex 兼容项目 Skill；Skill 文本和扩展字段不能注册工具、扩大权限或绕过审批，HTTP 不加载 Skill。
+- TUI 从启动目录 `.agents/skills/*/SKILL.md` 加载 Codex 兼容项目 Skill；`install_skill` 只可经逐次审批从公开 GitHub 目录或当前用户 `~/.codex/skills` 直属目录安装且下一次请求生效。Skill 文本和扩展字段不能注册工具、扩大权限或绕过审批，HTTP 不加载或安装 Skill。
 - 密钥仅从环境变量读取；禁止进入代码、文档、日志、测试或 Git。
 - 不无需求增加层级、服务、基础设施或第三方依赖。
 - 自动化测试禁止调用真实付费或生产外部服务。

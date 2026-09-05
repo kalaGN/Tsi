@@ -4,6 +4,8 @@
 
 ## Documents
 
+- [TUI 技能命令设计](20260905-TUI技能命令-设计.md)：通过 Skill Runtime 的只读内存摘要实现 `/skills`，并保留现有 `/clear` 语义；已完成。
+- [Skill 安装与刷新设计](20260904-Skill安装与刷新-设计.md)：设计 TUI 专属安装审批、公开 GitHub 与个人 Codex Skill 来源、原子提交和下一请求热刷新；已完成。
 - [Skill 系统设计](20260902-Skill系统-设计.md)：以 Codex `.agents/skills/` 为基线，设计安全 YAML Catalog、渐进式资源加载、逐次审批脚本执行和 TUI 装配；已完成。
 - [Tsi 助手项目命名设计](20260901-Tsi助手项目命名-设计.md)：在现有 FastAPI、Textual 和当前文档展示边界统一正式名称，不迁移运行标识；已完成。
 - [模型日志可读格式设计](20260812-模型日志可读格式-设计.md)：以同一结构化事件数据分别驱动 stderr JSON 和本地文件中文分块展示；已完成。

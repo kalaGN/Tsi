@@ -17,6 +17,7 @@ from app.services.llm.contracts import (
     TextResetHandler,
 )
 from tools.contracts import (
+    ToolApprovalRequest,
     ToolApprovalHandler,
     ToolExecutionContext,
     ToolPayloadLimitError,
@@ -72,13 +73,15 @@ async def run_tool_loop(
         started_at = clock()
         approved = await on_tool_approval(request)
         duration_ms = round((clock() - started_at) * 1000, 2)
+        paths_count = len(request.paths) if isinstance(request, ToolApprovalRequest) else 0
+        diff_chars = len(request.diff_text) if isinstance(request, ToolApprovalRequest) else 0
         log_model_tool_approval(
             request_id=request_id,
             call_id=request.call_id,
             tool_name=request.tool_name,
             approved=approved is True,
-            paths_count=len(request.paths),
-            diff_chars=len(request.diff_text),
+            paths_count=paths_count,
+            diff_chars=diff_chars,
             duration_ms=duration_ms,
         )
         return approved

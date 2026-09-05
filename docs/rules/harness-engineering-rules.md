@@ -63,7 +63,7 @@ python3 -m app.tui -> app.tui.application ------+
 - Router 负责 HTTP 请求校验、调用用例和响应转换，不实现上游协议细节。
 - Runtime 负责共享模型调用、TUI 单会话与中立错误，不依赖 FastAPI 或 Textual。
 - Runtime 通过有界循环编排 Provider Turn 与根目录工具 Registry，不导入具体 Provider 实现。
-- 根目录 `tools/` 只提供显式注册的工具和项目 Skill 快照，不依赖 Runtime、FastAPI、Textual 或具体 Provider；HTTP 仅注册默认只读工具，TUI 可注册受 Workspace Policy、本地审批和执行边界保护的 Workspace/Skill 工具。
+- 根目录 `tools/` 只提供显式注册的工具、项目 Skill 快照和受限安装用例，不依赖 Runtime、FastAPI、Textual 或具体 Provider；HTTP 仅注册默认只读工具，TUI 可注册受 Workspace Policy、本地审批和执行边界保护的 Workspace/Skill 工具。
 - `services.llm` 负责配置解析、共享网络错误、阿里云/DeepSeek 请求和文本提取，不依赖 Runtime、Router、TUI 或 Application。
 - TUI 负责输入、统一文本展示、状态和取消，不读取 Provider 专属密钥或解析上游 JSON，不依赖 Router 或 Application。
 - 业务逻辑增长前不创建空壳 Repository、Manager、Provider 或依赖注入层。
@@ -101,6 +101,7 @@ python3 -m app.tui -> app.tui.application ------+
 - 不复制现有工具能力，不进行无关格式化。
 - 仓库未配置 Formatter、Lint 或静态类型工具；新增前需确认依赖和门禁方案。
 - 模型和工具调用继续使用字段白名单定义结构化事件；HTTP stderr 使用单行 JSON，本地滚动文件使用同一事件数据生成中文可读分块。新增事件必须同时支持两种展示、可通过 request ID 关联且脱敏。
+- `install_skill` 复用工具调用、审批和结果事件：允许明文记录 GitHub URL、个人目录名和结果，禁止记录真实 Home 绝对路径、GitHub 响应正文、Token 或其他凭据。
 
 ## 7. 测试
 
@@ -141,8 +142,10 @@ git diff --check
 
 Skill 规则：
 
-- 只从 TUI 启动目录 `.agents/skills/*/SKILL.md` 发现项目 Skill，不扫描父目录、用户目录、远程地址或 `.claude/skills/`。
+- 项目 Skill 只从 TUI 启动目录 `.agents/skills/*/SKILL.md` 发现；只有 `install_skill` 获得逐次审批后，才可读取当前用户 `~/.codex/skills` 直属目录或匿名访问公开 `github.com` Skill 目录。
 - Skill 使用安全 YAML 和有界不可变快照；任一 Skill 非法时整批禁用，不静默截断、跳过或泄露正文与绝对路径。
+- 安装必须先在项目临时目录完整校验再原子提交，同名目标拒绝；不支持私有凭据、任意本地路径、覆盖、升级、卸载、依赖安装或文件监控。
+- 安装成功只发布下一请求使用的 Catalog、system prompt 和 Registry；一个模型请求内禁止混用新旧 Skill 快照。
 - `allowed-tools` 等扩展字段只属于可移植文档元数据，不能注册工具、扩大白名单或跳过审批。
 - `run_skill_script` 只接受快照内 `scripts/` 下的 `.py`/`.sh` 和字符串参数数组；禁止 Shell 拼接、继承密钥环境或免审批执行。
 - Skill 脚本当前没有文件系统与网络沙箱。审批必须明确其可读写工作区和访问网络，拒绝、超时、取消或输出超限后不得留下宿主子进程。

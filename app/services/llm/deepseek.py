@@ -11,6 +11,7 @@ from app.services.llm.contracts import (
     ProviderInvalidResponseError,
     ProviderInvalidRequestError,
     TextDeltaHandler,
+    TokenUsage,
     validate_provider_messages,
 )
 from app.services.llm.http_client import (
@@ -94,6 +95,7 @@ class DeepSeekTurn:
             "model": self._model,
             "messages": self._messages,
             "stream": True,
+            "stream_options": {"include_usage": True},
         }
         if self._tools:
             payload["tools"] = [_deepseek_tool(tool) for tool in self._tools]
@@ -109,18 +111,18 @@ class DeepSeekTurn:
             model=self._model,
             on_data=stream_state.accept,
         )
-        message, calls = stream_state.finish()
+        message, calls, token_usage = stream_state.finish()
         if calls:
             self._messages.append(_assistant_tool_message(message, calls))
             self._pending_calls = calls
             intermediate_text = message.get("content")
             if not isinstance(intermediate_text, str) or not intermediate_text:
                 intermediate_text = None
-            return ModelStep(status_code, intermediate_text, calls)
+            return ModelStep(status_code, intermediate_text, calls, token_usage)
 
         output_text = _extract_message_text(message)
         self._completed = True
-        return ModelStep(status_code, output_text, ())
+        return ModelStep(status_code, output_text, (), token_usage)
 
     def _append_tool_results(self, results: tuple[ToolResult, ...]) -> None:
         if not self._pending_calls:
@@ -161,6 +163,7 @@ class _DeepSeekStreamState:
         self._reasoning: list[str] = []
         self._reasoning_bytes = 0
         self._tool_calls: dict[int, dict[str, Any]] = {}
+        self._token_usage: TokenUsage | None = None
         self._finish_reason: str | None = None
         self._done = False
 
@@ -178,11 +181,16 @@ class _DeepSeekStreamState:
             raise _invalid_structure() from exc
         if not isinstance(body, dict):
             raise _invalid_structure()
+        has_token_usage = body.get("usage") is not None
+        if has_token_usage:
+            self._accept_token_usage(body["usage"])
         choices = body.get("choices")
         if not isinstance(choices, list):
             raise _invalid_structure()
-        # include_usage 的最后一个 Chunk 没有 choices，不包含可展示内容。
         if not choices:
+            # include_usage 的最后一个 Chunk 没有 choices，但必须携带有效计量。
+            if not has_token_usage:
+                raise _invalid_structure()
             return
         if len(choices) != 1 or not isinstance(choices[0], dict):
             raise _invalid_structure()
@@ -211,7 +219,9 @@ class _DeepSeekStreamState:
                 raise _invalid_structure()
             self._finish_reason = finish_reason
 
-    def finish(self) -> tuple[dict[str, Any], tuple[ToolCall, ...]]:
+    def finish(
+        self,
+    ) -> tuple[dict[str, Any], tuple[ToolCall, ...], TokenUsage | None]:
         """要求正常结束，并把增量转换为 Provider 原有完整消息结构。"""
 
         if not self._done or self._finish_reason is None:
@@ -230,7 +240,21 @@ class _DeepSeekStreamState:
         reasoning = "".join(self._reasoning)
         if reasoning:
             message["reasoning_content"] = reasoning
-        return message, calls
+        return message, calls, self._token_usage
+
+    def _accept_token_usage(self, raw_usage: Any) -> None:
+        """只接受一次完整 usage，并映射 DeepSeek 的字段命名。"""
+
+        if self._token_usage is not None or not isinstance(raw_usage, dict):
+            raise _invalid_structure()
+        try:
+            self._token_usage = TokenUsage(
+                raw_usage["prompt_tokens"],
+                raw_usage["completion_tokens"],
+                raw_usage["total_tokens"],
+            )
+        except (KeyError, ValueError) as exc:
+            raise _invalid_structure() from exc
 
     def _append_optional_text(
         self,

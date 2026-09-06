@@ -26,6 +26,7 @@ from app.services.llm.contracts import (
     ProviderInvalidResponseError,
     ProviderResponseError,
     ProviderTimeoutError,
+    TokenUsage,
 )
 from app.services.llm.deepseek import DeepSeekChatProvider
 
@@ -110,6 +111,21 @@ def test_run_chat_returns_normalized_provider_result():
     assert result.model == "fake-model"
     assert not hasattr(result, "raw_body")
     assert not hasattr(result, "upstream_status")
+
+
+def test_run_chat_returns_aggregated_token_usage():
+    provider = FakeProvider(
+        result=ModelStep(
+            200,
+            "hello",
+            (),
+            TokenUsage(input_tokens=7, output_tokens=2, total_tokens=9),
+        )
+    )
+
+    result = asyncio.run(run_chat("hello", provider=provider))
+
+    assert result.token_usage == TokenUsage(7, 2, 9)
 
 
 def test_run_chat_forwards_text_deltas_and_returns_complete_result():

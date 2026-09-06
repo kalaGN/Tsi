@@ -10,7 +10,7 @@ from app.runtime.tool_loop import (
     ToolLoopLimitError,
     run_tool_loop,
 )
-from app.services.llm.contracts import ModelStep
+from app.services.llm.contracts import ModelStep, TokenUsage
 from tools.contracts import (
     SKILL_INSTALL_APPROVAL_WARNING_TEXT,
     SkillInstallApprovalRequest,
@@ -133,6 +133,59 @@ def test_tool_loop_executes_tool_and_returns_result_to_next_model_step():
         "ok": True,
         "data": {"received": {"value": "中文"}},
     }
+
+
+def test_tool_loop_logs_and_aggregates_usage_from_every_model_step(monkeypatch):
+    tool = RecordingTool()
+    call = ToolCall("call-1", "lookup", "{}")
+    turn = FakeTurn(
+        [
+            ModelStep(200, None, (call,), TokenUsage(10, 2, 12)),
+            ModelStep(200, "done", (), TokenUsage(20, 3, 23)),
+        ]
+    )
+    logged = []
+    monkeypatch.setattr(
+        tool_loop,
+        "log_model_token_usage",
+        lambda **fields: logged.append(fields),
+    )
+
+    result = asyncio.run(
+        run_tool_loop(turn, ToolRegistry([tool]), request_id="8" * 32)
+    )
+
+    assert result.output_text == "done"
+    assert result.token_usage == TokenUsage(30, 5, 35)
+    assert [event["step_number"] for event in logged] == [1, 2]
+    assert [event["total_tokens"] for event in logged] == [12, 23]
+
+
+def test_tool_loop_marks_aggregate_unavailable_when_any_step_lacks_usage(
+    monkeypatch,
+):
+    tool = RecordingTool()
+    call = ToolCall("call-1", "lookup", "{}")
+    turn = FakeTurn(
+        [
+            ModelStep(200, None, (call,), TokenUsage(10, 2, 12)),
+            ModelStep(200, "done", ()),
+        ]
+    )
+    logged = []
+    monkeypatch.setattr(
+        tool_loop,
+        "log_model_token_usage",
+        lambda **fields: logged.append(fields),
+    )
+
+    result = asyncio.run(
+        run_tool_loop(turn, ToolRegistry([tool]), request_id="9" * 32)
+    )
+
+    assert result.token_usage is None
+    assert len(logged) == 1
+    assert logged[0]["step_number"] == 1
 
 
 def test_tool_loop_resets_streamed_intermediate_text_before_tools():
@@ -298,9 +351,30 @@ def test_tool_loop_limit_profiles_keep_http_default_and_expand_workspace():
     assert DEFAULT_TOOL_LOOP_LIMITS.max_model_steps == 5
     assert DEFAULT_TOOL_LOOP_LIMITS.max_tool_calls_per_step == 4
     assert DEFAULT_TOOL_LOOP_LIMITS.max_total_tool_calls == 16
-    assert WORKSPACE_TOOL_LOOP_LIMITS.max_model_steps == 20
+    assert WORKSPACE_TOOL_LOOP_LIMITS.max_model_steps == 41
     assert WORKSPACE_TOOL_LOOP_LIMITS.max_tool_calls_per_step == 4
     assert WORKSPACE_TOOL_LOOP_LIMITS.max_total_tool_calls == 40
+
+
+def test_workspace_loop_allows_forty_sequential_calls_then_final_text():
+    tool = RecordingTool()
+    steps = [
+        tool_step(ToolCall(f"call-{index}", "lookup", "{}"))
+        for index in range(40)
+    ]
+    turn = FakeTurn([*steps, final_step("completed")])
+
+    result = asyncio.run(
+        run_tool_loop(
+            turn,
+            ToolRegistry([tool]),
+            request_id="4" * 32,
+            limits=WORKSPACE_TOOL_LOOP_LIMITS,
+        )
+    )
+
+    assert result.output_text == "completed"
+    assert len(tool.events) == 40
 
 
 def test_tool_loop_stops_before_exceeding_total_call_budget():

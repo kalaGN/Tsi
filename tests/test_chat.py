@@ -97,9 +97,16 @@ def adapt_json_response_to_sse(request, response):
             }
         else:
             chunk = body
+        chunks = [chunk]
+        usage = body.get("usage") if isinstance(body, dict) else None
+        if usage is not None:
+            chunks.append({"choices": [], "usage": usage})
         content = (
-            f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-            "data: [DONE]\n\n"
+            "".join(
+                f"data: {json.dumps(item, ensure_ascii=False)}\n\n"
+                for item in chunks
+            )
+            + "data: [DONE]\n\n"
         ).encode()
     elif str(request.url) == ALIYUN_RESPONSES_URL:
         completed = dict(body) if isinstance(body, dict) else body
@@ -153,10 +160,14 @@ def test_root_behavior_is_preserved():
 
 def test_fastapi_and_openapi_use_official_project_name():
     response = client.get("/openapi.json")
+    body = response.json()
 
     assert application_app.title == "Tsi 助手"
     assert response.status_code == 200
-    assert response.json()["info"]["title"] == "Tsi 助手"
+    assert body["info"]["title"] == "Tsi 助手"
+    assert body["components"]["schemas"]["ChatResponse"]["properties"] == {
+        "output_text": {"type": "string", "title": "Output Text"}
+    }
 
 
 def test_get_item_endpoint_is_removed():
@@ -186,7 +197,11 @@ def test_chat_supports_explicit_aliyun_and_returns_only_normalized_text(monkeypa
             json={
                 "id": "response-1",
                 "output": [{"text": "aliyun answer"}],
-                "usage": {"total_tokens": 3},
+                "usage": {
+                    "input_tokens": 2,
+                    "output_tokens": 1,
+                    "total_tokens": 3,
+                },
             },
         )
 
@@ -209,6 +224,7 @@ def test_chat_defaults_to_deepseek_and_returns_only_normalized_text(monkeypatch)
         assert payload["tools"][0]["function"]["name"] == "get_current_time"
         assert payload["tool_choice"] == "auto"
         assert payload["stream"] is True
+        assert payload["stream_options"] == {"include_usage": True}
         return httpx.Response(
             200,
             json={
@@ -221,7 +237,11 @@ def test_chat_defaults_to_deepseek_and_returns_only_normalized_text(monkeypatch)
                         }
                     }
                 ],
-                "usage": {"total_tokens": 5},
+                "usage": {
+                    "prompt_tokens": 3,
+                    "completion_tokens": 2,
+                    "total_tokens": 5,
+                },
             },
         )
 

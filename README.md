@@ -118,7 +118,7 @@ expected_name 使用 demo-skill。
 
 Skill 包以 Codex 的 `.agents/skills/` 发现约定为准，`SKILL.md` 与 `scripts/`、`references/`、`assets/` 结构遵循开放 Agent Skills 格式。同一个包可复制到 Claude Code 对应目录使用，但 Tsi 不扫描 `.claude/skills/`，也不采信 `allowed-tools` 等字段扩大权限。项目不内置示例 Skill，测试使用临时夹具验证完整流程。
 
-TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统提示词不会显示在对话区或写入 Session。模型生成期间，输入框上方会持续显示临时纯文本；完整响应到达后，该区域会被一份最终 Markdown 消息替换并美化为标题、列表、表格和代码块等结构。流式展示不会执行代码，也不会把半截回答写入会话历史。请求期间还会显示动画、`思考中`、实时耗时和 Esc 取消提示；成功或失败后仍会在对话记录中显示最终耗时，取消请求不记录最终耗时。HTTP `/chat` 仍是无状态单轮聚合 JSON 接口，不读取 `AGENTS.md`，也不与 TUI 共享历史。
+TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统提示词不会显示在对话区或写入 Session。模型生成期间，输入框上方会持续显示临时纯文本；完整响应到达后，该区域会被一份最终 Markdown 消息替换并美化为标题、列表、表格和代码块等结构。流式展示不会执行代码，也不会把半截回答写入会话历史。请求期间还会显示动画、`思考中`、实时耗时和 Esc 取消提示；成功或失败后仍会在对话记录中显示最终耗时，取消请求不记录最终耗时。成功响应会在耗时后显示上游实际报告的本轮 Token 输入、输出和合计；任一模型步骤未返回 usage 时显示 `Token：不可用`，不会用字符数估算或把部分统计伪装成完整合计。HTTP `/chat` 仍是无状态单轮聚合 JSON 接口，不读取 `AGENTS.md`，也不与 TUI 共享历史或返回 Token 字段。
 
 - `Enter`：候选打开时先补全，否则发送输入。
 - `Tab`：补全当前命令或 Skill 候选。
@@ -186,8 +186,12 @@ data/chat-session.json
 HTTP 每次模型调用会把同一 request ID 关联的事件写入 stderr 和本地文件；stderr 保持单行 JSON，本地文件使用适合直接阅读的中文分块格式。TUI 为避免日志覆盖全屏界面，只写本地文件：
 
 ```text
-logs/model-calls.log
+logs/
+├── runtime/model-calls.log  # HTTP 与 TUI 真实使用日志
+└── tests/model-calls.log    # Pytest 测试日志
 ```
+
+旧的 `logs/model-calls.log*` 不会自动迁移或删除，仅作历史记录保留。
 
 本地文件示例：
 
@@ -213,15 +217,18 @@ logs/model-calls.log
 
 文件时间统一使用北京时间并包含毫秒和 `+08:00`；请求体、Header、超时配置、工具参数和工具结果会在可解析时缩进为 JSON，模型输入输出保持原始换行。
 
-不需要工具时，成功调用按固定顺序产生四条可关联事件：
+不需要工具且上游返回 usage 时，成功调用按固定顺序产生五条可关联事件：
 
 ```text
-llm_request -> llm_http_request -> llm_http_response -> llm_response
+llm_request -> llm_http_request -> llm_http_response -> llm_token_usage -> llm_response
 ```
+
+如果上游没有返回 usage，则省略 `llm_token_usage`，其余成功事件不变。
 
 - `llm_request`：Runtime 视角的当前输入正文（仅最后一条 user 消息）。
 - `llm_http_request`：真实外部 HTTP 边界，记录实际 Provider URL、`POST`、脱敏 Header（`Authorization` 固定写为 `Bearer [REDACTED]`）、完整 JSON 请求体和 `connect_seconds=10 / total_seconds=60` 超时。完整请求体包含 DeepSeek 的 `messages` 或阿里云的 `input`，多轮历史以明文按上游顺序完整保留。
 - `llm_http_response`：外部 HTTP 收到响应后立即记录，包含状态码（含非 2xx）、Content-Type 和单调时钟耗时 `duration_ms`，不记录原始响应体。
+- `llm_token_usage`：每个成功解析的模型步骤各记录一次，包含同一 request ID、从 1 开始的步骤编号，以及输入、输出和总 Token；工具循环会产生多条，日志不保存 Provider 私有 usage 对象。
 - `llm_response`：成功统一输出文本。
 
 需要工具时，同一个 request ID 下会出现多组 `llm_http_request/llm_http_response`，并在工具执行处插入：
@@ -231,13 +238,15 @@ llm_request -> llm_http_request -> llm_http_response -> llm_response
 
 工具参数和结果会直接记录在专用工具事件中；实际回传模型的完整工具结果还会出现在下一次 `llm_http_request.request_body` 中。审批事件只记录决定、文件数和 Diff 字符数，不额外记录审批正文。调用 `install_skill` 时，GitHub URL、个人 Skill 目录名、目标名称和安全安装结果也会作为工具参数及结果明文记录，但真实 Home 绝对路径、GitHub 响应正文和凭据不会记录。
 
+本轮 Token 合计是同一请求内所有模型步骤 usage 的逐项相加。它表示已经发生的上游消耗，不等于下一次请求的上下文窗口占比；当前不持久化会话累计、不换算费用，也不单独展示缓存或推理 Token。
+
 连接超时或网络失败时，`llm_http_request` 后写一条 `llm_http_error`，仅包含 `timeout` 或 `connection` 安全分类和耗时，不记录异常类名、异常原文或 Traceback。非 2xx 已收到响应，只写 `llm_http_response`，不再写 `llm_http_error`。
 
 日志不记录环境 API Key、真实 `Authorization`、Provider 原始响应体、Cookie 或异常原文。
 
 > 隐私警告：输入、输出、工具参数、工具结果、TUI 加载的 `AGENTS.md`、Skill Catalog/正文/文本资源、脚本参数及 stdout/stderr 和完整请求体都会以明文写入本地文件；HTTP 入口还会同步写入 stderr，且多轮历史会在每次调用时重复落盘。不要在这些位置放置密码、Token、个人隐私或其他不应发送和持久化的数据。具有本地文件读取权限的用户或进程可以读取日志内容。
 
-单文件转储阈值为 10 MiB，保留 5 个备份；`logs/` 已被 Git 忽略。由于正文不截断，单条超大记录可令当前文件暂时超过该阈值。日志失败不影响模型请求本身。
+运行与测试日志独立轮转：单文件阈值为 10 MiB，各保留 5 个备份；`logs/` 已被 Git 忽略。由于正文不截断，单条超大记录可令当前文件暂时超过该阈值。日志失败不影响模型请求本身。
 
 ## 运行测试
 
@@ -246,6 +255,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 ```
 
 所有外部模型测试均使用 HTTPX MockTransport，不会调用真实接口或消耗额度。
+Pytest 在收集测试模块前把文件 Handler 固定到 `logs/tests/model-calls.log`，不会追加 `logs/runtime/model-calls.log`。
 
 ## 提交前检查
 

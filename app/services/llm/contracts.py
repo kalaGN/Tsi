@@ -28,12 +28,39 @@ class ChatMessage:
 
 
 @dataclass(frozen=True)
+class TokenUsage:
+    """Provider 中立的单次模型调用 Token 计量。"""
+
+    input_tokens: int
+    output_tokens: int
+    total_tokens: int
+
+    def __post_init__(self) -> None:
+        values = (self.input_tokens, self.output_tokens, self.total_tokens)
+        # bool 是 int 子类，必须精确检查类型，避免把协议布尔值当作计量值。
+        if any(type(value) is not int or value < 0 for value in values):
+            raise ValueError("token usage values must be non-negative integers")
+        if self.total_tokens != self.input_tokens + self.output_tokens:
+            raise ValueError("total tokens must equal input plus output tokens")
+
+    def __add__(self, other: "TokenUsage") -> "TokenUsage":
+        if not isinstance(other, TokenUsage):
+            return NotImplemented
+        return TokenUsage(
+            self.input_tokens + other.input_tokens,
+            self.output_tokens + other.output_tokens,
+            self.total_tokens + other.total_tokens,
+        )
+
+
+@dataclass(frozen=True)
 class ModelStep:
     """一次模型步骤的中立文本或工具调用结果。"""
 
     upstream_status: int
     output_text: str | None
     tool_calls: tuple[ToolCall, ...]
+    token_usage: TokenUsage | None = None
 
 
 @dataclass(frozen=True)

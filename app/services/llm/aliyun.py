@@ -11,6 +11,7 @@ from app.services.llm.contracts import (
     ProviderInvalidResponseError,
     ProviderInvalidRequestError,
     TextDeltaHandler,
+    TokenUsage,
     validate_provider_messages,
 )
 from app.services.llm.http_client import (
@@ -112,13 +113,13 @@ class AliyunTurn:
             model=self._model,
             on_data=stream_state.accept,
         )
-        calls, output_text = stream_state.finish()
+        calls, output_text, token_usage = stream_state.finish()
         if calls:
             self._pending_calls = calls
-            return ModelStep(status_code, output_text, calls)
+            return ModelStep(status_code, output_text, calls, token_usage)
 
         self._completed = True
-        return ModelStep(status_code, output_text, ())
+        return ModelStep(status_code, output_text, (), token_usage)
 
     def _append_call_result_pairs(
         self,
@@ -208,12 +209,13 @@ class _AliyunStreamState:
 
     def finish(
         self,
-    ) -> tuple[tuple[ToolCall, ...], str | None]:
+    ) -> tuple[tuple[ToolCall, ...], str | None, TokenUsage | None]:
         """以 completed 完整对象校验增量，并返回原有模型步骤信息。"""
 
         body = self._completed_response
         if not isinstance(body, dict) or body.get("status") != "completed":
             raise _invalid_structure()
+        token_usage = _extract_token_usage(body)
         calls = _extract_function_calls(body)
         self._validate_completed_call_items(body, calls)
 
@@ -224,14 +226,14 @@ class _AliyunStreamState:
                 raise _invalid_structure()
             if self._done_text is not None and streamed_text != self._done_text:
                 raise _invalid_structure()
-            return calls, streamed_text or output_text
+            return calls, streamed_text or output_text, token_usage
 
         complete_text = _extract_output_text(body)
         if streamed_text and streamed_text != complete_text:
             raise _invalid_structure()
         if self._done_text is not None and self._done_text != complete_text:
             raise _invalid_structure()
-        return (), streamed_text or complete_text
+        return (), streamed_text or complete_text, token_usage
 
     def _append_text_delta(self, delta: Any) -> None:
         """追加文本并限制 UTF-8 累计大小。"""
@@ -404,6 +406,24 @@ def _extract_function_calls(body: Any) -> tuple[ToolCall, ...]:
 def _optional_output_text(body: Any) -> str | None:
     output_text = body.get("output_text") if isinstance(body, dict) else None
     return output_text if isinstance(output_text, str) and output_text else None
+
+
+def _extract_token_usage(body: dict[str, Any]) -> TokenUsage | None:
+    """映射 Responses usage；缺失和 null 表示上游未提供计量。"""
+
+    raw_usage = body.get("usage")
+    if raw_usage is None:
+        return None
+    if not isinstance(raw_usage, dict):
+        raise _invalid_structure()
+    try:
+        return TokenUsage(
+            raw_usage["input_tokens"],
+            raw_usage["output_tokens"],
+            raw_usage["total_tokens"],
+        )
+    except (KeyError, ValueError) as exc:
+        raise _invalid_structure() from exc
 
 
 def _aliyun_tool(definition: ToolDefinition) -> dict[str, Any]:

@@ -3,6 +3,7 @@ import json
 import logging
 import re
 from logging.handlers import RotatingFileHandler
+from pathlib import Path
 
 import pytest
 
@@ -29,6 +30,32 @@ def reset_model_logger():
         logger.addHandler(handler)
     logger.setLevel(original_level)
     logger.propagate = original_propagate
+
+
+def test_default_log_paths_separate_runtime_and_tests():
+    project_root = Path(model_logging.__file__).resolve().parents[2]
+
+    assert model_logging.RUNTIME_LOG_PATH == (
+        project_root / "logs" / "runtime" / "model-calls.log"
+    )
+    assert model_logging.TEST_LOG_PATH == (
+        project_root / "logs" / "tests" / "model-calls.log"
+    )
+    assert model_logging.DEFAULT_LOG_PATH == model_logging.RUNTIME_LOG_PATH
+
+
+def test_default_configuration_uses_runtime_path(tmp_path, monkeypatch):
+    runtime_path = tmp_path / "logs" / "runtime" / "model-calls.log"
+    monkeypatch.setattr(model_logging, "DEFAULT_LOG_PATH", runtime_path)
+
+    model_logging.configure_model_logging(enable_stream=False)
+
+    file_handler = next(
+        handler
+        for handler in logging.getLogger(model_logging.LOGGER_NAME).handlers
+        if isinstance(handler, RotatingFileHandler)
+    )
+    assert Path(file_handler.baseFilename) == runtime_path
 
 
 def test_stream_stays_json_while_file_uses_readable_model_blocks(tmp_path):
@@ -529,6 +556,45 @@ def test_tool_approval_event_uses_metadata_only_whitelist(tmp_path):
     assert "路径数量：2" in file_text
     assert "Diff 长度：123 字符" in file_text
     assert "diff_text" not in file_text
+
+
+def test_token_usage_event_uses_step_metadata_only(tmp_path):
+    stream = io.StringIO()
+    log_path = tmp_path / "model-calls.log"
+    model_logging.configure_model_logging(stream=stream, log_path=log_path)
+
+    model_logging.log_model_token_usage(
+        request_id="7" * 32,
+        step_number=2,
+        input_tokens=180,
+        output_tokens=15,
+        total_tokens=195,
+    )
+
+    event = json.loads(stream.getvalue())
+    assert set(event) == {
+        "timestamp",
+        "level",
+        "event",
+        "request_id",
+        "step_number",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+    }
+    assert event["event"] == "llm_token_usage"
+    assert event["step_number"] == 2
+    assert event["input_tokens"] == 180
+    assert event["output_tokens"] == 15
+    assert event["total_tokens"] == 195
+    assert "content" not in event
+
+    file_text = log_path.read_text(encoding="utf-8")
+    assert "事件：Token 消耗" in file_text
+    assert "模型步骤：2" in file_text
+    assert "输入 Token：180" in file_text
+    assert "输出 Token：15" in file_text
+    assert "总 Token：195" in file_text
 
 
 def test_readable_tool_content_falls_back_to_original_non_json_text(tmp_path):

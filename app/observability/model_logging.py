@@ -16,7 +16,10 @@ from zoneinfo import ZoneInfo
 LOGGER_NAME = "app.model_calls"
 MAX_LOG_BYTES = 10 * 1024 * 1024
 BACKUP_COUNT = 5
-DEFAULT_LOG_PATH = Path(__file__).resolve().parents[2] / "logs" / "model-calls.log"
+LOG_ROOT = Path(__file__).resolve().parents[2] / "logs"
+RUNTIME_LOG_PATH = LOG_ROOT / "runtime" / "model-calls.log"
+TEST_LOG_PATH = LOG_ROOT / "tests" / "model-calls.log"
+DEFAULT_LOG_PATH = RUNTIME_LOG_PATH
 
 _HANDLER_MARKER = "_model_log_handler_kind"
 _CONFIGURATION_LOCK = Lock()
@@ -93,6 +96,13 @@ _EVENT_FIELDS = {
         "diff_chars",
         "duration_ms",
     ),
+    "llm_token_usage": (
+        "request_id",
+        "step_number",
+        "input_tokens",
+        "output_tokens",
+        "total_tokens",
+    ),
 }
 
 
@@ -129,6 +139,7 @@ class _ModelEventReadableFormatter(logging.Formatter):
         "llm_tool_call": "工具调用",
         "llm_tool_result": "工具结果",
         "llm_tool_approval": "工具审批",
+        "llm_token_usage": "Token 消耗",
     }
     _ERROR_NAMES = {"timeout": "超时", "connection": "连接失败"}
     _STATUS_NAMES = {"success": "成功", "error": "错误"}
@@ -205,6 +216,15 @@ class _ModelEventReadableFormatter(logging.Formatter):
                     f"路径数量：{record.paths_count}",
                     f"Diff 长度：{record.diff_chars} 字符",
                     f"耗时：{record.duration_ms} ms",
+                )
+            )
+        elif event_name == "llm_token_usage":
+            lines.extend(
+                (
+                    f"模型步骤：{record.step_number}",
+                    f"输入 Token：{record.input_tokens}",
+                    f"输出 Token：{record.output_tokens}",
+                    f"总 Token：{record.total_tokens}",
                 )
             )
         return lines
@@ -509,6 +529,29 @@ def log_model_tool_approval(
             "paths_count": paths_count,
             "diff_chars": diff_chars,
             "duration_ms": duration_ms,
+        },
+    )
+
+
+def log_model_token_usage(
+    *,
+    request_id: str,
+    step_number: int,
+    input_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+) -> None:
+    """记录一个已完成模型步骤的有限 Token 计量字段。"""
+
+    logging.getLogger(LOGGER_NAME).info(
+        "llm_token_usage",
+        extra={
+            "event": "llm_token_usage",
+            "request_id": request_id,
+            "step_number": step_number,
+            "input_tokens": input_tokens,
+            "output_tokens": output_tokens,
+            "total_tokens": total_tokens,
         },
     )
 

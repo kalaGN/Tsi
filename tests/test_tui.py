@@ -15,7 +15,7 @@ from app.runtime.chat import (
 from app.runtime.session import ChatSession
 from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.session_store import SessionStore, SessionStoreError
-from app.services.llm.contracts import ChatMessage, ChatRole
+from app.services.llm.contracts import ChatMessage, ChatRole, TokenUsage
 from app.tui import __main__ as tui_main
 from app.tui import application as tui_application
 from app.tui.application import ChatTuiApp
@@ -937,6 +937,7 @@ def test_activity_bar_updates_elapsed_time_and_clears_after_success():
             assert str(activity.content) == ""
             assert app._activity_timer is None
             assert "System\n耗时：1.20 秒" in transcript_text(app)
+            assert "System\nToken：不可用" in transcript_text(app)
 
     asyncio.run(scenario())
 
@@ -1461,7 +1462,12 @@ def test_enter_submits_input():
             on_text_reset=None,
         ) -> ChatResult:
             received_inputs.append(input_text)
-            return ChatResult("answer", "fake", "fake-model")
+            return ChatResult(
+                "answer",
+                "fake",
+                "fake-model",
+                TokenUsage(input_tokens=12, output_tokens=5, total_tokens=17),
+            )
 
         app = ChatTuiApp(
             chat_runner=fake_runner,
@@ -1484,6 +1490,7 @@ def test_enter_submits_input():
             assert "hello" in transcript
             assert "Assistant\nanswer" in transcript
             assert "System\n耗时：1.23 秒" in transcript
+            assert "System\nToken：输入 12 | 输出 5 | 合计 17" in transcript
 
     asyncio.run(scenario())
 
@@ -2334,6 +2341,7 @@ def test_double_escape_cancels_active_request_then_exits():
             assert app._activity_timer is None
             assert "System\n再次按 Esc 退出" in transcript_text(app)
             assert "耗时：" not in transcript_text(app)
+            assert "Token：" not in transcript_text(app)
 
             prompt.load_text("")
             await pilot.press("up")
@@ -2352,6 +2360,7 @@ def test_double_escape_cancels_active_request_then_exits():
         assert exit_called
         transcript = "\n".join(line.text for line in transcript_widget.lines)
         assert "耗时：" not in transcript
+        assert "Token：" not in transcript
 
     asyncio.run(scenario())
 

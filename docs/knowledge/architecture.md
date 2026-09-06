@@ -10,12 +10,12 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `app/application.py`：创建 FastAPI、注册根路由和 Chat Router。
 - `app/observability/model_logging.py`：配置模型/HTTP/工具 JSON 日志、可选终端输出、本地转储和事件白名单。
 - `app/routers/chat.py`：校验 `POST /chat`，返回统一 `ChatResponse` 并映射 HTTP 错误。
-- `app/runtime/chat.py`：无状态入口、有序消息调用、默认工具 Registry、统一结果和安全错误语义。
-- `app/runtime/tool_loop.py`：默认/Workspace 循环预算、请求级审批上下文、串行工具编排和结果观察回调。
+- `app/runtime/chat.py`：无状态入口、有序消息调用、默认工具 Registry、统一文本与本轮 Token 结果和安全错误语义。
+- `app/runtime/tool_loop.py`：默认/Workspace 循环预算、请求级审批上下文、串行工具编排、逐步骤 Token 聚合和结果观察回调。
 - `app/runtime/session.py`：串行化 TUI 发送，只提交 Provider 和持久化均成功的完整轮次。
 - `app/runtime/skill_runtime.py`：持有当前 Skill Catalog、共享 Workspace Journal 和安装器，在每次发送开始时生成不可变执行快照。
 - `app/runtime/session_store.py`：版本化 JSON 会话校验、原子保存、恢复与清理。
-- `app/services/llm/contracts.py`：中立角色/消息、ModelStep、Provider Turn、文本 Delta/reset 回调协议和共享异常。
+- `app/services/llm/contracts.py`：中立角色/消息、不可变 TokenUsage、ModelStep、Provider Turn、文本 Delta/reset 回调协议和共享异常。
 - `app/services/llm/factory.py`：解析环境并创建当前 Provider。
 - `app/services/llm/http_client.py`：共享异步 SSE POST、有界事件解码、流生命周期超时、I/O 边界事件记录和脱敏错误处理。
 - `app/services/llm/aliyun.py`：阿里云 Responses 流事件累加、Function Call 续接和完整结果校验。
@@ -82,7 +82,7 @@ python -m app.tui -> AGENTS + SkillRuntime -> app.tui.application
 - 工厂只解析配置和创建 Provider，不编排用例。
 - Provider 为每个用户请求创建短生命周期 Turn，持有私有续接消息，构造请求并提取中立步骤；共享 HTTP 层处理网络和通用状态错误。
 - Provider 层不依赖 Runtime、Router、TUI 或 Application。
-- HTTP/TUI 启动入口幂等配置日志；Runtime 记录一次 `llm_request/llm_response`，每个模型步骤记录 HTTP 边界事件，每次本地执行记录 `llm_tool_call/llm_tool_result`，全链路共用同一 request ID。
+- HTTP/TUI 启动入口幂等配置日志；Runtime 记录一次 `llm_request/llm_response`，每个具有 usage 的模型步骤记录 `llm_token_usage`，HTTP 边界和本地工具分别记录对应事件，全链路共用同一 request ID。
 
 ## HTTP 对话流程
 
@@ -95,7 +95,8 @@ POST /chat
   -> bounded loop calls Turn.next()
      -> Provider builds protocol-specific stream payload and calls shared SSE HTTPX
      -> Provider accumulates bounded text/tool events; HTTP supplies no display callback
-     -> ModelStep contains final text or ToolCall list
+     -> ModelStep contains final text or ToolCall list and optional TokenUsage
+     -> Runtime logs known step usage and aggregates all model steps
      -> if tools: Registry validates and executes them serially
      -> Runtime passes ordered ToolResult list back to the same Turn
   -> loop stops when Provider returns final output_text
@@ -103,9 +104,11 @@ POST /chat
   -> Router returns 200 {"output_text": "..."}
 ```
 
-不需要工具时仍只有四个成功事件。需要工具时，同一 request ID 下会出现多组 HTTP 事件和工具事件；`llm_tool_call` 明文记录完整 JSON 参数，`llm_tool_result` 明文记录完整安全结果。共享 HTTP 层在真实 I/O 边界旁路记录，不修改状态码映射、重试或超时；`llm_http_request.request_body` 与实际 payload 一致，因此续接请求也会明文包含工具结果。
+不需要工具时，上游提供 usage 会额外产生一条 `llm_token_usage`；缺失时仍保留原有四个成功事件。需要工具时，同一 request ID 下会出现多组 HTTP、Token 和工具事件；`llm_tool_call` 明文记录完整 JSON 参数，`llm_tool_result` 明文记录完整安全结果。共享 HTTP 层在真实 I/O 边界旁路记录，不修改状态码映射、重试或超时；`llm_http_request.request_body` 与实际 payload 一致，因此续接请求也会明文包含工具结果。
 
-DeepSeek Turn 按 choice/tool index 拼接流式文本和工具参数，把 assistant `tool_calls` 和对应 `role=tool/tool_call_id` 结果加入 messages，并保留工具调用时的 `reasoning_content`。阿里云 Turn 消费 `output_text.delta/done`、function call 与 `response.completed`，把每个 `function_call` 与对应 `function_call_output` 紧邻加入 input。两家结构都在 Provider 内转换为中立 ToolCall/ToolResult。
+DeepSeek Turn 请求 `stream_options.include_usage`，按 choice/tool index 拼接流式文本和工具参数，把 assistant `tool_calls` 和对应 `role=tool/tool_call_id` 结果加入 messages，并把结束 usage Chunk 转成中立 TokenUsage。阿里云 Turn 消费 `output_text.delta/done`、function call 与 `response.completed`，把每个 `function_call` 与对应 `function_call_output` 紧邻加入 input，并从完成响应映射 TokenUsage。两家私有字段都止于 Provider 边界。
+
+Tool Loop 对每个已知步骤立即记录 Token 日志，并分别累加输入、输出和总量；只有所有步骤都提供 usage 时，`ChatResult.token_usage` 才包含完整本轮合计。TUI 在成功回答和耗时之后展示该合计，缺失时显示不可用；失败、取消和陈旧 Worker 不显示合计。Token 系统消息不进入 Session。HTTP Router 忽略内部统计并继续严格返回 `{"output_text":"..."}`。
 
 DeepSeek 必须收到合法终止原因和 `[DONE]`；阿里云必须收到成功的 `response.completed`。事件 JSON、UTF-8、终止标记、完成文本或工具结构不一致均属于无效上游响应并映射为 502。单 SSE 事件上限 96 KiB，单步文本上限 1 MiB，流解析层单工具参数上限 64 KiB；Registry 再按具体工具执行 8 KiB 或 64 KiB 上限。
 
@@ -174,7 +177,7 @@ TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只�
 - TUI 系统提示词随完整 Provider 请求体明文进入模型日志；状态栏和 Runtime 摘要日志不回显正文。
 - HTTP 边界脱敏 Header 由日志层用固定值重建（`Authorization` 写为 `Bearer [REDACTED]`），从数据流上阻止密钥进入 Logger。
 - HTTP 耗时用 `time.monotonic()` 计算并保留两位毫秒；超时/连接失败只记录有限分类和耗时，不记录异常类名或堆栈。
-- HTTP 日志双写单行 JSON stderr 和 UTF-8 中文分块 `logs/model-calls.log`，文件不可用时降级为 stderr；TUI 只写该文件，文件不可用时静默放弃日志，避免任何日志覆盖全屏终端。文件内容使用北京时间，结构化正文以两空格 JSON 缩进展示；单文件 10 MiB，保留 5 个备份。
+- HTTP 日志双写单行 JSON stderr 和 UTF-8 中文分块 `logs/runtime/model-calls.log`；TUI 只写该运行文件，Pytest 在收集模块前预配置 `logs/tests/model-calls.log`，且进程内只保留一个文件 Handler。文件不可用时 HTTP 降级为 stderr，TUI 静默放弃日志，避免覆盖全屏终端。两类文件均使用北京时间和两空格 JSON 缩进的结构化正文，并各自按单文件 10 MiB、5 个备份独立轮转。旧 `logs/model-calls.log*` 仅作历史保留。
 - TUI 同时最多一个请求；Esc 优先清空非空输入且不启动退出计时，输入为空时第一次 Esc 取消请求，1.5 秒内第二次 Esc 退出，并用请求代次阻止陈旧结果写回。
 - TUI 每个活动请求最多创建一个 100 ms Timer，空闲时没有周期任务；Timer 回调同样校验捕获的请求代次。
 - TUI 上下键固定用于输入历史，历史不去重、不循环且没有独立持久化文件；`/clear` 同步清空。

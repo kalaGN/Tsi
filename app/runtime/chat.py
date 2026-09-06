@@ -29,6 +29,7 @@ from app.services.llm.contracts import (
     ProviderTimeoutError,
     TextDeltaHandler,
     TextResetHandler,
+    TokenUsage,
 )
 from app.services.llm.factory import create_provider
 from tools import (
@@ -46,6 +47,7 @@ class ChatResult:
     output_text: str
     provider: str
     model: str
+    token_usage: TokenUsage | None = None
 
 
 @dataclass(frozen=True)
@@ -166,7 +168,7 @@ async def run_chat_messages(
             active_registry.definitions,
             request_id=request_id,
         )
-        step = await run_tool_loop(
+        loop_result = await run_tool_loop(
             turn,
             active_registry,
             request_id=request_id,
@@ -176,11 +178,7 @@ async def run_chat_messages(
             on_tool_result=on_tool_result,
             limits=tool_loop_limits,
         )
-        output_text = step.output_text
-        if output_text is None:
-            raise ProviderInvalidResponseError(
-                "Upstream service returned an invalid response"
-            )
+        output_text = loop_result.output_text
         log_model_response(
             request_id=request_id,
             provider=provider_name,
@@ -200,6 +198,7 @@ async def run_chat_messages(
         output_text=output_text,
         provider=provider_name,
         model=model,
+        token_usage=loop_result.token_usage,
     )
 
 

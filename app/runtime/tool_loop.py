@@ -5,6 +5,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.observability.model_logging import (
+    log_model_token_usage,
     log_model_tool_call,
     log_model_tool_approval,
     log_model_tool_result,
@@ -15,6 +16,7 @@ from app.services.llm.contracts import (
     ProviderInvalidResponseError,
     TextDeltaHandler,
     TextResetHandler,
+    TokenUsage,
 )
 from tools.contracts import (
     ToolApprovalRequest,
@@ -36,8 +38,18 @@ class ToolLoopLimits:
     max_total_tool_calls: int
 
 
+@dataclass(frozen=True)
+class ToolLoopResult:
+    """工具循环完成后的最终文本和全部模型步骤计量。"""
+
+    output_text: str
+    token_usage: TokenUsage | None
+
+
 DEFAULT_TOOL_LOOP_LIMITS = ToolLoopLimits(5, 4, 16)
-WORKSPACE_TOOL_LOOP_LIMITS = ToolLoopLimits(20, 4, 40)
+# 部分 Provider 每个模型步骤只返回一个工具调用；预留最后一步生成最终回答，
+# 才能在不放宽 40 次工具调用硬上限的前提下完整使用调用预算。
+WORKSPACE_TOOL_LOOP_LIMITS = ToolLoopLimits(41, 4, 40)
 
 
 class ToolLoopLimitError(Exception):
@@ -55,7 +67,7 @@ async def run_tool_loop(
     on_tool_result: ToolResultHandler | None = None,
     limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
     clock: Callable[[], float] = time.monotonic,
-) -> ModelStep:
+) -> ToolLoopResult:
     """串行执行模型要求的白名单工具，直到得到最终文本或触达上限。"""
 
     if (
@@ -91,14 +103,30 @@ async def run_tool_loop(
     )
     results: tuple[ToolResult, ...] = ()
     executed_calls = 0
+    aggregate_usage = TokenUsage(0, 0, 0)
+    usage_complete = True
     for step_number in range(1, limits.max_model_steps + 1):
         step = await turn.next(results, on_text_delta=on_text_delta)
+        if step.token_usage is None:
+            usage_complete = False
+        else:
+            log_model_token_usage(
+                request_id=request_id,
+                step_number=step_number,
+                input_tokens=step.token_usage.input_tokens,
+                output_tokens=step.token_usage.output_tokens,
+                total_tokens=step.token_usage.total_tokens,
+            )
+            aggregate_usage += step.token_usage
         if not step.tool_calls:
             if not isinstance(step.output_text, str) or not step.output_text:
                 raise ProviderInvalidResponseError(
                     "Upstream service returned an invalid response"
                 )
-            return step
+            return ToolLoopResult(
+                step.output_text,
+                aggregate_usage if usage_complete else None,
+            )
 
         # 当前模型步骤属于工具中间态，撤销可能已展示的临时文本。
         if on_text_reset is not None:

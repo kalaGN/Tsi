@@ -1,8 +1,14 @@
 # 故障排查
 
+## TUI 返回 `Tool call limit exceeded`
+
+这表示单次请求超过了本地工具循环预算，不是上游 HTTP 错误。TUI 最多执行 40 次工具调用，并允许 41 个模型步骤，为串行调用工具的 Provider 保留最后一次生成完整回答的机会；超过边界的工具不会执行。
+
+先按 `request_id` 检查 `logs/runtime/model-calls.log` 中的 `工具调用` 分块。若模型重复读取相同内容，应缩小任务范围或明确目标文件；若任务确实需要探索大量文件，可拆成多个独立请求。旧版本只允许 20 个模型步骤，阿里云等每步只返回一个工具调用的 Provider 实际最多执行 19 次；升级后可完整使用 40 次调用预算，但仍不会无限执行。
+
 ## 阿里云返回 `Upstream service returned an invalid response`
 
-先查看 `logs/model-calls.log` 中对应请求是否已获得 HTTP 响应。阿里云 Responses API 的真实 SSE 可能发送空字符串 `response.output_text.delta`；项目会将其作为无内容事件忽略，后续有效文本和 `response.completed` 仍正常处理。非字符串 Delta、缺少完成事件、文本不一致或非法工具调用结构仍会返回该中立错误。
+先查看 `logs/runtime/model-calls.log` 中对应请求是否已获得 HTTP 响应。阿里云 Responses API 的真实 SSE 可能发送空字符串 `response.output_text.delta`；项目会将其作为无内容事件忽略，后续有效文本和 `response.completed` 仍正常处理。非字符串 Delta、缺少完成事件、文本不一致或非法工具调用结构仍会返回该中立错误。
 
 如果只在启用项目 Skill 后出现该错误，还应检查 Function Tool Schema：`required` 中的每个字段都必须在 `properties` 中声明。项目会在 Registry 创建阶段拒绝矛盾 Schema，避免将其发送给阿里云；`read_skill_resource` 当前只要求 `name` 和 `path`。
 
@@ -18,7 +24,7 @@ TUI 只在启动时读取命令执行目录直属的 `AGENTS.md`。确认它是�
 
 TUI 启动时读取 `.agents/skills/*/SKILL.md`。检查每个目录名是否与 YAML `name` 完全一致、`description` 是否非空、Frontmatter 是否由 `---` 包围，以及入口和支持文件是否为有界的非符号链接普通文件。任一 Skill 非法会禁用整批项目 Skill，但不会阻止 `AGENTS.md`、普通对话、已有 Workspace 工具和 `install_skill`；手动修复后需重启 TUI。
 
-Skill Catalog、正文、资源和脚本输入输出会随系统提示词、工具结果及后续请求体明文进入 `logs/model-calls.log`。不要把密钥或隐私数据放入 Skill。脚本审批提示没有文件系统或网络沙箱：只有确认脚本及参数可信时才执行。
+Skill Catalog、正文、资源和脚本输入输出会随系统提示词、工具结果及后续请求体明文进入 `logs/runtime/model-calls.log`。不要把密钥或隐私数据放入 Skill。脚本审批提示没有文件系统或网络沙箱：只有确认脚本及参数可信时才执行。
 
 ## `install_skill` 返回错误
 
@@ -55,11 +61,17 @@ TUI 启动时只捕获一次命令执行目录。确认该目录存在、是普�
 
 ## TUI 没有逐步显示模型回答
 
-流式临时区域只在收到首个文本 Delta 后显示，并约每 100 ms 合并刷新；上游一次返回大块文本或响应很快时，视觉上可能接近一次性完成。工具调用步骤的中间文本会在执行工具前清空，只有最终步骤会留下完整回答。若请求失败或取消，已显示的片段会被清理且不会写入会话历史；可结合 `logs/model-calls.log` 检查是否收到了完整 SSE 响应。
+流式临时区域只在收到首个文本 Delta 后显示，并约每 100 ms 合并刷新；上游一次返回大块文本或响应很快时，视觉上可能接近一次性完成。工具调用步骤的中间文本会在执行工具前清空，只有最终步骤会留下完整回答。若请求失败或取消，已显示的片段会被清理且不会写入会话历史；可结合 `logs/runtime/model-calls.log` 检查是否收到了完整 SSE 响应。
 
 ## TUI 输入区域出现 JSON 日志
 
-当前 TUI 启动入口只把模型、HTTP 和工具事件以中文分块写入 `logs/model-calls.log`，不会向 stderr 输出。如果输入框附近仍出现 `llm_http_request`、`llm_tool_call` 等单行 JSON，先确认使用的是最新代码并完全退出后重新启动 TUI；不要同时通过会额外转发旧 stderr 的包装脚本启动。HTTP 服务仍会按设计向 stderr 和本地文件双写日志，其中只有 stderr 保持单行 JSON。
+当前 TUI 启动入口只把模型、HTTP 和工具事件以中文分块写入 `logs/runtime/model-calls.log`，不会向 stderr 输出。如果输入框附近仍出现 `llm_http_request`、`llm_tool_call` 等单行 JSON，先确认使用的是最新代码并完全退出后重新启动 TUI；不要同时通过会额外转发旧 stderr 的包装脚本启动。HTTP 服务仍会按设计向 stderr 和本地文件双写日志，其中只有 stderr 保持单行 JSON。Pytest 日志独立写入 `logs/tests/model-calls.log`；旧 `logs/model-calls.log*` 仅作历史记录保留。
+
+## TUI 显示 `Token：不可用`
+
+这表示本轮至少一个已完成的上游模型步骤没有返回完整 usage，不表示消耗为零。DeepSeek 请求会启用流式 usage，阿里云会读取完成响应中的 usage；如果网关、兼容层或模型没有传回三项数据，TUI 不会用字符数估算，也不会把已知步骤的部分和显示为完整合计。
+
+可按同一 request ID 检查 `logs/runtime/model-calls.log` 中的 `llm_token_usage`：每条记录对应一个成功解析的模型步骤。部分步骤仍可能有日志，但只有全部步骤均具备 usage 时 TUI 才显示数值。该数值是已经发生的本轮上游消耗，不是模型上下文窗口占比、会话累计或费用。
 
 ## 上下键不能移动多行输入光标
 

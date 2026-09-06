@@ -25,6 +25,7 @@ from app.services.llm.contracts import (
     ProviderInvalidRequestError,
     ProviderResponseError,
     ProviderTimeoutError,
+    TokenUsage,
 )
 from app.services.llm.deepseek import (
     DEEPSEEK_CHAT_COMPLETIONS_URL,
@@ -128,9 +129,15 @@ def _deepseek_json_as_sse(body):
                     }
                 ]
             }
+    events = [chunk]
+    if isinstance(body, dict) and body.get("usage") is not None:
+        events.append({"choices": [], "usage": body["usage"]})
     return (
-        f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-        "data: [DONE]\n\n"
+        "".join(
+            f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            for event in events
+        )
+        + "data: [DONE]\n\n"
     ).encode()
 
 
@@ -303,6 +310,51 @@ def test_aliyun_sends_expected_request_and_extracts_text(
 
     assert result.upstream_status == 200
     assert result.output_text == expected_text
+
+
+def test_aliyun_extracts_completed_token_usage(monkeypatch):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "output_text": "done",
+                "usage": {
+                    "input_tokens": 8,
+                    "output_tokens": 3,
+                    "total_tokens": 11,
+                },
+            },
+        )
+
+    install_transport(monkeypatch, handler)
+    step = asyncio.run(
+        run_provider_once(AliyunResponsesProvider(FAKE_API_KEY), user_messages())
+    )
+
+    assert step.token_usage == TokenUsage(8, 3, 11)
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"input_tokens": 1, "output_tokens": 2},
+        {"input_tokens": True, "output_tokens": 2, "total_tokens": 3},
+        {"input_tokens": 1, "output_tokens": 2, "total_tokens": 4},
+    ],
+)
+def test_aliyun_rejects_invalid_completed_token_usage(monkeypatch, usage):
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"output_text": "done", "usage": usage},
+        )
+
+    install_transport(monkeypatch, handler)
+
+    with pytest.raises(ProviderInvalidResponseError):
+        asyncio.run(
+            run_provider_once(AliyunResponsesProvider(FAKE_API_KEY), user_messages())
+        )
 
 
 def test_aliyun_turn_declares_flat_tools_and_uses_array_input(monkeypatch):
@@ -827,7 +879,11 @@ def test_deepseek_sends_expected_request_and_extracts_text(monkeypatch):
     body = {
         "id": "chat-1",
         "choices": [{"message": {"role": "assistant", "content": "你好"}}],
-        "usage": {"total_tokens": 3},
+        "usage": {
+            "prompt_tokens": 2,
+            "completion_tokens": 1,
+            "total_tokens": 3,
+        },
     }
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -837,7 +893,8 @@ def test_deepseek_sends_expected_request_and_extracts_text(monkeypatch):
         assert request.headers["Accept"] == "text/event-stream"
         assert request.content == (
             b'{"model":"deepseek-v4-pro","messages":'
-            b'[{"role":"user","content":"\xe4\xbd\xa0\xe5\xa5\xbd"}],"stream":true}'
+            b'[{"role":"user","content":"\xe4\xbd\xa0\xe5\xa5\xbd"}],"stream":true,'
+            b'"stream_options":{"include_usage":true}}'
         )
         return httpx.Response(200, json=body)
 
@@ -880,6 +937,7 @@ def test_deepseek_turn_declares_tools_and_returns_direct_text(monkeypatch):
             "model": "deepseek-v4-pro",
             "messages": [{"role": "user", "content": "hello"}],
             "stream": True,
+            "stream_options": {"include_usage": True},
             "tools": [
                 {
                     "type": "function",
@@ -1047,6 +1105,89 @@ def test_deepseek_streams_text_deltas_in_order(monkeypatch):
     assert deltas == ["你", "好"]
     assert step.output_text == "你好"
     assert step.tool_calls == ()
+
+
+def test_deepseek_requests_and_extracts_stream_token_usage(monkeypatch):
+    events = (
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "done"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": None,
+        },
+        {
+            "choices": [],
+            "usage": {
+                "prompt_tokens": 13,
+                "completion_tokens": 5,
+                "total_tokens": 18,
+            },
+        },
+    )
+    body = b"".join(
+        f"data: {json.dumps(event)}\n\n".encode() for event in events
+    ) + b"data: [DONE]\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["stream_options"] == {
+            "include_usage": True
+        }
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream((body,)),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+    step = asyncio.run(
+        run_provider_once(DeepSeekChatProvider(FAKE_API_KEY), user_messages())
+    )
+
+    assert step.token_usage == TokenUsage(13, 5, 18)
+
+
+@pytest.mark.parametrize(
+    "usage",
+    [
+        {"prompt_tokens": 1, "completion_tokens": 2},
+        {"prompt_tokens": -1, "completion_tokens": 2, "total_tokens": 1},
+        {"prompt_tokens": 1, "completion_tokens": 2, "total_tokens": 4},
+    ],
+)
+def test_deepseek_rejects_invalid_stream_token_usage(monkeypatch, usage):
+    events = (
+        {
+            "choices": [
+                {
+                    "index": 0,
+                    "delta": {"content": "done"},
+                    "finish_reason": "stop",
+                }
+            ]
+        },
+        {"choices": [], "usage": usage},
+    )
+    body = b"".join(
+        f"data: {json.dumps(event)}\n\n".encode() for event in events
+    ) + b"data: [DONE]\n\n"
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream((body,)),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+
+    with pytest.raises(ProviderInvalidResponseError):
+        asyncio.run(
+            run_provider_once(DeepSeekChatProvider(FAKE_API_KEY), user_messages())
+        )
 
 
 def test_deepseek_stream_assembles_tool_arguments_across_chunks(monkeypatch):

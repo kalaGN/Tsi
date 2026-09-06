@@ -114,6 +114,23 @@ def test_registry_accepts_mapping_parameter_schema():
     assert ToolRegistry([tool]).definitions == (tool.definition,)
 
 
+def test_registry_rejects_undeclared_required_parameter():
+    tool = FakeTool()
+    tool.definition = ToolDefinition(
+        "lookup",
+        "valid",
+        {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name", "missing"],
+            "additionalProperties": False,
+        },
+    )
+
+    with pytest.raises(ValueError):
+        ToolRegistry([tool])
+
+
 def test_registry_rejects_invalid_effect_limit_and_mutating_tool_without_preview():
     invalid_effect = FakeTool()
     invalid_effect.definition = ToolDefinition(

@@ -4,6 +4,8 @@
 
 先查看 `logs/model-calls.log` 中对应请求是否已获得 HTTP 响应。阿里云 Responses API 的真实 SSE 可能发送空字符串 `response.output_text.delta`；项目会将其作为无内容事件忽略，后续有效文本和 `response.completed` 仍正常处理。非字符串 Delta、缺少完成事件、文本不一致或非法工具调用结构仍会返回该中立错误。
 
+如果只在启用项目 Skill 后出现该错误，还应检查 Function Tool Schema：`required` 中的每个字段都必须在 `properties` 中声明。项目会在 Registry 创建阶段拒绝矛盾 Schema，避免将其发送给阿里云；`read_skill_resource` 当前只要求 `name` 和 `path`。
+
 如果升级到包含此兼容修复的版本后仍报错，应按 `request_id` 检查响应状态和 `Content-Type`，不要把上游响应正文、系统提示词或密钥复制到公开日志中。
 
 ## 状态栏显示 `AGENTS: error`

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.runtime.chat import ChatErrorCode, ChatRuntimeError
 from app.runtime.session import ChatExecutionSnapshot
 from app.runtime.system_prompt import compose_system_prompt
 from tools.skill_installation import (
@@ -13,7 +14,12 @@ from tools.skill_installation import (
     SkillInstaller,
     SkillSourceFetcher,
 )
-from tools.skills import SkillCatalog
+from tools.skills import (
+    SkillCatalog,
+    SkillReferenceError,
+    build_explicit_skills_prompt,
+    resolve_skill_references,
+)
 from tools.registry import ToolRegistry
 from tools.workspace import (
     WorkspaceChangeJournal,
@@ -105,18 +111,34 @@ class SkillRuntime:
         self._version += 1
         return self._version
 
-    def snapshot(self) -> ChatExecutionSnapshot:
+    def snapshot(self, input_text: str | None = None) -> ChatExecutionSnapshot:
         """为下一次发送固定当前 Catalog、prompt 和 Registry。"""
 
-        skill_prompt = self._catalog.prompt if self._catalog is not None else None
+        # 捕获一次引用，确保 prompt 与 Registry 始终绑定同一 Catalog 版本。
+        catalog = self._catalog
+        skill_prompt = catalog.prompt if catalog is not None else None
+        explicit_prompt = None
+        if input_text is not None and catalog is not None:
+            try:
+                references = resolve_skill_references(input_text, catalog)
+                explicit_prompt = build_explicit_skills_prompt(references)
+            except SkillReferenceError as exc:
+                raise ChatRuntimeError(
+                    ChatErrorCode.INVALID_INPUT,
+                    "Too many or oversized explicit skill references",
+                ) from exc
         registry = self._registry_factory(
             self._workspace_policy,
             journal=self._journal,
-            skill_catalog=self._catalog,
+            skill_catalog=catalog,
             install_skill_tool=self._install_tool,
         )
         return ChatExecutionSnapshot(
-            system_prompt=compose_system_prompt(self._agents_prompt, skill_prompt),
+            system_prompt=compose_system_prompt(
+                self._agents_prompt,
+                skill_prompt,
+                explicit_prompt,
+            ),
             registry=registry,
             version=self._version,
         )

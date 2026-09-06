@@ -209,6 +209,16 @@ def _validate_definition(definition: ToolDefinition) -> None:
         or definition.parameters.get("type") != "object"
     ):
         raise ValueError("tool parameters must use an object schema")
+    properties = definition.parameters.get("properties")
+    required = definition.parameters.get("required", ())
+    if (
+        not isinstance(properties, Mapping)
+        or not isinstance(required, (list, tuple))
+        or any(not isinstance(name, str) for name in required)
+        or not set(required) <= set(properties)
+    ):
+        # 阿里云会拒绝 required 引用不存在字段的 Function Tool Schema。
+        raise ValueError("tool required fields must be declared properties")
     if not isinstance(definition.effect, ToolEffect):
         raise ValueError("tool effect is invalid")
     if (

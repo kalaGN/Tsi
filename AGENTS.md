@@ -20,6 +20,7 @@
 - TUI 输入历史状态：`app/tui/input_history.py`；活动提示：`app/tui/activity_bar.py`。
 - TUI 底部运行摘要：`app/tui/status_bar.py`；请求内已应用变更追踪：`app/tui/workspace_changes.py`。
 - TUI 本地命令目录与解析：`app/tui/commands.py`；命令候选组件：`app/tui/command_palette.py`；布局样式：`app/tui/styles/*.tcss`。
+- TUI `$技能名` 光标识别、候选和补全：`app/tui/skill_palette.py`；完整正文只由 `app/runtime/skill_runtime.py` 在本轮执行快照中加载。
 - 测试：`tests/`。
 - 真实依赖方向：`HTTP/TUI → runtime → tools + services.llm → Aliyun/DeepSeek`；HTTP 入口为 `main → application → router`。
 - 详细事实：[架构知识](docs/knowledge/architecture.md)。
@@ -72,6 +73,7 @@
 - `/chat` 当前成功响应固定为 `{"output_text": "..."}`，Router 和 TUI 不得解析或暴露 Provider 原始响应。
 - 工具只能从根目录 `tools/` 显式注册；HTTP 仅自动执行无副作用工具。TUI 允许经完整 Diff 审批的结构化文件创建、精确替换和 LIFO 撤销；Skill 脚本仅能通过逐次审批的 `run_skill_script` 执行，不得提供任意命令、动态 import、删除/移动工具或数据库写操作。
 - TUI 从启动目录 `.agents/skills/*/SKILL.md` 加载 Codex 兼容项目 Skill；`install_skill` 只可经逐次审批从公开 GitHub 目录或当前用户 `~/.codex/skills` 直属目录安装且下一次请求生效。Skill 文本和扩展字段不能注册工具、扩大权限或绕过审批，HTTP 不加载或安装 Skill。
+- TUI 单轮最多显式引用 3 个 `$技能名`；完整 Skill 仅进入该轮 system 上下文，不得自动读取资源正文、执行脚本或批准工具。
 - 密钥仅从环境变量读取；禁止进入代码、文档、日志、测试或 Git。
 - 不无需求增加层级、服务、基础设施或第三方依赖。
 - 自动化测试禁止调用真实付费或生产外部服务。

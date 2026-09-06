@@ -31,7 +31,7 @@ class ChatExecutionSnapshot:
     version: int = 0
 
 
-ExecutionSnapshotProvider = Callable[[], ChatExecutionSnapshot]
+ExecutionSnapshotProvider = Callable[[str], ChatExecutionSnapshot]
 
 
 class ChatSession:
@@ -113,7 +113,7 @@ class ChatSession:
 
         async with self._send_lock:
             snapshot = (
-                self._execution_snapshot_provider()
+                self._execution_snapshot_provider(input_text)
                 if self._execution_snapshot_provider is not None
                 else ChatExecutionSnapshot(
                     system_prompt=self._system_prompt,

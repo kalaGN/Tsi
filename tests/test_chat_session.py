@@ -6,6 +6,7 @@ from app.runtime import session as session_module
 from app.runtime.chat import ChatErrorCode, ChatResult, ChatRuntimeError
 from app.runtime.session import ChatExecutionSnapshot, ChatSession
 from app.runtime.session_store import SessionStore, SessionStoreError
+from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS
 from app.services.llm.contracts import (
     ChatMessage,
@@ -15,6 +16,8 @@ from app.services.llm.contracts import (
 )
 from tools import create_default_registry
 from tools.contracts import ToolCall
+from tools.skills import load_skill_catalog
+from tools.workspace import WorkspacePolicy
 
 
 class RecordingProvider:
@@ -142,9 +145,9 @@ def test_chat_session_reads_one_execution_snapshot_per_send(tmp_path):
         prompts = iter(("规则一", "规则二"))
         snapshot_calls = []
 
-        def snapshot_provider():
+        def snapshot_provider(input_text):
             prompt = next(prompts)
-            snapshot_calls.append(prompt)
+            snapshot_calls.append((input_text, prompt))
             return ChatExecutionSnapshot(
                 system_prompt=prompt,
                 registry=create_default_registry(),
@@ -160,9 +163,43 @@ def test_chat_session_reads_one_execution_snapshot_per_send(tmp_path):
         await session.send("第一问")
         await session.send("第二问")
 
-        assert snapshot_calls == ["规则一", "规则二"]
+        assert snapshot_calls == [("第一问", "规则一"), ("第二问", "规则二")]
         assert provider.calls[0][0] == ChatMessage(ChatRole.SYSTEM, "规则一")
         assert provider.calls[1][0] == ChatMessage(ChatRole.SYSTEM, "规则二")
+
+    asyncio.run(scenario())
+
+
+def test_chat_session_loads_explicit_skill_without_persisting_its_body(tmp_path):
+    async def scenario():
+        skill_root = tmp_path / ".agents/skills/demo-skill"
+        skill_root.mkdir(parents=True)
+        (skill_root / "SKILL.md").write_text(
+            "---\nname: demo-skill\ndescription: demo\n---\n\nPRIVATE BODY\n",
+            encoding="utf-8",
+        )
+        runtime = SkillRuntime(
+            tmp_path,
+            None,
+            WorkspacePolicy(tmp_path),
+            load_skill_catalog(tmp_path),
+            codex_skills_root=tmp_path / "codex-skills",
+        )
+        store = SessionStore(tmp_path / "chat-session.json")
+        provider = RecordingProvider(["完成"])
+        session = ChatSession(
+            store,
+            provider=provider,
+            execution_snapshot_provider=runtime.snapshot,
+        )
+
+        await session.send("请用 $demo-skill 处理")
+
+        assert "PRIVATE BODY" in provider.calls[0][0].content
+        assert SessionStore(store.path).load() == (
+            ChatMessage(ChatRole.USER, "请用 $demo-skill 处理"),
+            ChatMessage(ChatRole.ASSISTANT, "完成"),
+        )
 
     asyncio.run(scenario())
 

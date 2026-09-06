@@ -19,6 +19,7 @@ from app.services.llm.contracts import ChatMessage, ChatRole
 from app.tui import __main__ as tui_main
 from app.tui import application as tui_application
 from app.tui.application import ChatTuiApp
+from app.tui.skill_palette import SkillPalette
 from app.tui.state import RunStatus
 from app.tui.approval import ToolApprovalScreen
 from app.tui.widgets import SelectableRichLog
@@ -108,6 +109,54 @@ def test_command_preview_escape_closes_before_clearing_input():
             assert prompt.text == ""
             await pilot.press("/", "h")
             assert not preview.display
+
+    asyncio.run(scenario())
+
+
+def test_skill_reference_preview_completes_before_sending(tmp_path):
+    async def scenario():
+        skill_root = tmp_path / ".agents/skills/demo-skill"
+        skill_root.mkdir(parents=True)
+        (skill_root / "SKILL.md").write_text(
+            "---\nname: demo-skill\ndescription: 演示技能\n---\n",
+            encoding="utf-8",
+        )
+        runtime = SkillRuntime(
+            tmp_path,
+            None,
+            WorkspacePolicy(tmp_path),
+            load_skill_catalog(tmp_path),
+            codex_skills_root=tmp_path / "codex-skills",
+        )
+        received = []
+
+        async def runner(text, **kwargs):
+            received.append(text)
+            return ChatResult("完成", "fake", "fake")
+
+        app = ChatTuiApp(
+            chat_runner=runner,
+            runtime_info=DEEPSEEK_INFO,
+            skill_runtime=runtime,
+        )
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("请用 $d")
+            prompt.move_cursor(prompt.document.end)
+            await pilot.pause()
+
+            palette = app.query_one(SkillPalette)
+            assert palette.is_open
+            assert "$demo-skill" in str(palette.content)
+            await pilot.press("enter")
+            assert prompt.text == "请用 $demo-skill "
+            assert received == []
+
+            prompt.insert("处理中文")
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+
+            assert received == ["请用 $demo-skill 处理中文"]
 
     asyncio.run(scenario())
 

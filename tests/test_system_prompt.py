@@ -11,16 +11,17 @@ from app.runtime.system_prompt import (
 
 
 @pytest.mark.parametrize(
-    ("agents", "skills", "expected"),
+    ("parts", "expected"),
     [
-        (None, None, None),
-        ("规则", None, "规则"),
-        (None, "目录", "目录"),
-        ("规则\n", "目录", "规则\n\n\n---\n\n目录"),
+        ((None, None), None),
+        (("规则", None), "规则"),
+        ((None, "目录"), "目录"),
+        (("规则\n", "目录"), "规则\n\n\n---\n\n目录"),
+        (("规则", "目录", "显式技能"), "规则\n\n---\n\n目录\n\n---\n\n显式技能"),
     ],
 )
-def test_compose_system_prompt_keeps_stable_order(agents, skills, expected):
-    assert compose_system_prompt(agents, skills) == expected
+def test_compose_system_prompt_keeps_stable_order(parts, expected):
+    assert compose_system_prompt(*parts) == expected
 
 
 def test_missing_or_blank_agents_file_disables_system_prompt(tmp_path):

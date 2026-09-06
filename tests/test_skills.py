@@ -7,6 +7,7 @@ import pytest
 
 from tools import ToolCall, ToolExecutionContext, ToolRegistry
 from tools.skills import (
+    MAX_EXPLICIT_SKILLS,
     MAX_RESOURCE_COUNT,
     MAX_RESOURCE_FILE_BYTES,
     MAX_RESOURCE_TOTAL_BYTES,
@@ -16,7 +17,10 @@ from tools.skills import (
     ReadSkillResourceTool,
     RunSkillScriptTool,
     SkillLoadError,
+    SkillReferenceError,
+    build_explicit_skills_prompt,
     load_skill_catalog,
+    resolve_skill_references,
 )
 
 
@@ -85,6 +89,65 @@ def test_catalog_loads_codex_skill_and_sorted_resource_snapshots(tmp_path):
     assert "先加载" in catalog.prompt
     assert skill.relative_entrypoint in catalog.prompt
     assert "按步骤执行" not in catalog.prompt
+
+
+def test_explicit_skill_references_require_complete_boundary_and_catalog_match(
+    tmp_path,
+):
+    _write_skill(tmp_path, "alpha-skill")
+    _write_skill(tmp_path, "beta-skill")
+    catalog = load_skill_catalog(tmp_path)
+
+    references = resolve_skill_references(
+        "$alpha-skill 请处理\n$unknown $alpha-skill $beta-skill",
+        catalog,
+    )
+
+    assert tuple(skill.name for skill in references) == (
+        "alpha-skill",
+        "beta-skill",
+    )
+    assert resolve_skill_references(
+        "金额$alpha-skill $alpha-skill, $alpha",
+        catalog,
+    ) == ()
+
+
+def test_explicit_skill_references_enforce_distinct_count_limit(tmp_path):
+    for index in range(MAX_EXPLICIT_SKILLS + 1):
+        _write_skill(tmp_path, f"skill-{index}")
+    catalog = load_skill_catalog(tmp_path)
+    input_text = " ".join(f"$skill-{index}" for index in range(4))
+
+    with pytest.raises(SkillReferenceError):
+        resolve_skill_references(input_text, catalog)
+
+
+def test_explicit_skill_prompt_contains_markdown_and_resource_index_only(tmp_path):
+    skill_root = _write_skill(tmp_path, body="# 执行说明\n\n使用脚本。\n")
+    (skill_root / "scripts").mkdir()
+    (skill_root / "scripts" / "run.py").write_text(
+        "print('资源正文不能预载')\n",
+        encoding="utf-8",
+    )
+    catalog = load_skill_catalog(tmp_path)
+    references = resolve_skill_references("使用 $example-skill 完成", catalog)
+
+    prompt = build_explicit_skills_prompt(references)
+
+    assert "example-skill" in prompt
+    assert "# 执行说明" in prompt
+    assert "scripts/run.py" in prompt
+    assert "资源正文不能预载" not in prompt
+
+
+def test_explicit_skill_prompt_enforces_total_byte_limit(tmp_path, monkeypatch):
+    _write_skill(tmp_path)
+    catalog = load_skill_catalog(tmp_path)
+    monkeypatch.setattr("tools.skills.MAX_EXPLICIT_SKILLS_PROMPT_BYTES", 10)
+
+    with pytest.raises(SkillReferenceError):
+        build_explicit_skills_prompt((catalog.skills["example-skill"],))
 
 
 @pytest.mark.parametrize(
@@ -214,6 +277,20 @@ def test_read_tools_use_snapshot_after_files_change(tmp_path):
         skill_markdown
     )
     assert json.loads(read.output)["data"]["content"] == "初始内容"
+
+
+def test_skill_tool_required_fields_are_declared_properties(tmp_path):
+    """避免向严格校验 Function Tool Schema 的 Provider 发送矛盾定义。"""
+
+    catalog = load_skill_catalog(_write_skill(tmp_path).parents[2])
+    definitions = (
+        LoadSkillTool(catalog).definition,
+        ReadSkillResourceTool(catalog).definition,
+    )
+
+    for definition in definitions:
+        properties = definition.parameters.get("properties", {})
+        assert set(definition.parameters.get("required", ())) <= set(properties)
 
 
 def test_read_resource_rejects_binary_and_path_traversal(tmp_path):

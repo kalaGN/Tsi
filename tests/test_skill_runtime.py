@@ -1,6 +1,9 @@
 import asyncio
 import json
 
+import pytest
+
+from app.runtime.chat import ChatErrorCode, ChatRuntimeError
 from app.runtime.skill_runtime import SkillRuntime
 from tools import ToolCall, ToolExecutionContext
 from tools.skills import load_skill_catalog
@@ -113,3 +116,48 @@ def test_runtime_lists_only_published_skill_summaries_in_name_order(tmp_path):
         "alpha-skill",
         "zeta-skill",
     )
+
+
+def test_runtime_explicit_skill_applies_only_to_matching_request_snapshot(tmp_path):
+    write_skill(tmp_path / ".agents/skills", "demo-skill", "demo-skill")
+    skill_file = tmp_path / ".agents/skills/demo-skill/SKILL.md"
+    skill_file.write_text(
+        "---\nname: demo-skill\ndescription: demo\n---\n\nPRIVATE INSTRUCTIONS\n",
+        encoding="utf-8",
+    )
+    runtime = SkillRuntime(
+        tmp_path,
+        "# Project rules",
+        WorkspacePolicy(tmp_path),
+        load_skill_catalog(tmp_path),
+        codex_skills_root=tmp_path / "codex-skills",
+    )
+
+    regular = runtime.snapshot("普通请求")
+    explicit = runtime.snapshot("请使用 $demo-skill 完成")
+
+    assert "PRIVATE INSTRUCTIONS" not in regular.system_prompt
+    assert "PRIVATE INSTRUCTIONS" in explicit.system_prompt
+    assert explicit.version == regular.version
+
+
+def test_runtime_rejects_too_many_explicit_skills_with_safe_input_error(tmp_path):
+    for index in range(4):
+        write_skill(
+            tmp_path / ".agents/skills",
+            f"skill-{index}",
+            f"skill-{index}",
+        )
+    runtime = SkillRuntime(
+        tmp_path,
+        None,
+        WorkspacePolicy(tmp_path),
+        load_skill_catalog(tmp_path),
+        codex_skills_root=tmp_path / "codex-skills",
+    )
+
+    with pytest.raises(ChatRuntimeError) as captured:
+        runtime.snapshot("$skill-0 $skill-1 $skill-2 $skill-3")
+
+    assert captured.value.code is ChatErrorCode.INVALID_INPUT
+    assert str(tmp_path) not in captured.value.user_message

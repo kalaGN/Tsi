@@ -33,6 +33,7 @@ from app.tui.approval import ToolApprovalScreen
 from app.tui.command_palette import CommandPalette
 from app.tui.commands import LocalCommand, parse_local_command
 from app.tui.input_history import InputHistory
+from app.tui.skill_palette import SkillPalette
 from app.tui.state import RunStatus
 from app.tui.status_bar import StatusBar, StatusBarState
 from app.tui.transcript import StreamOutput, Transcript
@@ -69,7 +70,7 @@ class ChatTuiApp(App[None]):
     ESCAPE_CONFIRM_SECONDS = 1.5
     ACTIVITY_INTERVAL_SECONDS = 0.1
     BINDINGS = [
-        Binding("tab", "complete_command", "Complete", show=False, priority=True),
+        Binding("tab", "complete_suggestion", "Complete", show=False, priority=True),
         Binding("enter", "submit_prompt", "Send", show=False, priority=True),
         Binding("escape", "confirm_exit", "Exit (x2)", show=False, priority=True),
         Binding(
@@ -199,6 +200,7 @@ class ChatTuiApp(App[None]):
         yield StreamOutput()
         yield ActivityBar()
         yield CommandPalette()
+        yield SkillPalette()
         yield PromptTextArea(
             id="prompt",
             soft_wrap=True,
@@ -272,7 +274,10 @@ class ChatTuiApp(App[None]):
             return
         prompt_widget = self.query_one("#prompt", TextArea)
         if self.query_one(CommandPalette).is_open:
-            self.action_complete_command()
+            self.action_complete_suggestion()
+            return
+        if self.query_one(SkillPalette).is_open:
+            self.action_complete_suggestion()
             return
         input_text = prompt_widget.text
         command = parse_local_command(input_text)
@@ -403,26 +408,69 @@ class ChatTuiApp(App[None]):
         self._write_message("System", "\n".join(lines))
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
-        """将输入变化交给命令组件，应用只提供请求是否空闲。"""
+        """将输入变化交给命令与技能候选组件。"""
 
         if event.text_area.id == "prompt":
             self.query_one(CommandPalette).filter_input(
                 event.text_area.text, enabled=self._active_worker is None
             )
+            self._refresh_skill_palette(event.text_area)
 
-    def action_complete_command(self) -> None:
-        """应用候选补全文本，命令执行留给下一次提交。"""
+    def on_text_area_selection_changed(
+        self,
+        event: TextArea.SelectionChanged,
+    ) -> None:
+        """光标移动后重新定位所在的技能引用片段。"""
+
+        if event.text_area.id == "prompt":
+            self._refresh_skill_palette(event.text_area)
+
+    def _refresh_skill_palette(self, prompt: TextArea) -> None:
+        """用当前运行时摘要刷新技能候选，不触发磁盘扫描。"""
+
+        skills = ()
+        if self._skill_runtime is not None and self._skills_error is None:
+            skills = self._skill_runtime.available_skills()
+        selection = prompt.selection
+        self.query_one(SkillPalette).filter_input(
+            prompt.text,
+            prompt.cursor_location,
+            skills,
+            enabled=(
+                self._active_worker is None
+                and selection.start == selection.end
+            ),
+        )
+
+    def action_complete_suggestion(self) -> None:
+        """补全命令或 Skill 候选，实际执行留给下一次提交。"""
 
         if isinstance(self.screen, ToolApprovalScreen):
             self.screen.focus_next()
             return
         command = self.query_one(CommandPalette).take_selection()
-        if command is None:
-            self.screen.focus_next()
+        if command is not None:
+            prompt = self.query_one("#prompt", TextArea)
+            prompt.load_text(command)
+            prompt.move_cursor(prompt.document.end)
             return
-        prompt = self.query_one("#prompt", TextArea)
-        prompt.load_text(command)
-        prompt.move_cursor(prompt.document.end)
+        completion = self.query_one(SkillPalette).take_selection()
+        if completion is not None:
+            prompt = self.query_one("#prompt", TextArea)
+            prompt.replace(
+                completion.text,
+                completion.start,
+                completion.end,
+                maintain_selection_offset=False,
+            )
+            prompt.move_cursor(
+                (
+                    completion.start[0],
+                    completion.start[1] + len(completion.text),
+                )
+            )
+            return
+        self.screen.focus_next()
 
     async def _run_prompt(
         self,
@@ -489,6 +537,8 @@ class ChatTuiApp(App[None]):
         self._skills_count = status.skills_count
         self._skills_error = status.error
         self._update_status_bar()
+        if self.is_mounted:
+            self._refresh_skill_palette(self.query_one("#prompt", TextArea))
 
     def _start_activity(self, started_at: float, generation: int) -> None:
         """为当前请求创建实时思考提示和专属周期 Timer。"""
@@ -510,6 +560,10 @@ class ChatTuiApp(App[None]):
         if palette.is_open:
             palette.move_selection(-1)
             return
+        skill_palette = self.query_one(SkillPalette)
+        if skill_palette.is_open:
+            skill_palette.move_selection(-1)
+            return
         previous = self._input_history.previous(self.query_one("#prompt", TextArea).text)
         if previous is not None:
             self._load_history_input(previous)
@@ -520,6 +574,10 @@ class ChatTuiApp(App[None]):
         palette = self.query_one(CommandPalette)
         if palette.is_open:
             palette.move_selection(1)
+            return
+        skill_palette = self.query_one(SkillPalette)
+        if skill_palette.is_open:
+            skill_palette.move_selection(1)
             return
         following = self._input_history.next()
         if following is not None:
@@ -652,6 +710,11 @@ class ChatTuiApp(App[None]):
         palette = self.query_one(CommandPalette)
         if palette.is_open:
             palette.dismiss(prompt.text)
+            self._last_escape_at = None
+            return
+        skill_palette = self.query_one(SkillPalette)
+        if skill_palette.is_open:
+            skill_palette.dismiss(prompt.text, prompt.cursor_location)
             self._last_escape_at = None
             return
         if prompt.text:

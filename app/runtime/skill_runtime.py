@@ -20,11 +20,11 @@ from tools.skills import (
     build_explicit_skills_prompt,
     resolve_skill_references,
 )
-from tools.registry import ToolRegistry
+from tools.contracts import ToolRuntime
 from tools.workspace import (
     WorkspaceChangeJournal,
     WorkspacePolicy,
-    create_workspace_registry,
+    create_intent_workspace_registry,
 )
 
 
@@ -60,7 +60,9 @@ class SkillRuntime:
         codex_skills_root: Path | None = None,
         github_fetcher: SkillSourceFetcher | None = None,
         journal: WorkspaceChangeJournal | None = None,
-        registry_factory: Callable[..., ToolRegistry] = create_workspace_registry,
+        registry_factory: Callable[
+            ..., ToolRuntime
+        ] = create_intent_workspace_registry,
     ) -> None:
         self._startup_directory = Path(startup_directory)
         self._agents_prompt = agents_prompt
@@ -118,10 +120,13 @@ class SkillRuntime:
         catalog = self._catalog
         skill_prompt = catalog.prompt if catalog is not None else None
         explicit_prompt = None
+        preactivated_groups: tuple[str, ...] = ()
         if input_text is not None and catalog is not None:
             try:
                 references = resolve_skill_references(input_text, catalog)
                 explicit_prompt = build_explicit_skills_prompt(references)
+                if references:
+                    preactivated_groups = ("skills",)
             except SkillReferenceError as exc:
                 raise ChatRuntimeError(
                     ChatErrorCode.INVALID_INPUT,
@@ -132,6 +137,7 @@ class SkillRuntime:
             journal=self._journal,
             skill_catalog=catalog,
             install_skill_tool=self._install_tool,
+            preactivated_groups=preactivated_groups,
         )
         return ChatExecutionSnapshot(
             system_prompt=compose_system_prompt(

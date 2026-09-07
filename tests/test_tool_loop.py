@@ -20,6 +20,7 @@ from tools.contracts import (
     ToolEffect,
 )
 from tools.registry import MAX_ARGUMENT_BYTES, ToolRegistry
+from tools.groups import GroupedToolRegistry, ToolGroup, ToolGroupDefinition
 
 
 class RecordingTool:
@@ -48,6 +49,35 @@ class FakeTurn:
     async def next(self, tool_results=(), *, on_text_delta=None):
         self.received_results.append(tuple(tool_results))
         return next(self.steps)
+
+    def replace_tools(self, tools):
+        raise AssertionError("静态 Registry 不应刷新工具定义")
+
+
+class DynamicRegistry:
+    def __init__(self, registry):
+        self.registry = registry
+        self.definitions = registry.definitions
+
+    async def execute(self, call, context=None):
+        result = await self.registry.execute(call, context)
+        self.definitions = self.definitions + (
+            ToolDefinition(
+                "added",
+                "Added after activation",
+                {"type": "object", "properties": {}},
+            ),
+        )
+        return result
+
+
+class RefreshingTurn(FakeTurn):
+    def __init__(self, steps):
+        super().__init__(steps)
+        self.replacements = []
+
+    def replace_tools(self, tools):
+        self.replacements.append(tools)
 
 
 def tool_step(*calls):
@@ -133,6 +163,78 @@ def test_tool_loop_executes_tool_and_returns_result_to_next_model_step():
         "ok": True,
         "data": {"received": {"value": "中文"}},
     }
+
+
+def test_tool_loop_refreshes_turn_only_after_registry_definitions_change():
+    tool = RecordingTool()
+    registry = DynamicRegistry(ToolRegistry([tool]))
+    turn = RefreshingTurn(
+        [tool_step(ToolCall("call-1", "lookup", "{}")), final_step()]
+    )
+
+    asyncio.run(run_tool_loop(turn, registry, request_id="d" * 32))
+
+    assert len(turn.replacements) == 1
+    assert tuple(item.name for item in turn.replacements[0]) == ("lookup", "added")
+
+
+def test_tool_loop_rejects_tool_added_earlier_in_same_model_step():
+    tool = RecordingTool()
+    registry = DynamicRegistry(ToolRegistry([tool]))
+    turn = RefreshingTurn(
+        [
+            tool_step(
+                ToolCall("activate", "lookup", "{}"),
+                ToolCall("forged", "added", "{}"),
+            ),
+            final_step(),
+        ]
+    )
+
+    asyncio.run(run_tool_loop(turn, registry, request_id="c" * 32))
+
+    forged = turn.received_results[1][1]
+    assert forged.is_error is True
+    assert json.loads(forged.output)["error"]["code"] == "unknown_tool"
+
+
+def test_tool_loop_activates_group_then_executes_new_tool_on_next_step():
+    tool = RecordingTool()
+    registry = GroupedToolRegistry(
+        (tool,),
+        (
+            ToolGroupDefinition(
+                ToolGroup.GENERAL,
+                "读取测试值",
+                ("lookup",),
+            ),
+        ),
+    )
+    turn = RefreshingTurn(
+        [
+            tool_step(
+                ToolCall(
+                    "activate",
+                    "activate_tool_groups",
+                    '{"groups":["general"]}',
+                )
+            ),
+            tool_step(ToolCall("lookup", "lookup", '{"value":"中文"}')),
+            final_step(),
+        ]
+    )
+
+    result = asyncio.run(
+        run_tool_loop(turn, registry, request_id="7" * 32)
+    )
+
+    assert result.output_text == "done"
+    assert tool.events == [{"value": "中文"}]
+    assert len(turn.replacements) == 1
+    assert tuple(item.name for item in turn.replacements[0]) == (
+        "activate_tool_groups",
+        "lookup",
+    )
 
 
 def test_tool_loop_logs_and_aggregates_usage_from_every_model_step(monkeypatch):

@@ -1468,18 +1468,7 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
         "system_prompt_loads": [tmp_path],
         "system_prompt": system_prompt,
         "system_prompt_error": None,
-        "workspace_tools": (
-            "get_current_time",
-            "list_workspace_files",
-            "search_workspace_text",
-            "read_workspace_file",
-            "get_workspace_git_status",
-            "get_workspace_git_diff",
-            "apply_workspace_edits",
-            "run_project_check",
-            "undo_workspace_change",
-            "install_skill",
-        ),
+        "workspace_tools": ("activate_tool_groups",),
         "workspace_error": None,
         "skills_count": 0,
         "skills_error": None,
@@ -1564,11 +1553,15 @@ def test_tui_entrypoint_loads_skills_only_into_tui_registry(tmp_path, monkeypatc
         definition.name
         for definition in observed["workspace_registry"].definitions
     )
-    assert names[-3:] == (
-        "load_skill",
-        "read_skill_resource",
-        "run_skill_script",
-    )
+    assert names == ("activate_tool_groups",)
+    available_groups = {
+        group.group.value
+        for group in observed["workspace_registry"].group_definitions
+    }
+    assert available_groups >= {
+        "skills",
+        "skill_install",
+    }
     assert observed["skills_count"] == 1
     assert observed["skills_error"] is None
     assert "demo-skill" in observed["system_prompt"]
@@ -1602,9 +1595,16 @@ def test_tui_entrypoint_invalid_skill_keeps_workspace_tools(tmp_path, monkeypatc
         definition.name
         for definition in observed["workspace_registry"].definitions
     }
-    assert "read_workspace_file" in names
-    assert "load_skill" not in names
-    assert "install_skill" in names
+    assert names == {"activate_tool_groups"}
+    available_groups = {
+        group.group.value
+        for group in observed["workspace_registry"].group_definitions
+    }
+    assert available_groups >= {
+        "workspace_read",
+        "skill_install",
+    }
+    assert "skills" not in available_groups
     assert observed["skills_count"] == 0
     assert observed["skills_error"] == "Project skills are unavailable"
     assert observed["system_prompt"] is None
@@ -1628,7 +1628,7 @@ def test_tui_entrypoint_reports_workspace_failure_without_path(tmp_path, monkeyp
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tui_main, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(tui_main, "configure_model_logging", lambda **kwargs: None)
-    monkeypatch.setattr(tui_main, "create_workspace_registry", fail_registry)
+    monkeypatch.setattr(tui_main, "create_intent_workspace_registry", fail_registry)
     monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
 
     tui_main.main()

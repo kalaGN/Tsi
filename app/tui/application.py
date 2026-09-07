@@ -44,7 +44,7 @@ from app.tui.status_bar import StatusBar, StatusBarState, provider_display_name
 from app.tui.transcript import StreamOutput, Transcript
 from app.tui.widgets import PromptTextArea
 from app.tui.workspace_changes import AppliedChangeTracker
-from tools import AnyToolApprovalRequest, ToolRegistry
+from tools import AnyToolApprovalRequest, ToolRuntime
 
 if TYPE_CHECKING:
     from app.runtime.skill_runtime import SkillRuntime
@@ -105,7 +105,7 @@ class ChatTuiApp(App[None]):
         chat_session: ChatSession | None = None,
         system_prompt: str | None = None,
         system_prompt_error: str | None = None,
-        workspace_registry: ToolRegistry | None = None,
+        workspace_registry: ToolRuntime | None = None,
         workspace_error: str | None = None,
         skills_count: int = 0,
         skills_error: str | None = None,

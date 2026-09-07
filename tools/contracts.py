@@ -38,6 +38,8 @@ class ToolErrorCode(str, Enum):
     SKILL_DOWNLOAD_TIMEOUT = "skill_download_timeout"
     SKILL_PACKAGE_INVALID = "skill_package_invalid"
     SKILL_REFRESH_FAILED = "skill_refresh_failed"
+    TOOL_GROUP_UNAVAILABLE = "tool_group_unavailable"
+    TOOL_GROUP_LIMIT = "tool_group_limit"
 
 
 @dataclass(frozen=True)
@@ -132,6 +134,21 @@ class Tool(Protocol):
     definition: ToolDefinition
 
     async def invoke(self, arguments: Mapping[str, object]) -> object:
+        ...
+
+
+class ToolRuntime(Protocol):
+    """模型工具循环所依赖的最小注册与执行契约。"""
+
+    @property
+    def definitions(self) -> tuple[ToolDefinition, ...]:
+        ...
+
+    async def execute(
+        self,
+        call: ToolCall,
+        context: ToolExecutionContext | None = None,
+    ) -> ToolResult:
         ...
 
 

@@ -20,6 +20,8 @@ from tools.workspace import (
     UndoWorkspaceChangeTool,
     WorkspaceChangeJournal,
     WorkspacePolicy,
+    create_intent_workspace_registry,
+    create_workspace_registry,
 )
 from tools import project_checks
 from tools import workspace as workspace_module
@@ -41,6 +43,48 @@ def execute(tool, arguments, approval=None):
         )
     )
     return json.loads(result.output), result
+
+
+def test_static_and_intent_workspace_factories_keep_distinct_visibility(tmp_path):
+    policy = WorkspacePolicy(tmp_path)
+    static = create_workspace_registry(policy)
+    intent = create_intent_workspace_registry(policy)
+
+    assert len(static.definitions) == 9
+    assert tuple(item.name for item in intent.definitions) == (
+        "activate_tool_groups",
+    )
+    assert [group.group.value for group in intent.group_definitions] == [
+        "general",
+        "workspace_read",
+        "workspace_write",
+    ]
+
+
+def test_intent_workspace_write_group_contains_read_and_write_tools(tmp_path):
+    registry = create_intent_workspace_registry(WorkspacePolicy(tmp_path))
+    output = asyncio.run(
+        registry.execute(
+            ToolCall(
+                "activate",
+                "activate_tool_groups",
+                '{"groups":["workspace_write"]}',
+            )
+        )
+    )
+
+    assert output.is_error is False
+    assert tuple(item.name for item in registry.definitions) == (
+        "activate_tool_groups",
+        "list_workspace_files",
+        "search_workspace_text",
+        "read_workspace_file",
+        "get_workspace_git_status",
+        "get_workspace_git_diff",
+        "apply_workspace_edits",
+        "run_project_check",
+        "undo_workspace_change",
+    )
 
 
 def test_policy_rejects_escape_symlink_and_protected_paths(tmp_path):

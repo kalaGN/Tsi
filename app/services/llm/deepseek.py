@@ -81,6 +81,15 @@ class DeepSeekTurn:
         self._pending_calls: tuple[ToolCall, ...] = ()
         self._completed = False
 
+    def replace_tools(self, tools: tuple[ToolDefinition, ...]) -> None:
+        """替换后续请求的工具定义，同时保留当前消息续接状态。"""
+
+        if self._completed or not isinstance(tools, tuple) or any(
+            not isinstance(tool, ToolDefinition) for tool in tools
+        ):
+            raise ProviderInvalidRequestError()
+        self._tools = tools
+
     async def next(
         self,
         tool_results: Sequence[ToolResult] = (),

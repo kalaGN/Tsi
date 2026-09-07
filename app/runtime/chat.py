@@ -34,8 +34,8 @@ from app.services.llm.contracts import (
 from app.services.llm.factory import create_provider
 from tools import (
     ToolApprovalHandler,
-    ToolRegistry,
     ToolResultHandler,
+    ToolRuntime,
     create_default_registry,
 )
 
@@ -100,7 +100,7 @@ ERROR_CODES = {
 async def run_chat(
     input_text: str,
     provider: LlmProvider | None = None,
-    registry: ToolRegistry | None = None,
+    registry: ToolRuntime | None = None,
     *,
     on_text_delta: TextDeltaHandler | None = None,
     on_text_reset: TextResetHandler | None = None,
@@ -131,7 +131,7 @@ async def run_chat(
 async def run_chat_messages(
     messages: Sequence[ChatMessage],
     provider: LlmProvider | None = None,
-    registry: ToolRegistry | None = None,
+    registry: ToolRuntime | None = None,
     *,
     system_prompt: str | None = None,
     on_text_delta: TextDeltaHandler | None = None,

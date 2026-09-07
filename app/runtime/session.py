@@ -19,7 +19,7 @@ from app.services.llm.contracts import (
     TextDeltaHandler,
     TextResetHandler,
 )
-from tools import ToolApprovalHandler, ToolRegistry, ToolResultHandler
+from tools import ToolApprovalHandler, ToolResultHandler, ToolRuntime
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ class ChatExecutionSnapshot:
     """一次发送从开始到结束共用的系统提示词与工具快照。"""
 
     system_prompt: str | None
-    registry: ToolRegistry | None
+    registry: ToolRuntime | None
     version: int = 0
 
 
@@ -43,7 +43,7 @@ class ChatSession:
         provider: LlmProvider | None = None,
         messages: tuple[ChatMessage, ...] = (),
         system_prompt: str | None = None,
-        registry: ToolRegistry | None = None,
+        registry: ToolRuntime | None = None,
         execution_snapshot_provider: ExecutionSnapshotProvider | None = None,
         tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
     ) -> None:
@@ -66,7 +66,7 @@ class ChatSession:
         store: SessionStore,
         provider: LlmProvider | None = None,
         system_prompt: str | None = None,
-        registry: ToolRegistry | None = None,
+        registry: ToolRuntime | None = None,
         execution_snapshot_provider: ExecutionSnapshotProvider | None = None,
         tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
     ) -> "ChatSession":

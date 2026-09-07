@@ -959,12 +959,102 @@ def create_workspace_registry(
     skill_catalog: "SkillCatalog | None" = None,
     install_skill_tool: "InstallSkillTool | None" = None,
 ):
-    """创建仅由 TUI 入口显式加载的固定 Workspace 工具白名单。"""
+    """创建兼容调用方使用的完整固定 Workspace 工具白名单。"""
+
+    from tools.registry import ToolRegistry
+
+    return ToolRegistry(
+        _create_workspace_tools(
+            policy,
+            journal=journal,
+            skill_catalog=skill_catalog,
+            install_skill_tool=install_skill_tool,
+        )
+    )
+
+
+def create_intent_workspace_registry(
+    policy: WorkspacePolicy,
+    journal: WorkspaceChangeJournal | None = None,
+    skill_catalog: "SkillCatalog | None" = None,
+    install_skill_tool: "InstallSkillTool | None" = None,
+    *,
+    preactivated_groups=(),
+):
+    """创建 TUI 请求级工具组 Registry，首步仅披露激活元工具。"""
+
+    from tools.groups import GroupedToolRegistry, ToolGroup, ToolGroupDefinition
+
+    tools = _create_workspace_tools(
+        policy,
+        journal=journal,
+        skill_catalog=skill_catalog,
+        install_skill_tool=install_skill_tool,
+    )
+    names = {tool.definition.name for tool in tools}
+    read_names = (
+        "list_workspace_files",
+        "search_workspace_text",
+        "read_workspace_file",
+        "get_workspace_git_status",
+        "get_workspace_git_diff",
+    )
+    groups = [
+        ToolGroupDefinition(
+            ToolGroup.GENERAL,
+            "读取指定时区的当前时间",
+            ("get_current_time",),
+        ),
+        ToolGroupDefinition(
+            ToolGroup.WORKSPACE_READ,
+            "浏览、搜索、读取工作区并查看 Git 状态或差异",
+            read_names,
+        ),
+        ToolGroupDefinition(
+            ToolGroup.WORKSPACE_WRITE,
+            "读取并修改工作区、运行检查和撤销本轮修改",
+            read_names
+            + (
+                "apply_workspace_edits",
+                "run_project_check",
+                "undo_workspace_change",
+            ),
+        ),
+    ]
+    if "load_skill" in names:
+        groups.append(
+            ToolGroupDefinition(
+                ToolGroup.SKILLS,
+                "加载 Skill 指令、读取资源并按审批运行脚本",
+                ("load_skill", "read_skill_resource", "run_skill_script"),
+            )
+        )
+    if "install_skill" in names:
+        groups.append(
+            ToolGroupDefinition(
+                ToolGroup.SKILL_INSTALL,
+                "从受支持来源安装 Skill",
+                ("install_skill",),
+            )
+        )
+    return GroupedToolRegistry(
+        tools,
+        groups,
+        preactivated_groups=preactivated_groups,
+    )
+
+
+def _create_workspace_tools(
+    policy: WorkspacePolicy,
+    journal: WorkspaceChangeJournal | None = None,
+    skill_catalog: "SkillCatalog | None" = None,
+    install_skill_tool: "InstallSkillTool | None" = None,
+):
+    """构造静态与分组 Registry 共用的同一套工具对象。"""
 
     # 延迟导入打破 Workspace Policy 与固定检查实现之间的模块环。
     from tools.builtin import GetCurrentTimeTool
     from tools.project_checks import RunProjectCheckTool
-    from tools.registry import ToolRegistry
 
     active_journal = WorkspaceChangeJournal() if journal is None else journal
     tools = [
@@ -994,7 +1084,7 @@ def create_workspace_registry(
                 RunSkillScriptTool(skill_catalog),
             )
         )
-    return ToolRegistry(tuple(tools))
+    return tuple(tools)
 
 
 def _path_error(error: WorkspacePathError) -> Exception:

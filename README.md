@@ -101,7 +101,7 @@ TUI 启动时还会读取命令执行目录直属的 `AGENTS.md`：有效的 UTF
 └── assets/        # 可选
 ```
 
-TUI 启动时扫描这一层 `.agents/skills/`，使用安全 YAML 读取 `SKILL.md` 的 `name` 和 `description`，并把名称、描述、相对位置组成 Catalog 追加到 system 消息。模型自行匹配能力时先调用 `load_skill`，需要配套文本时再调用 `read_skill_resource`；未显式引用的 Skill 正文不会预先灌入上下文。状态栏以 `Skills: 数量|error` 展示结果。任一 Skill、资源、编码、大小或符号链接非法时整批 Skill 被禁用，但 `AGENTS.md`、普通对话和已有 Workspace 工具仍可使用。
+TUI 启动时扫描这一层 `.agents/skills/`，使用安全 YAML 读取 `SKILL.md` 的 `name` 和 `description`，并把名称、描述、相对位置以“一行一个 Skill”的精简 Catalog 追加到 system 消息。模型自行匹配能力时先调用 `load_skill`，需要配套文本时再调用 `read_skill_resource`；未显式引用的 Skill 正文不会预先灌入上下文。状态栏以 `Skills: 数量|error` 展示结果。任一 Skill、资源、编码、大小或符号链接非法时整批 Skill 被禁用，但 `AGENTS.md`、普通对话和已有 Workspace 工具仍可使用。
 
 在输入开头或空白后输入 `$` 可以显式引用 Skill，例如：
 

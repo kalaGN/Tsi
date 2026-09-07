@@ -25,7 +25,7 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `tools/builtin.py`：只读 `get_current_time(timezone)` 实现。
 - `tools/workspace.py`：Workspace 路径策略、文件/Git 工具、结构化编辑、Journal 和撤销。
 - `tools/project_checks.py`：无 Shell 的四个固定项目检查。
-- `tools/skills.py`：安全 YAML Skill Catalog、不可变资源快照、渐进读取工具及需审批的有界脚本执行器。
+- `tools/skills.py`：安全 YAML Skill Catalog、每项单行的精简 system prompt、不可变资源快照、渐进读取工具及需审批的有界脚本执行器。
 - `tools/skill_installation.py`：公开 GitHub/个人 Codex 来源解析、无跟随复制、安装审批、候选校验、原子提交和刷新回滚。
 - `app/runtime/system_prompt.py`：从 TUI 启动目录有界读取可选 `AGENTS.md`，并与 Skill Catalog 组合为单条系统提示词。
 - `app/tui/__main__.py`：加载根目录 `.env`，捕获一次启动目录，独立加载 Skill，创建 TUI Registry 并启动 Textual。

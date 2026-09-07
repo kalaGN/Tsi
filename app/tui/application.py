@@ -21,10 +21,13 @@ from app.runtime.session import ChatSession
 from app.runtime.session_store import SessionStore
 from app.services.llm.contracts import (
     ChatRole,
+    LlmProviderError,
+    ModelOption,
     TextDeltaHandler,
     TextResetHandler,
     TokenUsage,
 )
+from app.services.llm.factory import create_provider_for_model, resolve_model_options
 from app.runtime.tool_loop import (
     DEFAULT_TOOL_LOOP_LIMITS,
     WORKSPACE_TOOL_LOOP_LIMITS,
@@ -34,9 +37,10 @@ from app.tui.approval import ToolApprovalScreen
 from app.tui.command_palette import CommandPalette
 from app.tui.commands import LocalCommand, parse_local_command
 from app.tui.input_history import InputHistory
+from app.tui.model_palette import ModelPalette
 from app.tui.skill_palette import SkillPalette
 from app.tui.state import RunStatus
-from app.tui.status_bar import StatusBar, StatusBarState
+from app.tui.status_bar import StatusBar, StatusBarState, provider_display_name
 from app.tui.transcript import StreamOutput, Transcript
 from app.tui.widgets import PromptTextArea
 from app.tui.workspace_changes import AppliedChangeTracker
@@ -106,6 +110,7 @@ class ChatTuiApp(App[None]):
         skills_count: int = 0,
         skills_error: str | None = None,
         skill_runtime: "SkillRuntime | None" = None,
+        model_options: tuple[ModelOption, ...] | None = None,
     ) -> None:
         """初始化运行时信息、可恢复会话以及可注入的测试边界。"""
 
@@ -125,6 +130,12 @@ class ChatTuiApp(App[None]):
             skills_error = skill_status.error
         self._skills_count = skills_count
         self._skills_error = skills_error
+        # 模型目录是启动配置快照，运行中只切换选择，不重新读取环境。
+        self._model_options = (
+            resolve_model_options()
+            if model_options is None
+            else tuple(model_options)
+        )
         if runtime_info is None:
             try:
                 runtime_info = get_chat_runtime_info()
@@ -202,6 +213,7 @@ class ChatTuiApp(App[None]):
         yield ActivityBar()
         yield CommandPalette()
         yield SkillPalette()
+        yield ModelPalette()
         yield PromptTextArea(
             id="prompt",
             soft_wrap=True,
@@ -274,6 +286,12 @@ class ChatTuiApp(App[None]):
             self._submit_focused_approval_action()
             return
         prompt_widget = self.query_one("#prompt", TextArea)
+        model_palette = self.query_one(ModelPalette)
+        if model_palette.is_open:
+            selection = model_palette.take_selection()
+            if selection is not None:
+                self._switch_model(selection)
+            return
         if self.query_one(CommandPalette).is_open:
             self.action_complete_suggestion()
             return
@@ -310,6 +328,9 @@ class ChatTuiApp(App[None]):
 
         if command is LocalCommand.CLEAR:
             self._clear_conversation(prompt)
+            return True
+        if command is LocalCommand.MODEL:
+            self._open_model_palette(prompt)
             return True
         if command is LocalCommand.SKILLS:
             prompt.load_text("")
@@ -407,6 +428,74 @@ class ChatTuiApp(App[None]):
                 )
             )
         self._write_message("System", "\n".join(lines))
+
+    def _open_model_palette(self, prompt: TextArea) -> None:
+        """清空本地命令并用启动配置快照打开模型选择器。"""
+
+        prompt.load_text("")
+        if self.chat_session is None:
+            self._write_message("System", "模型切换不可用。")
+            return
+        if not self._model_options:
+            self._write_message("System", "当前没有可选模型。")
+            return
+        self.query_one(ModelPalette).open(
+            self._model_options,
+            self.runtime_info.provider,
+            self.runtime_info.model,
+        )
+
+    def _switch_model(self, selection: ModelOption) -> None:
+        """先完整创建 Provider，再更新 Session 与界面状态快照。"""
+
+        if self.chat_session is None:
+            self._write_message("System", "模型切换不可用。")
+            return
+        if not selection.api_key_configured:
+            self._write_message("System", "目标模型的 API Key 未配置。")
+            return
+        try:
+            provider = create_provider_for_model(
+                selection.provider,
+                selection.model,
+            )
+            if not provider.api_key_configured:
+                self._write_message("System", "目标模型的 API Key 未配置。")
+                return
+            self.chat_session.replace_provider(provider)
+        except ChatRuntimeError as exc:
+            self._write_message("System", exc.user_message)
+            return
+        except (LlmProviderError, ValueError):
+            self._write_message("System", "模型切换失败。")
+            return
+
+        self._configuration_error = None
+        self.runtime_info = ChatRuntimeInfo(
+            provider=provider.name,
+            model=provider.model,
+            api_key_configured=provider.api_key_configured,
+        )
+        self.run_status = (
+            RunStatus.ERROR
+            if any(
+                (
+                    self._history_error,
+                    self._system_prompt_error,
+                    self._workspace_error,
+                    self._skills_error,
+                )
+            )
+            else RunStatus.READY
+        )
+        self._update_status_bar()
+        self._write_message(
+            "System",
+            (
+                "已切换模型："
+                f"{provider_display_name(provider.name)} · {provider.model}"
+            ),
+        )
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:
         """将输入变化交给命令与技能候选组件。"""
@@ -562,6 +651,10 @@ class ChatTuiApp(App[None]):
         if palette.is_open:
             palette.move_selection(-1)
             return
+        model_palette = self.query_one(ModelPalette)
+        if model_palette.is_open:
+            model_palette.move_selection(-1)
+            return
         skill_palette = self.query_one(SkillPalette)
         if skill_palette.is_open:
             skill_palette.move_selection(-1)
@@ -576,6 +669,10 @@ class ChatTuiApp(App[None]):
         palette = self.query_one(CommandPalette)
         if palette.is_open:
             palette.move_selection(1)
+            return
+        model_palette = self.query_one(ModelPalette)
+        if model_palette.is_open:
+            model_palette.move_selection(1)
             return
         skill_palette = self.query_one(SkillPalette)
         if skill_palette.is_open:
@@ -723,6 +820,12 @@ class ChatTuiApp(App[None]):
             self.screen.dismiss(False)
             return
         prompt = self.query_one("#prompt", TextArea)
+        model_palette = self.query_one(ModelPalette)
+        if model_palette.is_open:
+            model_palette.dismiss()
+            self._last_escape_at = None
+            prompt.focus()
+            return
         palette = self.query_one(CommandPalette)
         if palette.is_open:
             palette.dismiss(prompt.text)

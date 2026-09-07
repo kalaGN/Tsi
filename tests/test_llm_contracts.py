@@ -1,6 +1,31 @@
 import pytest
 
-from app.services.llm.contracts import ModelStep, TokenUsage
+from app.services.llm.contracts import ModelOption, ModelStep, TokenUsage
+
+
+def test_model_option_contains_only_safe_selection_metadata():
+    option = ModelOption("deepseek", "deepseek-v4-flash", True)
+
+    assert option.provider == "deepseek"
+    assert option.model == "deepseek-v4-flash"
+    assert option.api_key_configured is True
+
+
+@pytest.mark.parametrize(
+    "values",
+    [
+        ("", "model", True),
+        ("unknown", "model", True),
+        ("deepseek", "", True),
+        ("deepseek", " model ", True),
+        ("deepseek", "bad\nmodel", True),
+        ("deepseek", "x" * 129, True),
+        ("deepseek", "model", 1),
+    ],
+)
+def test_model_option_rejects_invalid_metadata(values):
+    with pytest.raises(ValueError):
+        ModelOption(*values)
 
 
 def test_token_usage_accepts_zero_and_adds_each_dimension():

@@ -15,10 +15,18 @@ from app.runtime.chat import (
 from app.runtime.session import ChatSession
 from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.session_store import SessionStore, SessionStoreError
-from app.services.llm.contracts import ChatMessage, ChatRole, TokenUsage
+from app.services.llm.contracts import (
+    ChatMessage,
+    ChatRole,
+    ModelOption,
+    ModelStep,
+    ProviderConfigurationError,
+    TokenUsage,
+)
 from app.tui import __main__ as tui_main
 from app.tui import application as tui_application
 from app.tui.application import ChatTuiApp
+from app.tui.model_palette import ModelPalette
 from app.tui.skill_palette import SkillPalette
 from app.tui.state import RunStatus
 from app.tui.approval import ToolApprovalScreen
@@ -38,6 +46,32 @@ from tools.skills import load_skill_catalog
 ALIYUN_INFO = ChatRuntimeInfo("aliyun", "qwen3-max", True)
 DEEPSEEK_INFO = ChatRuntimeInfo("deepseek", "deepseek-v4-flash", True)
 MISSING_KEY_INFO = ChatRuntimeInfo("deepseek", "deepseek-v4-flash", False)
+
+
+class ImmediateProvider:
+    """为模型切换测试记录实际收到的历史和模型。"""
+
+    api_key_configured = True
+
+    def __init__(self, name: str, model: str, answer: str = "切换后回答") -> None:
+        self.name = name
+        self.model = model
+        self.answer = answer
+        self.calls = []
+
+    def create_turn(self, messages, tools, *, request_id):
+        self.calls.append(tuple(messages))
+        return ImmediateTurn(self.answer)
+
+
+class ImmediateTurn:
+    def __init__(self, answer: str) -> None:
+        self.answer = answer
+
+    async def next(self, tool_results=(), *, on_text_delta=None):
+        if on_text_delta is not None:
+            on_text_delta(self.answer)
+        return ModelStep(200, self.answer, ())
 
 
 class ManualClock:
@@ -109,6 +143,161 @@ def test_command_preview_escape_closes_before_clearing_input():
             assert prompt.text == ""
             await pilot.press("/", "h")
             assert not preview.display
+
+    asyncio.run(scenario())
+
+
+def test_model_command_lists_navigates_and_switches_next_session_request(
+    tmp_path,
+    monkeypatch,
+):
+    async def scenario():
+        original = ImmediateProvider("deepseek", "deepseek-v4-flash")
+        selected = ImmediateProvider("aliyun", "qwen3-max")
+        session = ChatSession(
+            SessionStore(tmp_path / "chat-session.json"),
+            provider=original,
+        )
+        options = (
+            ModelOption("deepseek", "deepseek-v4-flash", True),
+            ModelOption("aliyun", "qwen3-max", True),
+        )
+        factory_calls = []
+
+        def create_selected(provider, model):
+            factory_calls.append((provider, model))
+            return selected
+
+        monkeypatch.setattr(
+            tui_application,
+            "create_provider_for_model",
+            create_selected,
+        )
+        app = ChatTuiApp(
+            chat_session=session,
+            runtime_info=DEEPSEEK_INFO,
+            model_options=options,
+        )
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("/model")
+            await pilot.press("enter")
+
+            palette = app.query_one(ModelPalette)
+            assert palette.is_open
+            assert "DeepSeek · deepseek-v4-flash" in str(palette.content)
+            assert prompt.text == ""
+            await pilot.press("down", "enter")
+
+            assert not palette.is_open
+            assert factory_calls == [("aliyun", "qwen3-max")]
+            assert "Aliyun | qwen3-max" in str(
+                app.query_one("#status-bar", Static).content
+            )
+            assert "已切换模型：Aliyun · qwen3-max" in transcript_text(app)
+            assert app._input_history.entries == []
+            assert session.messages == ()
+
+            prompt.load_text("继续对话")
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+
+            assert selected.calls == [(ChatMessage(ChatRole.USER, "继续对话"),)]
+            assert original.calls == []
+
+    asyncio.run(scenario())
+
+
+def test_model_command_escape_and_missing_key_keep_current_model(tmp_path):
+    async def scenario():
+        original = ImmediateProvider("deepseek", "deepseek-v4-flash")
+        session = ChatSession(
+            SessionStore(tmp_path / "chat-session.json"),
+            provider=original,
+        )
+        options = (
+            ModelOption("deepseek", "deepseek-v4-flash", True),
+            ModelOption("aliyun", "qwen3-max", False),
+        )
+        app = ChatTuiApp(
+            chat_session=session,
+            runtime_info=DEEPSEEK_INFO,
+            model_options=options,
+        )
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("/model")
+            await pilot.press("enter", "down", "escape")
+
+            assert not app.query_one(ModelPalette).is_open
+            assert app._last_escape_at is None
+            assert "DeepSeek | deepseek-v4-flash" in str(
+                app.query_one("#status-bar", Static).content
+            )
+
+            prompt.load_text("/model")
+            await pilot.press("enter", "down", "enter")
+
+            assert "目标模型的 API Key 未配置" in transcript_text(app)
+            assert "DeepSeek | deepseek-v4-flash" in str(
+                app.query_one("#status-bar", Static).content
+            )
+            assert session.messages == ()
+
+    asyncio.run(scenario())
+
+
+def test_model_command_factory_failure_keeps_current_model(tmp_path, monkeypatch):
+    async def scenario():
+        original = ImmediateProvider("deepseek", "deepseek-v4-flash")
+        session = ChatSession(
+            SessionStore(tmp_path / "chat-session.json"),
+            provider=original,
+        )
+
+        def fail_creation(_provider, _model):
+            raise ProviderConfigurationError("unsafe upstream detail")
+
+        monkeypatch.setattr(
+            tui_application,
+            "create_provider_for_model",
+            fail_creation,
+        )
+        app = ChatTuiApp(
+            chat_session=session,
+            runtime_info=DEEPSEEK_INFO,
+            model_options=(
+                ModelOption("deepseek", "deepseek-v4-flash", True),
+                ModelOption("aliyun", "qwen3-max", True),
+            ),
+        )
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("/model")
+            await pilot.press("enter", "down", "enter")
+
+            transcript = transcript_text(app)
+            assert "模型切换失败" in transcript
+            assert "unsafe upstream detail" not in transcript
+            assert "DeepSeek | deepseek-v4-flash" in str(
+                app.query_one("#status-bar", Static).content
+            )
+            assert session.messages == ()
+
+    asyncio.run(scenario())
+
+
+def test_model_command_is_unavailable_without_chat_session():
+    async def scenario():
+        async def runner(_input_text, **_kwargs):
+            raise AssertionError("/model must not call the model")
+
+        app = ChatTuiApp(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("/model")
+            await pilot.press("enter")
+
+            assert "模型切换不可用" in transcript_text(app)
+            assert app._input_history.entries == []
 
     asyncio.run(scenario())
 

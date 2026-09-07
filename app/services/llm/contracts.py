@@ -11,6 +11,30 @@ TextDeltaHandler = Callable[[str], None]
 TextResetHandler = Callable[[], None]
 
 
+@dataclass(frozen=True)
+class ModelOption:
+    """TUI 可展示的安全模型候选，不携带 API Key 正文。"""
+
+    provider: str
+    model: str
+    api_key_configured: bool
+
+    def __post_init__(self) -> None:
+        if self.provider not in {"aliyun", "deepseek"}:
+            raise ValueError("provider must be supported")
+        if (
+            not isinstance(self.model, str)
+            or not self.model
+            or self.model != self.model.strip()
+            or len(self.model) > 128
+            or "," in self.model
+            or any(not character.isprintable() for character in self.model)
+        ):
+            raise ValueError("model must be safe normalized text")
+        if type(self.api_key_configured) is not bool:
+            raise ValueError("api_key_configured must be a boolean")
+
+
 class ChatRole(str, Enum):
     """当前文本对话支持的 Provider 中立角色。"""
 

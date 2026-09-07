@@ -62,6 +62,14 @@ Screen {
     background: $panel;
 }
 
+#model-preview {
+    display: none;
+    height: auto;
+    max-height: 7;
+    padding: 0 1;
+    background: $panel;
+}
+
 #status-bar {
     height: 1;
     padding: 0 1;

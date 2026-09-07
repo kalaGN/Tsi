@@ -77,6 +77,67 @@ def test_chat_session_persists_turns_and_restores_history(tmp_path):
     asyncio.run(scenario())
 
 
+def test_chat_session_replaces_provider_without_changing_committed_history(tmp_path):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        first = RecordingProvider(["第一答"])
+        second = RecordingProvider(["第二答"])
+        session = ChatSession(store, provider=first)
+
+        await session.send("第一问")
+        committed_before_switch = session.messages
+        session.replace_provider(second)
+
+        assert session.messages == committed_before_switch
+        assert store.load() == committed_before_switch
+
+        await session.send("第二问")
+
+        assert len(first.calls) == 1
+        assert second.calls == [
+            committed_before_switch + (ChatMessage(ChatRole.USER, "第二问"),)
+        ]
+
+    asyncio.run(scenario())
+
+
+def test_chat_session_rejects_provider_replacement_while_sending(
+    tmp_path,
+    monkeypatch,
+):
+    async def scenario():
+        started = asyncio.Event()
+        release = asyncio.Event()
+        observed_providers = []
+
+        async def blocking_run(_messages, **kwargs):
+            observed_providers.append(kwargs["provider"])
+            started.set()
+            await release.wait()
+            return ChatResult("完成", "fake", "fake-model")
+
+        monkeypatch.setattr(session_module, "run_chat_messages", blocking_run)
+        original = RecordingProvider()
+        replacement = RecordingProvider()
+        session = ChatSession(
+            SessionStore(tmp_path / "chat-session.json"),
+            provider=original,
+        )
+        send_task = asyncio.create_task(session.send("问题"))
+        await started.wait()
+
+        with pytest.raises(ChatRuntimeError) as captured:
+            session.replace_provider(replacement)
+
+        assert captured.value.code is ChatErrorCode.CONFIGURATION
+        release.set()
+        await send_task
+        await session.send("第二问")
+        assert observed_providers == [original, original]
+
+    asyncio.run(scenario())
+
+
 def test_chat_session_uses_system_prompt_without_persisting_it(tmp_path):
     async def scenario():
         store = SessionStore(tmp_path / "chat-session.json")

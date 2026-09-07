@@ -33,6 +33,7 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `app/tui/approval.py`：默认拒绝且可复制的纯文本完整 Diff Modal。
 - `app/tui/commands.py`：本地命令枚举、候选说明与完整命令解析的唯一来源；不依赖 Textual 或 Runtime。
 - `app/tui/command_palette.py`：使用统一命令目录完成前缀过滤、循环选择、补全消费与关闭状态；不执行命令，不调用 Runtime。
+- `app/tui/model_palette.py`：展示安全的供应商/模型候选快照，负责当前项定位、循环选择、确认与取消；不读取环境或创建 Provider。
 - `app/tui/skill_palette.py`：识别光标所在 `$前缀`，使用内存 Skill 摘要完成有限候选、循环选择和精确替换结果；不读取正文或磁盘。
 - `app/tui/transcript.py`：`Transcript` 渲染用户卡片、Assistant Markdown 和系统纯文本；`StreamOutput` 管理流式纯文本缓冲、批量绘制与清理。主应用仍拥有请求代次与取消校验。
 - `app/tui/input_history.py`：纯 Python 输入历史状态，负责已发送记录、导航索引与草稿恢复；不读取文件或操作组件。
@@ -145,16 +146,18 @@ TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只�
 
 输入历史是 `ChatTuiApp` 内存状态：启动时从 Session 的 user 消息初始化，当前进程每次真正启动的请求立即追加，因此失败或取消输入也可临时召回；只有完整成功轮次由既有 Session 规则跨重启保存。高优先级 Up/Down Binding 负责不循环浏览和草稿恢复，不修改 Session schema。
 
-输入提交由主应用按固定顺序协调：审批界面 Enter、命令候选补全、Skill 候选补全、可随时执行的 `/quit`、仅空闲时执行的本地命令、历史/系统提示词/Workspace/空白校验，最后才创建请求 Worker。命令目录负责定义和解析，两个候选组件只返回补全结果；命令消费、会话清理、校验和请求启动分别由主应用具名方法承担，避免候选模块反向操作 Textual 输入框或 Runtime。
+输入提交由主应用按固定顺序协调：审批界面 Enter、模型选择确认、命令/Skill 候选补全、可随时执行的 `/quit`、仅空闲时执行的本地命令、历史/系统提示词/Workspace/空白校验，最后才创建请求 Worker。命令目录负责定义和解析，三个候选组件只返回补全或选择结果；命令消费、模型切换、会话清理、校验和请求启动分别由主应用具名方法承担，避免候选模块反向操作 Textual 输入框、Session 或 Runtime。
 
 ## 配置
 
-| Provider | Selector | Key | Optional model | Default |
-| --- | --- | --- | --- | --- |
-| Aliyun | `LLM_PROVIDER=aliyun` | `DASHSCOPE_API_KEY` | `ALIYUN_MODEL` | `qwen3-max` |
-| DeepSeek | `LLM_PROVIDER=deepseek` 或未设置 | `DEEPSEEK_API_KEY` | `DEEPSEEK_MODEL` | `deepseek-v4-flash` |
+| Provider | Selector | Key | Current model | TUI candidates | Default |
+| --- | --- | --- | --- | --- | --- |
+| Aliyun | `LLM_PROVIDER=aliyun` | `DASHSCOPE_API_KEY` | `ALIYUN_MODEL` | `ALIYUN_MODELS` | `qwen3-max` |
+| DeepSeek | `LLM_PROVIDER=deepseek` 或未设置 | `DEEPSEEK_API_KEY` | `DEEPSEEK_MODEL` | `DEEPSEEK_MODELS` | `deepseek-v4-flash` |
 
 显式空白或未知 `LLM_PROVIDER` 是配置错误，不静默回退。模型变量空白时使用默认值。上游 URL 固定在相应适配器中，不能通过环境变量覆盖。
+
+TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默认模型组成的安全候选快照。候选按 DeepSeek、Aliyun 及各自配置顺序展示，每家最多 50 项；缺少 Key 的候选可见但不可确认。切换先创建完整 Provider，再由 Session 在无活动请求时替换，保留消息和存储且不写回环境。HTTP 仍只使用部署环境选择。
 
 ## 设计决策
 
@@ -181,6 +184,7 @@ TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只�
 - TUI 同时最多一个请求；Esc 优先清空非空输入且不启动退出计时，输入为空时第一次 Esc 取消请求，1.5 秒内第二次 Esc 退出，并用请求代次阻止陈旧结果写回。
 - TUI 每个活动请求最多创建一个 100 ms Timer，空闲时没有周期任务；Timer 回调同样校验捕获的请求代次。
 - TUI 上下键固定用于输入历史，历史不去重、不循环且没有独立持久化文件；`/clear` 同步清空。
+- TUI 模型候选打开时优先消费上下键、Enter 和 Esc；选择器只保存安全候选快照，Provider 创建和 Session 替换仍由应用协调。
 - TUI 使用唯一 `data/chat-session.json` 保存完整轮次；启动恢复，`/clear` 删除，损坏历史不自动覆盖。
 - TUI 只在启动时读取当前目录直属 `AGENTS.md`，不递归、不热重载；system 消息与 Session schema 隔离。
 - TUI 从 `.agents/skills/*/SKILL.md` 读取 Codex 兼容项目 Skill；Catalog 仅含名称、描述和相对位置，正文与资源按需读取，任一非法 Skill 会禁用整批但不影响 Workspace 和安装工具。

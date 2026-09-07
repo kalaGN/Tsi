@@ -47,14 +47,14 @@ class StatusBar(Static):
             workspace_status = "disabled"
         skills_status = "error" if state.skills_error else state.skills_count
         self.update(
-            f"{_provider_display_name(state.provider)} | {state.model} | "
+            f"{provider_display_name(state.provider)} | {state.model} | "
             f"Key: {key_status} | AGENTS: {agents_status} | "
             f"Workspace: {workspace_status} | Skills: {skills_status} | "
             f"{state.run_status.value}"
         )
 
 
-def _provider_display_name(provider: str) -> str:
+def provider_display_name(provider: str) -> str:
     """保留 DeepSeek 品牌大小写，其余名称使用常规标题格式。"""
 
     return "DeepSeek" if provider == "deepseek" else provider.title()

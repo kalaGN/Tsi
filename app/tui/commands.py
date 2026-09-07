@@ -8,6 +8,7 @@ class LocalCommand(str, Enum):
     """应用支持且不会发送给模型的本地命令。"""
 
     CLEAR = "/clear"
+    MODEL = "/model"
     SKILLS = "/skills"
     QUIT = "/quit"
 
@@ -23,6 +24,7 @@ class CommandSpec:
 COMMAND_SPECS = (
     CommandSpec(LocalCommand.CLEAR, "清空对话、上下文和历史"),
     CommandSpec(LocalCommand.SKILLS, "查看可用技能"),
+    CommandSpec(LocalCommand.MODEL, "切换模型供应商和模型"),
     CommandSpec(LocalCommand.QUIT, "退出 TUI"),
 )
 

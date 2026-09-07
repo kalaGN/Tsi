@@ -18,6 +18,7 @@ from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
     LlmProviderError,
+    ModelOption,
     ProviderAuthenticationError,
     ProviderConfigurationError,
     ProviderConnectionError,
@@ -31,7 +32,12 @@ from app.services.llm.deepseek import (
     DEEPSEEK_CHAT_COMPLETIONS_URL,
     DeepSeekChatProvider,
 )
-from app.services.llm.factory import create_provider, resolve_provider_config
+from app.services.llm.factory import (
+    create_provider,
+    create_provider_for_model,
+    resolve_model_options,
+    resolve_provider_config,
+)
 from app.services.llm import deepseek, http_client
 from app.services.llm.http_client import post_json, post_sse
 from tools.contracts import ToolDefinition, ToolResult
@@ -269,6 +275,93 @@ def test_factory_creates_selected_provider():
 
     assert isinstance(aliyun, AliyunResponsesProvider)
     assert isinstance(deepseek, DeepSeekChatProvider)
+
+
+def test_factory_resolves_bounded_safe_model_options_in_stable_order():
+    options = resolve_model_options(
+        {
+            "DEEPSEEK_API_KEY": FAKE_API_KEY,
+            "DEEPSEEK_MODEL": "current-deepseek",
+            "DEEPSEEK_MODELS": (
+                "deepseek-a, deepseek-a, ,bad\nname,deepseek-b"
+            ),
+            "ALIYUN_MODEL": "current-qwen",
+            "ALIYUN_MODELS": "qwen-a,qwen-a,qwen-b",
+        }
+    )
+
+    assert options == (
+        ModelOption("deepseek", "deepseek-a", True),
+        ModelOption("deepseek", "deepseek-b", True),
+        ModelOption("deepseek", "current-deepseek", True),
+        ModelOption("deepseek", "deepseek-v4-flash", True),
+        ModelOption("aliyun", "qwen-a", False),
+        ModelOption("aliyun", "qwen-b", False),
+        ModelOption("aliyun", "current-qwen", False),
+        ModelOption("aliyun", "qwen3-max", False),
+    )
+
+
+def test_factory_limits_each_provider_catalog_while_retaining_required_models():
+    configured = ",".join(f"model-{index}" for index in range(60))
+
+    options = resolve_model_options(
+        {
+            "DEEPSEEK_MODELS": configured,
+            "DEEPSEEK_MODEL": "current-model",
+        }
+    )
+    deepseek_options = [option for option in options if option.provider == "deepseek"]
+
+    assert len(deepseek_options) == 50
+    assert deepseek_options[-2:] == [
+        ModelOption("deepseek", "current-model", False),
+        ModelOption("deepseek", "deepseek-v4-flash", False),
+    ]
+
+
+def test_factory_ignores_oversized_model_catalog_but_keeps_required_models():
+    options = resolve_model_options(
+        {
+            "DEEPSEEK_MODELS": "x" * 8193,
+            "DEEPSEEK_MODEL": "current-model",
+        }
+    )
+
+    assert tuple(
+        option.model for option in options if option.provider == "deepseek"
+    ) == ("current-model", "deepseek-v4-flash")
+
+
+def test_factory_creates_explicit_provider_without_mutating_environment():
+    environ = {
+        "LLM_PROVIDER": "aliyun",
+        "DEEPSEEK_API_KEY": FAKE_API_KEY,
+    }
+
+    provider = create_provider_for_model("deepseek", "custom-model", environ)
+
+    assert isinstance(provider, DeepSeekChatProvider)
+    assert provider.model == "custom-model"
+    assert environ == {
+        "LLM_PROVIDER": "aliyun",
+        "DEEPSEEK_API_KEY": FAKE_API_KEY,
+    }
+
+
+@pytest.mark.parametrize(
+    ("provider", "model"),
+    [
+        ("unknown", "model"),
+        ("deepseek", ""),
+        ("deepseek", "bad\nmodel"),
+        ("deepseek", "bad,model"),
+        ("deepseek", "x" * 129),
+    ],
+)
+def test_factory_rejects_invalid_explicit_model_selection(provider, model):
+    with pytest.raises(ProviderConfigurationError):
+        create_provider_for_model(provider, model, {})
 
 
 @pytest.mark.parametrize(

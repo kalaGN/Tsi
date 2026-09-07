@@ -154,6 +154,19 @@ class ChatSession:
             raise _storage_error(exc) from exc
         self._messages = ()
 
+    def replace_provider(self, provider: LlmProvider) -> None:
+        """只替换后续请求使用的 Provider，不改变已提交会话。"""
+
+        if provider is None:
+            raise ValueError("provider is required")
+        # 同步检查与赋值不会让出事件循环，可阻止请求中途观察到新 Provider。
+        if self._send_lock.locked():
+            raise ChatRuntimeError(
+                ChatErrorCode.CONFIGURATION,
+                "Model cannot be changed while a request is active",
+            )
+        self._provider = provider
+
 
 def _storage_error(error: SessionStoreError) -> ChatRuntimeError:
     return ChatRuntimeError(ChatErrorCode.STORAGE, str(error))

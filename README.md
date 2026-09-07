@@ -22,6 +22,7 @@ DeepSeek 是默认 Provider；`LLM_PROVIDER` 可以省略：
 LLM_PROVIDER=deepseek
 DEEPSEEK_API_KEY=replace-with-real-api-key
 DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro
 ```
 
 使用阿里云时必须显式选择：
@@ -30,9 +31,10 @@ DEEPSEEK_MODEL=deepseek-v4-flash
 LLM_PROVIDER=aliyun
 DASHSCOPE_API_KEY=replace-with-real-api-key
 ALIYUN_MODEL=qwen3-max
+ALIYUN_MODELS=qwen3-max,qwen-plus
 ```
 
-`ALIYUN_MODEL`、`DEEPSEEK_MODEL` 都是可选项，空白或未设置时使用示例中的默认模型。Provider 只能为 `aliyun` 或 `deepseek`；显式空白或其他值会返回配置错误。
+`ALIYUN_MODEL`、`DEEPSEEK_MODEL` 都是启动时的当前模型，空白或未设置时使用示例中的默认值。`ALIYUN_MODELS`、`DEEPSEEK_MODELS` 是 TUI `/model` 的可选候选，使用英文逗号分隔；示例只说明配置格式，不承诺对应模型在上游可用。Provider 只能为 `aliyun` 或 `deepseek`；显式空白或其他值会返回配置错误。
 
 ## 工具调用
 
@@ -120,20 +122,21 @@ Skill 包以 Codex 的 `.agents/skills/` 发现约定为准，`SKILL.md` 与 `sc
 
 TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统提示词不会显示在对话区或写入 Session。模型生成期间，输入框上方会持续显示临时纯文本；完整响应到达后，该区域会被一份最终 Markdown 消息替换并美化为标题、列表、表格和代码块等结构。流式展示不会执行代码，也不会把半截回答写入会话历史。请求期间还会显示动画、`思考中`、实时耗时和 Esc 取消提示；成功或失败后仍会在对话记录中显示最终耗时，取消请求不记录最终耗时。成功响应会在耗时后显示上游实际报告的本轮 Token 输入、输出和合计；任一模型步骤未返回 usage 时显示 `Token：不可用`，不会用字符数估算或把部分统计伪装成完整合计。HTTP `/chat` 仍是无状态单轮聚合 JSON 接口，不读取 `AGENTS.md`，也不与 TUI 共享历史或返回 Token 字段。
 
-- `Enter`：候选打开时先补全，否则发送输入。
+- `Enter`：模型列表打开时确认选择，命令或 Skill 候选打开时先补全，否则发送输入。
 - `Tab`：补全当前命令或 Skill 候选。
 - `Cmd+A`（macOS）/ `Ctrl+A`：输入框聚焦时全选当前输入内容。
-- `↑` / `↓`：向前或向后浏览已发送输入；越过最新记录时恢复浏览前草稿。
+- `↑` / `↓`：模型列表打开时循环移动候选，否则浏览已发送输入；越过最新记录时恢复浏览前草稿。
 - 鼠标拖选消息后按 `Cmd+C`（macOS）或 `Ctrl+C`：复制选中的可见文本。
 - 在对话记录中双击某一可见行：立即复制该行的渲染文字；流式输出和审批 Diff 仍使用拖选复制。
-- `Esc`：输入框非空时先清空输入；输入为空时第一次取消运行中请求并提示，1.5 秒内再次按下退出。
+- `Esc`：模型列表打开时先取消选择；否则输入框非空时清空输入，输入为空时第一次取消运行中请求并提示，1.5 秒内再次按下退出。
 - `/clear`：清空界面、模型上下文和本地持久化历史。
+- `/model`：打开模型候选列表；`↑/↓` 循环移动，`Enter` 确认，`Esc` 取消。切换只影响当前 TUI 进程并保留会话，重启后重新使用环境配置。
 - `/skills`：列出当前运行时已发布的 Skill 名称、描述和项目相对入口；不会调用模型或重新扫描磁盘。
 - `/quit`：取消运行中请求并退出。
 
 输入 `/` 会在输入框上方显示命令预览，继续输入 `/sk` 等前缀可过滤候选；在输入起点或空白后输入 `$` 会显示 Skill 候选。候选打开时，`↑/↓` 选择、`Tab` 或 `Enter` 补全，补全后再次 `Enter` 执行或发送；`Esc` 先关闭候选并保留输入。完整命令可直接回车执行，无匹配项时按普通输入处理。请求执行期间不显示候选。
 
-TUI 支持直接使用中文输入法。用户输入会用带背景的全宽卡片区分，但仍逐字显示、不解析 Markdown；Assistant 生成中按纯文本增量显示，完成后按 Markdown 美化，系统提示和错误信息保持纯文本。最终消息、流式临时文本和审批 Diff 都可选择复制；对话记录额外支持双击复制单个渲染行。上下键始终用于输入历史，不承担多行输入的垂直光标移动；粘贴的多行文本仍可原样发送。`/help` 和 `/chat` 不是本地命令，会作为普通文本发送给模型。当前不支持 HTML、远程图片、Mermaid、HTTP SSE、多会话管理、历史搜索、上下文压缩、任意命令工具或请求级模型切换。
+TUI 支持直接使用中文输入法。用户输入会用带背景的全宽卡片区分，但仍逐字显示、不解析 Markdown；Assistant 生成中按纯文本增量显示，完成后按 Markdown 美化，系统提示和错误信息保持纯文本。最终消息、流式临时文本和审批 Diff 都可选择复制；对话记录额外支持双击复制单个渲染行。上下键通常用于输入历史，模型候选打开时改为移动候选，不承担多行输入的垂直光标移动；粘贴的多行文本仍可原样发送。`/help` 和 `/chat` 不是本地命令，会作为普通文本发送给模型。当前不支持 HTML、远程图片、Mermaid、HTTP SSE、多会话管理、历史搜索、上下文压缩、任意命令工具或 HTTP 请求级模型切换。
 
 ## 启动 HTTP 服务
 

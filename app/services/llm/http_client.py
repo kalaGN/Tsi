@@ -64,13 +64,16 @@ class _SseDecoder:
         self._require_event_size(self._buffer)
         return tuple(events)
 
-    def finish(self) -> None:
-        """拒绝 EOF 时未以空行闭合的残余事件。"""
+    def finish(self) -> tuple[str, ...]:
+        """在 EOF 分发最后一个有界事件，兼容上游省略尾部空行。"""
 
-        if self._buffer:
-            raise ProviderInvalidResponseError(
-                "Upstream service returned an invalid response"
-            )
+        if not self._buffer:
+            return ()
+        raw_event = bytes(self._buffer)
+        self._buffer.clear()
+        self._require_event_size(raw_event)
+        data = self._decode_event(raw_event)
+        return (data,) if data is not None else ()
 
     @staticmethod
     def _require_event_size(raw_event: bytes | bytearray) -> None:
@@ -172,7 +175,8 @@ async def post_sse(
                     async for chunk in response.aiter_bytes():
                         for data in decoder.feed(chunk):
                             on_data(data)
-                    decoder.finish()
+                    for data in decoder.finish():
+                        on_data(data)
                     _log_stream_response(
                         response,
                         started_at,

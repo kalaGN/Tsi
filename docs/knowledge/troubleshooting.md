@@ -8,7 +8,7 @@
 
 ## 阿里云返回 `Upstream service returned an invalid response`
 
-先查看 `logs/runtime/model-calls.log` 中对应请求是否已获得 HTTP 响应。阿里云 Responses API 的真实 SSE 可能发送空字符串 `response.output_text.delta`；项目会将其作为无内容事件忽略，后续有效文本和 `response.completed` 仍正常处理。非字符串 Delta、缺少完成事件、文本不一致或非法工具调用结构仍会返回该中立错误。
+先查看 `logs/runtime/model-calls.log` 中对应请求是否已获得 HTTP 响应。阿里云 Responses API 的真实 SSE 可能发送空字符串 `response.output_text.delta`、当前版 `response.custom_tool_call_input.*` 工具参数事件，或在 EOF 前省略最后一个事件后的空行；项目会兼容这些合法差异。`output_item.done` 和 `response.completed` 只交叉校验工具调用稳定字段，允许最终对象补充 `status` 等元数据。非字符串 Delta、缺少完成事件、稳定字段不一致或非法工具调用结构仍会返回该中立错误。
 
 如果只在启用项目 Skill 后出现该错误，还应检查 Function Tool Schema：`required` 中的每个字段都必须在 `properties` 中声明。项目会在 Registry 创建阶段拒绝矛盾 Schema，避免将其发送给阿里云；`read_skill_resource` 当前只要求 `name` 和 `path`。
 

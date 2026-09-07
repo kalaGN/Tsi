@@ -968,6 +968,68 @@ def test_aliyun_stream_validates_tool_argument_deltas(monkeypatch):
     assert step.tool_calls[0].arguments_json == '{"timezone":"UTC"}'
 
 
+def test_aliyun_stream_accepts_current_custom_tool_events_and_stable_item_fields(
+    monkeypatch,
+):
+    done_item = {
+        "id": "item-1",
+        "type": "function_call",
+        "name": "get_current_time",
+        "arguments": '{"timezone":"UTC"}',
+        "call_id": "call-1",
+    }
+    completed_item = {**done_item, "status": "completed"}
+    events = (
+        {
+            "type": "response.custom_tool_call_input.delta",
+            "item_id": "item-1",
+            "delta": '{"timezone":',
+        },
+        {
+            "type": "response.custom_tool_call_input.delta",
+            "item_id": "item-1",
+            "delta": '"UTC"}',
+        },
+        {
+            "type": "response.custom_tool_call_input.done",
+            "item_id": "item-1",
+            "input": '{"timezone":"UTC"}',
+        },
+        {"type": "response.output_item.done", "item": done_item},
+        {
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "output": [completed_item],
+            },
+        },
+    )
+    body = b"".join(
+        f"data: {json.dumps(event)}\n\n".encode() for event in events
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream((body,)),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+    turn = AliyunResponsesProvider(FAKE_API_KEY).create_turn(
+        user_messages(),
+        (TIME_TOOL,),
+        request_id=REQUEST_ID,
+    )
+
+    step = asyncio.run(turn.next())
+
+    assert len(step.tool_calls) == 1
+    assert step.tool_calls[0].call_id == "call-1"
+    assert step.tool_calls[0].name == "get_current_time"
+    assert step.tool_calls[0].arguments_json == '{"timezone":"UTC"}'
+
+
 def test_deepseek_sends_expected_request_and_extracts_text(monkeypatch):
     body = {
         "id": "chat-1",
@@ -1855,12 +1917,40 @@ def test_post_sse_decodes_utf8_across_chunks_and_multiline_events(
     assert events[1]["duration_ms"] == 250.0
 
 
+def test_post_sse_dispatches_valid_final_event_without_blank_line(monkeypatch):
+    chunks = (b'data: {"type":"response.completed"}',)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream(chunks),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+    received = []
+
+    status = asyncio.run(
+        post_sse(
+            ALIYUN_RESPONSES_URL,
+            FAKE_API_KEY,
+            {"model": "m", "stream": True},
+            request_id=REQUEST_ID,
+            provider="aliyun",
+            model="m",
+            on_data=received.append,
+        )
+    )
+
+    assert status == 200
+    assert received == ['{"type":"response.completed"}']
+
+
 @pytest.mark.parametrize(
     "chunks",
     [
         (b"data: \xff\n\n",),
-        (b'data: {"unfinished":true}',),
-        (b"data: " + b"x" * (64 * 1024 + 1),),
+        (b"data: " + b"x" * (96 * 1024 + 1),),
     ],
 )
 def test_post_sse_rejects_invalid_or_unbounded_stream(monkeypatch, chunks):

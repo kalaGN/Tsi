@@ -195,9 +195,15 @@ class _AliyunStreamState:
             self._done_text = text
         elif event_type == "response.output_item.done":
             self._accept_output_item(event.get("item"))
-        elif event_type == "response.function_call_arguments.delta":
+        elif event_type in {
+            "response.function_call_arguments.delta",
+            "response.custom_tool_call_input.delta",
+        }:
             self._append_argument_delta(event)
-        elif event_type == "response.function_call_arguments.done":
+        elif event_type in {
+            "response.function_call_arguments.done",
+            "response.custom_tool_call_input.done",
+        }:
             self._accept_argument_done(event)
         elif event_type == "response.completed":
             response = event.get("response")
@@ -284,7 +290,13 @@ class _AliyunStreamState:
 
         item_id = event.get("item_id")
         arguments = event.get("arguments")
-        if not isinstance(item_id, str) or not item_id or not isinstance(arguments, str):
+        if arguments is None:
+            arguments = event.get("input")
+        if (
+            not isinstance(item_id, str)
+            or not item_id
+            or not isinstance(arguments, str)
+        ):
             raise _invalid_structure()
         if (
             item_id not in self._argument_fragments
@@ -323,7 +335,18 @@ class _AliyunStreamState:
             for item in call_items
             if isinstance(item.get("id"), str) and item.get("id")
         }
-        if self._completed_call_items and self._completed_call_items != by_id:
+        if (
+            self._completed_call_items or self._argument_fragments
+        ) and len(by_id) != len(call_items):
+            raise _invalid_structure()
+        if self._completed_call_items and (
+            set(self._completed_call_items) != set(by_id)
+            or any(
+                _function_call_identity(item)
+                != _function_call_identity(by_id[item_id])
+                for item_id, item in self._completed_call_items.items()
+            )
+        ):
             raise _invalid_structure()
         for item_id, fragments in self._argument_fragments.items():
             item = by_id.get(item_id)
@@ -370,6 +393,17 @@ def _extract_output_text(body: Any) -> str:
         return "\n".join(nested_fragments)
 
     raise _invalid_structure()
+
+
+def _function_call_identity(item: dict[str, Any]) -> tuple[Any, ...]:
+    """只比较工具调用稳定字段，忽略上游在最终对象补充的状态元数据。"""
+
+    return (
+        item.get("id"),
+        item.get("call_id"),
+        item.get("name"),
+        item.get("arguments"),
+    )
 
 
 def _extract_function_calls(body: Any) -> tuple[ToolCall, ...]:

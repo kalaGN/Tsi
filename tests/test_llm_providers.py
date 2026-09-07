@@ -55,6 +55,15 @@ TIME_TOOL = ToolDefinition(
         "required": ["timezone"],
     },
 )
+READ_TOOL = ToolDefinition(
+    name="read_workspace_file",
+    description="Read a workspace file",
+    parameters={
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+    },
+)
 
 
 def user_messages(content: str = "hello") -> tuple[ChatMessage, ...]:
@@ -801,6 +810,7 @@ def test_aliyun_turn_appends_each_function_call_next_to_its_output(
     )
 
     first_step = asyncio.run(turn.next())
+    turn.replace_tools((TIME_TOOL, READ_TOOL))
     final_step = asyncio.run(
         turn.next(
             (
@@ -812,6 +822,10 @@ def test_aliyun_turn_appends_each_function_call_next_to_its_output(
 
     assert [call.call_id for call in first_step.tool_calls] == ["call-1", "call-2"]
     assert final_step.output_text == "done"
+    assert [tool["name"] for tool in captured_payloads[1]["tools"]] == [
+        "get_current_time",
+        "read_workspace_file",
+    ]
     for payload in captured_payloads:
         assert payload["input"][0] == {
             "role": "system",
@@ -1167,6 +1181,7 @@ def test_deepseek_turn_continues_with_assistant_and_ordered_tool_results(
     )
 
     first_step = asyncio.run(turn.next())
+    turn.replace_tools((TIME_TOOL, READ_TOOL))
     final_step = asyncio.run(
         turn.next(
             (
@@ -1179,6 +1194,9 @@ def test_deepseek_turn_continues_with_assistant_and_ordered_tool_results(
     assert [call.call_id for call in first_step.tool_calls] == ["call-1", "call-2"]
     assert first_step.output_text == "checking"
     assert final_step.output_text == "done"
+    assert [
+        tool["function"]["name"] for tool in captured_payloads[1]["tools"]
+    ] == ["get_current_time", "read_workspace_file"]
     for payload in captured_payloads:
         assert payload["messages"][0] == {
             "role": "system",

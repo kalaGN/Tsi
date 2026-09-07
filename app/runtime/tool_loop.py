@@ -25,8 +25,9 @@ from tools.contracts import (
     ToolPayloadLimitError,
     ToolResult,
     ToolResultHandler,
+    ToolRuntime,
 )
-from tools.registry import ToolRegistry
+from tools.registry import tool_error_result
 
 
 @dataclass(frozen=True)
@@ -58,7 +59,7 @@ class ToolLoopLimitError(Exception):
 
 async def run_tool_loop(
     turn: LlmTurn,
-    registry: ToolRegistry,
+    registry: ToolRuntime,
     *,
     request_id: str,
     on_text_delta: TextDeltaHandler | None = None,
@@ -106,6 +107,7 @@ async def run_tool_loop(
     aggregate_usage = TokenUsage(0, 0, 0)
     usage_complete = True
     for step_number in range(1, limits.max_model_steps + 1):
+        definitions_before = registry.definitions
         step = await turn.next(results, on_text_delta=on_text_delta)
         if step.token_usage is None:
             usage_complete = False
@@ -142,6 +144,7 @@ async def run_tool_loop(
             raise ToolLoopLimitError("Tool call limit exceeded")
 
         current_results: list[ToolResult] = []
+        visible_names = {definition.name for definition in definitions_before}
         for call in step.tool_calls:
             log_model_tool_call(
                 request_id=request_id,
@@ -152,7 +155,11 @@ async def run_tool_loop(
             )
             started_at = clock()
             try:
-                result = await registry.execute(call, execution_context)
+                if call.name not in visible_names:
+                    # 同一步中的激活只能影响下一模型步骤，不能授权同批伪造调用。
+                    result = tool_error_result(call.call_id, "unknown_tool")
+                else:
+                    result = await registry.execute(call, execution_context)
             except ToolPayloadLimitError as exc:
                 raise ToolLoopLimitError("Tool call limit exceeded") from exc
             duration_ms = round((clock() - started_at) * 1000, 2)
@@ -170,6 +177,8 @@ async def run_tool_loop(
             current_results.append(result)
             executed_calls += 1
         results = tuple(current_results)
+        if registry.definitions != definitions_before:
+            turn.replace_tools(registry.definitions)
 
     # 循环范围已覆盖所有分支，仅作为类型和未来修改的防御性兜底。
     raise ToolLoopLimitError("Tool call limit exceeded")

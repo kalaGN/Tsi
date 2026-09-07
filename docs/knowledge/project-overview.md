@@ -38,7 +38,7 @@ Tsi 助手用于学习和验证 FastAPI、Textual、外部模型流式接口与�
 - `app/runtime/tool_loop.py`：有界模型步骤和串行工具执行编排。
 - `app/runtime/skill_runtime.py`：TUI Skill Catalog 版本、安装器和请求级执行快照。
 - `app/services/llm/`：配置工厂、共享网络边界、阿里云与 DeepSeek Provider。
-- `tools/`：Provider 中立契约、Registry、`get_current_time`、Workspace 策略、文件/Git 工具、固定项目检查以及 Skill 快照、安装和执行工具。
+- `tools/`：Provider 中立契约、静态/请求级分组 Registry、`get_current_time`、Workspace 策略、文件/Git 工具、固定项目检查以及 Skill 快照、安装和执行工具。
 - `app/tui/`：Textual 应用、状态和模块启动入口。
 - `tests/test_llm_providers.py`：Provider 协议与错误测试。
 - `tests/test_chat.py`、`tests/test_chat_runtime.py`、`tests/test_tui.py`：对应交互边界测试。
@@ -73,7 +73,7 @@ git diff --check
 - 用户消息以不解析 Markdown 的全宽背景卡片展示；Assistant 支持标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；系统和错误保持纯文本。
 - 最终消息和流式临时文本支持鼠标选择，并通过 `Cmd+C` / `Ctrl+C` 复制渲染后的可见文字；对话记录还可双击立即复制当前渲染行。
 - 环境变量密钥、固定上游 URL、显式超时和脱敏错误分类。
-- HTTP 自动执行只读当前时间工具；TUI 自动执行 Workspace/Skill 只读工具，审批每次写入、撤销、Skill 安装和 Skill 脚本。
+- HTTP 自动执行只读当前时间工具；TUI 先按模型意图激活固定工具组，再自动执行 Workspace/Skill 只读工具，审批每次写入、撤销、Skill 安装和 Skill 脚本。
 - TUI 支持结构化 create/replace、哈希冲突保护、原子批次、固定项目检查和进程内 LIFO 撤销。
 - request ID 关联的结构化模型、HTTP 和工具日志。
 - 完整上游请求日志包含实际 system 消息；HTTP `/chat` 不加载本地项目规则。

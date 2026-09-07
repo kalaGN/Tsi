@@ -18,8 +18,15 @@ from tools.contracts import (
     ToolPayloadLimitError,
     ToolResult,
     ToolResultHandler,
+    ToolRuntime,
 )
 from tools.registry import ToolRegistry
+from tools.groups import (
+    ActivateToolGroupsTool,
+    GroupedToolRegistry,
+    ToolGroup,
+    ToolGroupDefinition,
+)
 from tools.skills import (
     LoadSkillTool,
     ReadSkillResourceTool,
@@ -58,8 +65,13 @@ __all__ = [
     "ToolExecutionContext",
     "ToolPayloadLimitError",
     "ToolRegistry",
+    "ActivateToolGroupsTool",
+    "GroupedToolRegistry",
+    "ToolGroup",
+    "ToolGroupDefinition",
     "ToolResult",
     "ToolResultHandler",
+    "ToolRuntime",
     "create_default_registry",
     "load_skill_catalog",
 ]

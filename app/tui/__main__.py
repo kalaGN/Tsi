@@ -13,7 +13,7 @@ from app.runtime.system_prompt import (
 )
 from app.runtime.skill_runtime import SkillRuntime
 from tools.skills import SkillLoadError, load_skill_catalog
-from tools.workspace import WorkspacePolicy, create_workspace_registry
+from tools.workspace import WorkspacePolicy, create_intent_workspace_registry
 
 
 def _create_app(
@@ -71,7 +71,7 @@ def main() -> None:
             workspace_policy,
             skill_catalog,
             initial_error=skills_error,
-            registry_factory=create_workspace_registry,
+            registry_factory=create_intent_workspace_registry,
         )
         initial_snapshot = skill_runtime.snapshot()
         workspace_registry = initial_snapshot.registry

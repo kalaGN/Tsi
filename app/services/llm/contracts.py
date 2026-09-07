@@ -111,6 +111,10 @@ class LlmTurn(Protocol):
     ) -> ModelStep:
         ...
 
+    def replace_tools(self, tools: tuple[ToolDefinition, ...]) -> None:
+        """替换当前 Turn 下一模型步骤可见的工具定义。"""
+        ...
+
 
 class LlmProvider(Protocol):
     """Runtime 所依赖的有序消息和短生命周期 Turn 能力。"""

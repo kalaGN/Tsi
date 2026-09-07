@@ -53,6 +53,8 @@ _SAFE_ERROR_MESSAGES = {
     "skill_download_timeout": "Skill download timed out",
     "skill_package_invalid": "Skill package is invalid",
     "skill_refresh_failed": "Skill refresh failed",
+    "tool_group_unavailable": "Tool group is unavailable",
+    "tool_group_limit": "Tool group activation limit exceeded",
 }
 
 
@@ -112,16 +114,16 @@ class ToolRegistry:
 
         tool = self._tools.get(call.name)
         if tool is None:
-            return _error_result(call.call_id, "unknown_tool")
+            return tool_error_result(call.call_id, "unknown_tool")
         if argument_bytes > tool.definition.max_argument_bytes:
             raise ToolPayloadLimitError("Tool arguments exceed the size limit")
 
         try:
             arguments = json.loads(call.arguments_json)
         except (TypeError, json.JSONDecodeError):
-            return _error_result(call.call_id, "invalid_arguments")
+            return tool_error_result(call.call_id, "invalid_arguments")
         if not isinstance(arguments, dict):
-            return _error_result(call.call_id, "invalid_arguments")
+            return tool_error_result(call.call_id, "invalid_arguments")
 
         if tool.definition.effect in {
             ToolEffect.MUTATING,
@@ -140,15 +142,15 @@ class ToolRegistry:
             value = await tool.invoke(arguments)
             output = _serialize_envelope({"ok": True, "data": value})
         except ToolArgumentError:
-            return _error_result(call.call_id, "invalid_arguments")
+            return tool_error_result(call.call_id, "invalid_arguments")
         except ToolRejectedError as exc:
-            return _error_result(call.call_id, exc.code.value)
+            return tool_error_result(call.call_id, exc.code.value)
         except Exception:
             # 工具实现属于不可信执行边界，底层异常不得回传模型。
-            return _error_result(call.call_id, "execution_failed")
+            return tool_error_result(call.call_id, "execution_failed")
 
         if len(output.encode("utf-8")) > tool.definition.max_result_bytes:
-            return _error_result(call.call_id, "result_too_large")
+            return tool_error_result(call.call_id, "result_too_large")
         return ToolResult(call_id=call.call_id, output=output)
 
     async def _request_approval(
@@ -161,36 +163,36 @@ class ToolRegistry:
         """只允许合法预览在本次请求中获得一次显式本地决定。"""
 
         if not isinstance(tool, ApprovalTool):
-            return _error_result(call.call_id, "execution_failed")
+            return tool_error_result(call.call_id, "execution_failed")
         try:
             request = await tool.preview(call.call_id, arguments)
         except ToolArgumentError:
-            return _error_result(call.call_id, "invalid_arguments")
+            return tool_error_result(call.call_id, "invalid_arguments")
         except ToolRejectedError as exc:
-            return _error_result(call.call_id, exc.code.value)
+            return tool_error_result(call.call_id, exc.code.value)
         except Exception:
-            return _error_result(call.call_id, "execution_failed")
+            return tool_error_result(call.call_id, "execution_failed")
 
         if not _valid_approval_request(request, call):
-            return _error_result(call.call_id, "execution_failed")
+            return tool_error_result(call.call_id, "execution_failed")
         if context is None or context.approval_handler is None:
-            return _error_result(call.call_id, "approval_unavailable")
+            return tool_error_result(call.call_id, "approval_unavailable")
         if (
             isinstance(request, ToolApprovalRequest)
             and request.fingerprint in context.denied_fingerprints
         ):
-            return _error_result(call.call_id, "approval_denied")
+            return tool_error_result(call.call_id, "approval_denied")
 
         try:
             approved = await context.approval_handler(request)
         except Exception:
-            return _error_result(call.call_id, "approval_unavailable")
+            return tool_error_result(call.call_id, "approval_unavailable")
         if approved is not True:
             if approved is False and isinstance(request, ToolApprovalRequest):
                 context.denied_fingerprints.add(request.fingerprint)
             if approved is False:
-                return _error_result(call.call_id, "approval_denied")
-            return _error_result(call.call_id, "approval_unavailable")
+                return tool_error_result(call.call_id, "approval_denied")
+            return tool_error_result(call.call_id, "approval_unavailable")
         return None
 
 
@@ -351,7 +353,8 @@ def _valid_skill_install_approval_request(
     )
 
 
-def _error_result(call_id: str, code: str) -> ToolResult:
+def tool_error_result(call_id: str, code: str) -> ToolResult:
+    """构造只包含固定安全文案的工具错误结果。"""
     output = _serialize_envelope(
         {
             "ok": False,

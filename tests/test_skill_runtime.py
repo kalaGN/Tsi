@@ -33,8 +33,22 @@ def test_runtime_publishes_install_only_to_next_snapshot(tmp_path):
     )
     before = runtime.snapshot()
     before_names = tuple(item.name for item in before.registry.definitions)
-    assert "install_skill" in before_names
+    assert before_names == ("activate_tool_groups",)
     assert "load_skill" not in before_names
+
+    activation = asyncio.run(
+        before.registry.execute(
+            ToolCall(
+                "activate",
+                "activate_tool_groups",
+                '{"groups":["skill_install"]}',
+            )
+        )
+    )
+    assert activation.is_error is False
+    assert "install_skill" in tuple(
+        item.name for item in before.registry.definitions
+    )
 
     call = ToolCall(
         "install",
@@ -66,7 +80,7 @@ def test_runtime_publishes_install_only_to_next_snapshot(tmp_path):
     after = runtime.snapshot()
     after_names = tuple(item.name for item in after.registry.definitions)
     assert after.version == before.version + 1
-    assert "load_skill" in after_names
+    assert after_names == ("activate_tool_groups",)
     assert "demo-skill" in after.system_prompt
     assert runtime.status().skills_count == 1
 
@@ -139,6 +153,15 @@ def test_runtime_explicit_skill_applies_only_to_matching_request_snapshot(tmp_pa
     assert "PRIVATE INSTRUCTIONS" not in regular.system_prompt
     assert "PRIVATE INSTRUCTIONS" in explicit.system_prompt
     assert explicit.version == regular.version
+    assert tuple(item.name for item in regular.registry.definitions) == (
+        "activate_tool_groups",
+    )
+    assert tuple(item.name for item in explicit.registry.definitions) == (
+        "activate_tool_groups",
+        "load_skill",
+        "read_skill_resource",
+        "run_skill_script",
+    )
 
 
 def test_runtime_rejects_too_many_explicit_skills_with_safe_input_error(tmp_path):

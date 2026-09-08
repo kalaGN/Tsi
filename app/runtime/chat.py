@@ -5,6 +5,7 @@ from enum import Enum
 from typing import Sequence
 
 from app.observability.model_logging import (
+    log_model_error,
     log_model_request,
     log_model_response,
     new_request_id,
@@ -187,12 +188,38 @@ async def run_chat_messages(
             output_text=output_text,
         )
     except ToolLoopLimitError as exc:
-        raise ChatRuntimeError(
+        runtime_error = ChatRuntimeError(
             ChatErrorCode.TOOL_LIMIT,
             "Tool call limit exceeded",
-        ) from exc
+        )
+        log_model_error(
+            request_id=request_id,
+            provider=provider_name,
+            model=model,
+            error_code=runtime_error.code.value,
+            error_type=type(exc).__name__,
+            upstream_status=runtime_error.upstream_status,
+            user_message=runtime_error.user_message,
+            raw_response=None,
+            raw_response_truncated=False,
+        )
+        raise runtime_error from exc
     except LlmProviderError as exc:
-        raise _runtime_error(exc) from exc
+        runtime_error = _runtime_error(exc)
+        # 这里覆盖 HTTP 成功但响应语义无效等 Runtime 失败，沿用请求 ID 便于串联。
+        if "request_id" in locals():
+            log_model_error(
+                request_id=request_id,
+                provider=provider_name,
+                model=model,
+                error_code=runtime_error.code.value,
+                error_type=type(exc).__name__,
+                upstream_status=runtime_error.upstream_status,
+                user_message=runtime_error.user_message,
+                raw_response=exc.raw_response,
+                raw_response_truncated=exc.raw_response_truncated,
+            )
+        raise runtime_error from exc
 
     return ChatResult(
         output_text=output_text,

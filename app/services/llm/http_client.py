@@ -13,6 +13,7 @@ from app.observability.model_logging import (
     log_model_http_response,
 )
 from app.services.llm.contracts import (
+    LlmProviderError,
     ProviderAuthenticationError,
     ProviderConnectionError,
     ProviderInvalidResponseError,
@@ -27,6 +28,7 @@ MAX_SSE_EVENT_BYTES = 96 * 1024
 MAX_STREAM_OUTPUT_BYTES = 1024 * 1024
 MAX_STREAM_TOOL_ARGUMENT_BYTES = 64 * 1024
 MAX_STREAM_TOOL_CALLS = 4
+MAX_ERROR_RESPONSE_BYTES = 256 * 1024
 PROVIDER_TIMEOUT = httpx.Timeout(TOTAL_TIMEOUT_SECONDS, connect=CONNECT_TIMEOUT_SECONDS)
 _TIMEOUT_LOG = {
     "connect_seconds": CONNECT_TIMEOUT_SECONDS,
@@ -107,6 +109,25 @@ class _SseDecoder:
         return "\n".join(data_lines) if data_lines else None
 
 
+class _RawResponseCapture:
+    """保存上游响应体前缀，供失败日志诊断且限制内存与日志体积。"""
+
+    def __init__(self) -> None:
+        self._content = bytearray()
+        self.truncated = False
+
+    def feed(self, chunk: bytes) -> None:
+        remaining = MAX_ERROR_RESPONSE_BYTES - len(self._content)
+        if remaining > 0:
+            self._content.extend(chunk[:remaining])
+        if len(chunk) > remaining:
+            self.truncated = True
+
+    @property
+    def text(self) -> str:
+        return bytes(self._content).decode("utf-8", errors="replace")
+
+
 async def post_sse(
     url: str,
     api_key: str,
@@ -116,6 +137,7 @@ async def post_sse(
     provider: str,
     model: str,
     on_data: Callable[[str], None],
+    on_raw_response: Callable[[str, bool], None] | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> int:
     """完整消费认证 SSE 响应，交付有界 data 事件并统一网络错误。"""
@@ -136,6 +158,7 @@ async def post_sse(
     )
 
     started_at = clock()
+    raw_response = _RawResponseCapture()
     try:
         async with asyncio.timeout(TOTAL_TIMEOUT_SECONDS):
             async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUT) as client:
@@ -146,6 +169,7 @@ async def post_sse(
                     json=payload,
                 ) as response:
                     if response.status_code in (401, 403):
+                        await _capture_stream_body(response, raw_response)
                         _log_stream_response(
                             response,
                             started_at,
@@ -156,6 +180,7 @@ async def post_sse(
                         )
                         raise ProviderAuthenticationError(response.status_code)
                     if not response.is_success:
+                        await _capture_stream_body(response, raw_response)
                         _log_stream_response(
                             response,
                             started_at,
@@ -167,12 +192,14 @@ async def post_sse(
                         raise ProviderResponseError(response.status_code)
                     content_type = response.headers.get("content-type", "")
                     if not content_type.lower().startswith("text/event-stream"):
+                        await _capture_stream_body(response, raw_response)
                         raise ProviderInvalidResponseError(
                             "Upstream service returned an invalid response"
                         )
 
                     decoder = _SseDecoder()
                     async for chunk in response.aiter_bytes():
+                        raw_response.feed(chunk)
                         for data in decoder.feed(chunk):
                             on_data(data)
                     for data in decoder.finish():
@@ -185,7 +212,15 @@ async def post_sse(
                         model,
                         request_id,
                     )
+                    if on_raw_response is not None:
+                        on_raw_response(raw_response.text, raw_response.truncated)
                     return response.status_code
+    except LlmProviderError as exc:
+        exc.attach_raw_response(
+            raw_response.text,
+            truncated=raw_response.truncated,
+        )
+        raise
     except (TimeoutError, httpx.TimeoutException) as exc:
         log_model_http_error(
             request_id=request_id,
@@ -194,7 +229,13 @@ async def post_sse(
             error_type="timeout",
             duration_ms=_elapsed_ms(started_at, clock),
         )
-        raise ProviderTimeoutError from exc
+        error = ProviderTimeoutError()
+        if raw_response.text:
+            error.attach_raw_response(
+                raw_response.text,
+                truncated=raw_response.truncated,
+            )
+        raise error from exc
     except httpx.RequestError as exc:
         log_model_http_error(
             request_id=request_id,
@@ -203,7 +244,25 @@ async def post_sse(
             error_type="connection",
             duration_ms=_elapsed_ms(started_at, clock),
         )
-        raise ProviderConnectionError from exc
+        error = ProviderConnectionError()
+        if raw_response.text:
+            error.attach_raw_response(
+                raw_response.text,
+                truncated=raw_response.truncated,
+            )
+        raise error from exc
+
+
+async def _capture_stream_body(
+    response: httpx.Response,
+    capture: _RawResponseCapture,
+) -> None:
+    """读取错误响应的有界前缀；达到上限后由响应上下文负责关闭连接。"""
+
+    async for chunk in response.aiter_bytes():
+        capture.feed(chunk)
+        if capture.truncated:
+            break
 
 
 def _log_stream_response(
@@ -288,13 +347,21 @@ async def post_json(
         response_content_type=response.headers.get("content-type"),
     )
 
+    raw_response = _RawResponseCapture()
+    raw_response.feed(response.content)
+
     if response.status_code in (401, 403):
-        raise ProviderAuthenticationError(response.status_code)
+        error = ProviderAuthenticationError(response.status_code)
+        error.attach_raw_response(raw_response.text, truncated=raw_response.truncated)
+        raise error
     if not response.is_success:
-        # 上游错误体可能包含内部信息，只保留调用方需要的状态码。
-        raise ProviderResponseError(response.status_code)
+        error = ProviderResponseError(response.status_code)
+        error.attach_raw_response(raw_response.text, truncated=raw_response.truncated)
+        raise error
 
     try:
         return response.status_code, response.json()
     except ValueError as exc:
-        raise ProviderInvalidResponseError from exc
+        error = ProviderInvalidResponseError()
+        error.attach_raw_response(raw_response.text, truncated=raw_response.truncated)
+        raise error from exc

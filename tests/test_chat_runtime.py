@@ -192,9 +192,10 @@ def test_run_chat_logs_input_and_output_around_provider_call(monkeypatch):
     ]
 
 
-def test_run_chat_logs_only_request_when_provider_fails(monkeypatch):
+def test_run_chat_logs_request_and_error_when_provider_fails(monkeypatch):
     captured_requests = []
     captured_responses = []
+    captured_errors = []
     provider = FakeProvider(error=ProviderTimeoutError())
     monkeypatch.setattr(chat, "new_request_id", lambda: "d" * 32)
     monkeypatch.setattr(
@@ -207,6 +208,11 @@ def test_run_chat_logs_only_request_when_provider_fails(monkeypatch):
         "log_model_response",
         lambda **fields: captured_responses.append(fields),
     )
+    monkeypatch.setattr(
+        chat,
+        "log_model_error",
+        lambda **fields: captured_errors.append(fields),
+    )
 
     with pytest.raises(ChatRuntimeError):
         asyncio.run(run_chat("hello", provider=provider))
@@ -214,6 +220,41 @@ def test_run_chat_logs_only_request_when_provider_fails(monkeypatch):
     assert len(captured_requests) == 1
     assert captured_requests[0]["request_id"] == "d" * 32
     assert captured_responses == []
+    assert captured_errors == [
+        {
+            "request_id": "d" * 32,
+            "provider": "fake",
+            "model": "fake-model",
+            "error_code": "timeout",
+            "error_type": "ProviderTimeoutError",
+            "upstream_status": None,
+            "user_message": "Upstream request timed out",
+            "raw_response": None,
+            "raw_response_truncated": False,
+        }
+    ]
+
+
+def test_run_chat_error_log_keeps_bounded_raw_provider_response(monkeypatch):
+    captured_errors = []
+    provider_error = ProviderInvalidResponseError(
+        "Upstream service returned an invalid response"
+    )
+    provider_error.attach_raw_response("data: 原始事件\n\n", truncated=False)
+    provider = FakeProvider(error=provider_error)
+    monkeypatch.setattr(chat, "new_request_id", lambda: "9" * 32)
+    monkeypatch.setattr(chat, "log_model_request", lambda **fields: None)
+    monkeypatch.setattr(
+        chat,
+        "log_model_error",
+        lambda **fields: captured_errors.append(fields),
+    )
+
+    with pytest.raises(ChatRuntimeError):
+        asyncio.run(run_chat("hello", provider=provider))
+
+    assert captured_errors[0]["raw_response"] == "data: 原始事件\n\n"
+    assert captured_errors[0]["raw_response_truncated"] is False
 
 
 def test_multi_turn_runtime_logs_only_current_user_input(monkeypatch):

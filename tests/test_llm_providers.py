@@ -1995,13 +1995,13 @@ def test_post_sse_rejects_invalid_or_unbounded_stream(monkeypatch, chunks):
         )
 
 
-def test_post_sse_rejects_non_event_stream_content_type(monkeypatch):
+def test_post_sse_rejects_non_event_stream_and_attaches_raw_body(monkeypatch):
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"not": "a stream"})
 
     install_transport(monkeypatch, handler, adapt_streaming_json=False)
 
-    with pytest.raises(ProviderInvalidResponseError):
+    with pytest.raises(ProviderInvalidResponseError) as captured:
         asyncio.run(
             post_sse(
                 DEEPSEEK_CHAT_COMPLETIONS_URL,
@@ -2013,6 +2013,9 @@ def test_post_sse_rejects_non_event_stream_content_type(monkeypatch):
                 on_data=lambda data: None,
             )
         )
+
+    assert captured.value.raw_response == '{"not":"a stream"}'
+    assert captured.value.raw_response_truncated is False
 
 
 def test_post_sse_applies_overall_timeout_and_closes_stream(
@@ -2103,7 +2106,7 @@ def test_post_json_logs_response_without_error_event_for_non_2xx(
     install_transport(monkeypatch, handler)
     ticks = iter([0.0, 1.5])
 
-    with pytest.raises(LlmProviderError):
+    with pytest.raises(LlmProviderError) as captured:
         asyncio.run(
             post_json(
                 DEEPSEEK_CHAT_COMPLETIONS_URL,
@@ -2115,6 +2118,9 @@ def test_post_json_logs_response_without_error_event_for_non_2xx(
                 clock=lambda: next(ticks),
             )
         )
+
+    assert captured.value.raw_response == '{"error":"secret upstream body"}'
+    assert captured.value.raw_response_truncated is False
 
     events = captured_model_events()
     assert [event["event"] for event in events] == [

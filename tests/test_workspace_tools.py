@@ -58,7 +58,34 @@ def test_static_and_intent_workspace_factories_keep_distinct_visibility(tmp_path
         "general",
         "workspace_read",
         "workspace_write",
+        "git_write",
     ]
+
+
+def test_git_write_group_is_hidden_until_explicit_activation(tmp_path):
+    registry = create_intent_workspace_registry(WorkspacePolicy(tmp_path))
+
+    hidden = asyncio.run(
+        registry.execute(ToolCall("git-1", "git_stage", '{"paths":["a.txt"]}'))
+    )
+    activated = asyncio.run(
+        registry.execute(
+            ToolCall(
+                "activate",
+                "activate_tool_groups",
+                '{"groups":["git_write"]}',
+            )
+        )
+    )
+
+    assert json.loads(hidden.output)["error"]["code"] == "unknown_tool"
+    assert activated.is_error is False
+    assert tuple(item.name for item in registry.definitions) == (
+        "activate_tool_groups",
+        "git_stage",
+        "git_commit",
+        "git_push",
+    )
 
 
 def test_intent_workspace_write_group_contains_read_and_write_tools(tmp_path):

@@ -75,13 +75,14 @@ git diff --check
 - 环境变量密钥、固定上游 URL、显式超时和脱敏错误分类。
 - HTTP 自动执行只读当前时间工具；TUI 先按模型意图激活固定工具组，再自动执行 Workspace/Skill 只读工具，审批每次写入、撤销、Skill 安装和 Skill 脚本。
 - TUI 支持结构化 create/replace、哈希冲突保护、原子批次、固定项目检查和进程内 LIFO 撤销。
+- TUI 支持逐次审批的指定文件 Stage、中文 Commit 和当前分支既有上游 Push。
 - request ID 关联的结构化模型、HTTP 和工具日志。
 - 完整上游请求日志包含实际 system 消息；HTTP `/chat` 不加载本地项目规则。
 
 明确不支持：
 
 - HTML、远程图片、Mermaid、Markdown 代码执行、HTTP SSE、HTTP 请求级 Provider/模型选择、模型目录联网发现、多会话管理、上下文压缩、任意 Shell、MCP、动态插件、多 Agent 和多模态。
-- 文件删除、移动、重命名、自动依赖安装、Git Commit/Tag/Push、Skill 覆盖/升级/卸载、手动目录监控和跨重启撤销。
+- 文件删除、移动、重命名、自动依赖安装、Git Tag/force push/设置上游/任意命令、Skill 覆盖/升级/卸载、手动目录监控和跨重启撤销。
 - 自动重试、降级、负载均衡、熔断、限流、用户认证授权和任务队列。
 - 容器、反向代理、进程管理、CI/CD、Trace、指标、告警、远程日志采集和正式健康检查。
 

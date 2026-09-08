@@ -27,6 +27,7 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `tools/project_checks.py`：无 Shell 的四个固定项目检查。
 - `tools/skills.py`：安全 YAML Skill Catalog、每项单行的精简 system prompt、不可变资源快照、渐进读取工具及需审批的有界脚本执行器。
 - `tools/skill_installation.py`：公开 GitHub/个人 Codex 来源解析、无跟随复制、安装审批、候选校验、原子提交和刷新回滚。
+- `tools/git.py`：TUI 专属的临时 Index Stage 预览、中文 Commit 和既有上游非强制 Push。
 - `app/runtime/system_prompt.py`：从 TUI 启动目录有界读取可选 `AGENTS.md`，并与 Skill Catalog 组合为单条系统提示词。
 - `app/tui/__main__.py`：加载根目录 `.env`，捕获一次启动目录，独立加载 Skill，创建 TUI Registry 并启动 Textual。
 - `app/tui/application.py`：终端输入与历史、消息展示、请求活动、审批回调、已落盘失败提醒、状态、耗时和取消。
@@ -83,7 +84,7 @@ python -m app.tui -> AGENTS + SkillRuntime -> app.tui.application
 - 工厂只解析配置和创建 Provider，不编排用例。
 - Provider 为每个用户请求创建短生命周期 Turn，持有私有续接消息，构造请求并提取中立步骤；共享 HTTP 层处理网络和通用状态错误。
 - Provider 层不依赖 Runtime、Router、TUI 或 Application。
-- HTTP/TUI 启动入口幂等配置日志；Runtime 记录一次 `llm_request/llm_response`，每个具有 usage 的模型步骤记录 `llm_token_usage`，HTTP 边界和本地工具分别记录对应事件，全链路共用同一 request ID。
+- HTTP/TUI 启动入口幂等配置日志；Runtime 记录请求、成功响应或最终失败，每个具有 usage 的模型步骤记录 `llm_token_usage`，HTTP 边界和本地工具分别记录对应事件，全链路共用同一 request ID。
 
 ## HTTP 对话流程
 
@@ -165,7 +166,7 @@ TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默�
 
 - HTTP 与 TUI 都只接触统一文本，原始 Provider JSON 只存在于 Provider 调用栈。
 - 所有请求统一通过 Provider Turn，不保留旧 `generate()` 或原始 ProviderResult 路径。
-- HTTP 默认 Registry 仅注册 `get_current_time(timezone)`；TUI 在请求级分组 Registry 中保存固定宿主 Catalog，初始只披露激活元工具，按意图追加五类固定工具组。工具名只能来自显式白名单，不支持反射、动态 import、任意命令或 MCP。
+- HTTP 默认 Registry 仅注册 `get_current_time(timezone)`；TUI 在请求级分组 Registry 中保存固定宿主 Catalog，初始只披露激活元工具，按意图追加六类固定工具组（含 `git_write`）。工具名只能来自显式白名单，不支持反射、动态 import、任意命令或 MCP。
 - HTTP 循环最多 5 步、每步 4 次、总计 16 次；TUI 最多 41 步、每步 4 次、总计 40 次，激活调用计入相同预算。普通参数/结果上限为 8/32 KiB，编辑参数为 64 KiB。
 - 写 Tool 必须先生成完整有界 Diff；Registry 没有审批回调、用户拒绝或内容并发变化时均不会执行。
 - Workspace 拒绝越界、符号链接、保护路径、二进制和超限文件；编辑只支持 create/replace，固定检查不接受额外 argv、cwd 或环境。
@@ -191,6 +192,8 @@ TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默�
 - TUI 只在启动时读取当前目录直属 `AGENTS.md`，不递归、不热重载；system 消息与 Session schema 隔离。
 - TUI 从 `.agents/skills/*/SKILL.md` 读取 Codex 兼容项目 Skill；Catalog 仅含名称、描述和相对位置，正文与资源按需读取，任一非法 Skill 会禁用整批但不影响 Workspace 和安装工具。
 - `install_skill` 每次审批，只支持匿名公开 GitHub 规范目录 URL 和当前用户 Codex Skill 直属目录；候选有界校验、同名拒绝、原子提交、刷新失败回滚，成功结果从下一次请求生效。不存在覆盖、升级、卸载、自动同步或文件监控。
+- `git_stage`、`git_commit`、`git_push` 每次独立审批；只接受宿主定义的业务参数，关闭 hooks、签名和外部 Diff。Push 在审批前只读取本地上游状态，审批后才访问安全的 HTTPS/SSH 远端。
+- Runtime 最终失败写 `llm_error`；已收到的上游原始响应体以 256 KiB 前缀附加并标记截断，便于区分 HTTP 成功与协议/语义失败。
 - Skill 脚本仅支持快照内 `.py`/`.sh`，每次审批，不使用 `shell=True`，不继承宿主密钥环境；当前无文件系统或网络沙箱，该风险必须由审批界面和文档明确展示。
 - TUI 只对 Assistant 原文做 Rich Markdown 展示，不执行代码、加载远程内容或改变 Session/HTTP 文本契约。
 - TUI 临时流只展示当前请求的纯文本；成功、错误、取消、工具 reset 和退出都会清理，部分文本不持久化。

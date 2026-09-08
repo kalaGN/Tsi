@@ -71,6 +71,17 @@ _EVENT_FIELDS = {
         "error_type",
         "duration_ms",
     ),
+    "llm_error": (
+        "request_id",
+        "provider",
+        "model",
+        "error_code",
+        "error_type",
+        "upstream_status",
+        "user_message",
+        "raw_response",
+        "raw_response_truncated",
+    ),
     "llm_tool_call": (
         "request_id",
         "call_id",
@@ -136,6 +147,7 @@ class _ModelEventReadableFormatter(logging.Formatter):
         "llm_http_request": "HTTP 请求",
         "llm_http_response": "HTTP 响应",
         "llm_http_error": "HTTP 错误",
+        "llm_error": "模型调用失败",
         "llm_tool_call": "工具调用",
         "llm_tool_result": "工具结果",
         "llm_tool_approval": "工具审批",
@@ -173,6 +185,7 @@ class _ModelEventReadableFormatter(logging.Formatter):
         if event_name.startswith("llm_http_") or event_name in {
             "llm_request",
             "llm_response",
+            "llm_error",
         }:
             lines.extend((f"Provider：{record.provider}", f"模型：{record.model}"))
         if event_name.startswith("llm_tool_"):
@@ -197,6 +210,15 @@ class _ModelEventReadableFormatter(logging.Formatter):
                 (
                     f"错误类型：{self._ERROR_NAMES.get(record.error_type, record.error_type)}",
                     f"耗时：{record.duration_ms} ms",
+                )
+            )
+        elif event_name == "llm_error":
+            lines.extend(
+                (
+                    f"错误代码：{record.error_code}",
+                    f"异常类型：{record.error_type}",
+                    f"上游状态：{record.upstream_status or '-'}",
+                    f"原始响应截断：{'是' if record.raw_response_truncated else '否'}",
                 )
             )
         elif event_name == "llm_tool_call":
@@ -250,6 +272,11 @@ class _ModelEventReadableFormatter(logging.Formatter):
             return (("工具参数", record.arguments_json, True),)
         if event_name == "llm_tool_result":
             return (("工具输出", record.output_text, True),)
+        if event_name == "llm_error":
+            sections = [("错误信息", record.user_message, False)]
+            if record.raw_response is not None:
+                sections.append(("上游原始响应", record.raw_response, False))
+            return tuple(sections)
         return ()
 
 
@@ -452,6 +479,37 @@ def log_model_http_error(
             "model": model,
             "error_type": error_type,
             "duration_ms": duration_ms,
+        },
+    )
+
+
+def log_model_error(
+    *,
+    request_id: str,
+    provider: str,
+    model: str,
+    error_code: str,
+    error_type: str,
+    upstream_status: int | None,
+    user_message: str,
+    raw_response: str | None = None,
+    raw_response_truncated: bool = False,
+) -> None:
+    """记录模型调用最终失败；只接收可安全展示的稳定错误字段。"""
+
+    logging.getLogger(LOGGER_NAME).error(
+        "llm_error",
+        extra={
+            "event": "llm_error",
+            "request_id": request_id,
+            "provider": provider,
+            "model": model,
+            "error_code": error_code,
+            "error_type": error_type,
+            "upstream_status": upstream_status,
+            "user_message": user_message,
+            "raw_response": raw_response,
+            "raw_response_truncated": raw_response_truncated,
         },
     )
 

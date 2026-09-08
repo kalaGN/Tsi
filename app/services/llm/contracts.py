@@ -143,6 +143,14 @@ class LlmProviderError(Exception):
         super().__init__(message)
         self.user_message = message
         self.status_code = status_code
+        self.raw_response: str | None = None
+        self.raw_response_truncated = False
+
+    def attach_raw_response(self, content: str, *, truncated: bool) -> None:
+        """附加仅供本地错误日志使用的有界上游响应体。"""
+
+        self.raw_response = content
+        self.raw_response_truncated = truncated
 
 
 class ProviderConfigurationError(LlmProviderError):

@@ -354,6 +354,48 @@ def test_http_log_events_use_exact_whitelist_and_single_line_json(tmp_path):
     assert file_text.count("=" * 80) == 3
 
 
+def test_model_error_is_correlated_and_readable(tmp_path):
+    stream = io.StringIO()
+    log_path = tmp_path / "model-calls.log"
+    model_logging.configure_model_logging(stream=stream, log_path=log_path)
+
+    model_logging.log_model_error(
+        request_id="f" * 32,
+        provider="aliyun",
+        model="qwen3-max",
+        error_code="invalid_response",
+        error_type="ProviderInvalidResponseError",
+        upstream_status=None,
+        user_message="Upstream service returned an invalid response",
+        raw_response='data: {"error":"模型响应不完整"}\n\n',
+        raw_response_truncated=True,
+    )
+
+    event = json.loads(stream.getvalue())
+    assert event == {
+        "timestamp": event["timestamp"],
+        "level": "ERROR",
+        "event": "llm_error",
+        "request_id": "f" * 32,
+        "provider": "aliyun",
+        "model": "qwen3-max",
+        "error_code": "invalid_response",
+        "error_type": "ProviderInvalidResponseError",
+        "upstream_status": None,
+        "user_message": "Upstream service returned an invalid response",
+        "raw_response": 'data: {"error":"模型响应不完整"}\n\n',
+        "raw_response_truncated": True,
+    }
+    file_text = log_path.read_text(encoding="utf-8")
+    assert "事件：模型调用失败" in file_text
+    assert "错误代码：invalid_response" in file_text
+    assert "异常类型：ProviderInvalidResponseError" in file_text
+    assert "上游状态：-" in file_text
+    assert "原始响应截断：是" in file_text
+    assert "【错误信息】\nUpstream service returned an invalid response" in file_text
+    assert "【上游原始响应】\ndata:" in file_text
+
+
 def test_http_request_body_preserves_multi_turn_chinese_newlines_and_quotes(
     tmp_path,
 ):

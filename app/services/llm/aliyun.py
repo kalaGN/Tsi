@@ -113,6 +113,12 @@ class AliyunTurn:
             payload["tool_choice"] = "auto"
 
         stream_state = _AliyunStreamState(on_text_delta)
+        raw_response: tuple[str, bool] | None = None
+
+        def capture_raw_response(content: str, truncated: bool) -> None:
+            nonlocal raw_response
+            raw_response = (content, truncated)
+
         status_code = await post_sse(
             ALIYUN_RESPONSES_URL,
             self._api_key,
@@ -121,8 +127,17 @@ class AliyunTurn:
             provider=AliyunResponsesProvider.name,
             model=self._model,
             on_data=stream_state.accept,
+            on_raw_response=capture_raw_response,
         )
-        calls, output_text, token_usage = stream_state.finish()
+        try:
+            calls, output_text, token_usage = stream_state.finish()
+        except ProviderInvalidResponseError as exc:
+            if raw_response is not None:
+                exc.attach_raw_response(
+                    raw_response[0],
+                    truncated=raw_response[1],
+                )
+            raise
         if calls:
             self._pending_calls = calls
             return ModelStep(status_code, output_text, calls, token_usage)

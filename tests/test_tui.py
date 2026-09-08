@@ -32,6 +32,8 @@ from app.tui.state import RunStatus
 from app.tui.approval import ToolApprovalScreen
 from app.tui.widgets import SelectableRichLog
 from tools import (
+    GIT_APPROVAL_WARNING_TEXT,
+    GitApprovalRequest,
     SKILL_INSTALL_APPROVAL_WARNING_TEXT,
     ScriptApprovalRequest,
     SkillInstallApprovalRequest,
@@ -505,6 +507,58 @@ def test_skill_install_approval_shows_source_target_and_install_action():
             assert "访问网络：是" in summary
             assert "安装批准不会批准" in preview
             assert "安装 (Y)" in str(modal.query_one("#approve").label)
+            await pilot.press("y")
+            await app.workers.wait_for_complete()
+            assert decisions == [True]
+
+    asyncio.run(scenario())
+
+
+def test_git_approval_shows_operation_preview_and_network_risk():
+    async def scenario():
+        decisions = []
+        request = GitApprovalRequest(
+            call_id="git-1",
+            tool_name="git_push",
+            title="推送 Git 分支",
+            operation="push",
+            summary="分支：main → origin/main · 远端：https://github.com/<redacted>",
+            preview_text="abc123 feat: 增加Git工具",
+            warning_text=GIT_APPROVAL_WARNING_TEXT,
+            network_access=True,
+            fingerprint="e" * 64,
+        )
+
+        async def fake_runner(input_text: str, **kwargs) -> ChatResult:
+            decisions.append(await kwargs["on_tool_approval"](request))
+            return ChatResult("完成", "fake", "fake-model")
+
+        app = ChatTuiApp(
+            chat_runner=fake_runner,
+            runtime_info=DEEPSEEK_INFO,
+            workspace_registry=create_workspace_registry(
+                WorkspacePolicy(Path.cwd())
+            ),
+        )
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("推送当前提交")
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, ToolApprovalScreen):
+                    break
+            modal = app.screen
+            assert isinstance(modal, ToolApprovalScreen)
+            summary = str(modal.query_one("#approval-paths", Static).content)
+            preview = "\n".join(
+                line.text
+                for line in modal.query_one("#approval-diff", RichLog).lines
+            )
+            assert "main → origin/main" in summary
+            assert "访问网络：是" in summary
+            assert "不会自动回滚" in preview
+            assert "abc123 feat: 增加Git工具" in preview
+            assert "执行 (Y)" in str(modal.query_one("#approve").label)
             await pilot.press("y")
             await app.workers.wait_for_complete()
             assert decisions == [True]

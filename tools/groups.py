@@ -27,6 +27,7 @@ class ToolGroup(str, Enum):
     WORKSPACE_WRITE = "workspace_write"
     SKILLS = "skills"
     SKILL_INSTALL = "skill_install"
+    GIT_WRITE = "git_write"
 
 
 @dataclass(frozen=True)

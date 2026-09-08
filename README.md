@@ -47,6 +47,7 @@ HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间�
 | `workspace_write` | `workspace_read` 全部能力，加结构化修改、固定检查和撤销 |
 | `skills` | 加载 Skill、读取资源、执行脚本 |
 | `skill_install` | 安装 Skill |
+| `git_write` | 暂存指定文件、创建中文提交、推送既有上游 |
 
 `skills` 只在启动 Catalog 非空时可选；`skill_install` 只在 TUI 安装器可用时可选。模型不能创建新组或把任意工具加入组。
 
@@ -65,12 +66,15 @@ HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间�
 | 仅 TUI | `load_skill` | 按名称读取完整 `SKILL.md` 和资源清单 | 自动执行 |
 | 仅 TUI | `read_skill_resource` | 读取 Skill 快照中的 UTF-8 文本资源 | 自动执行 |
 | 仅 TUI | `run_skill_script` | 执行 Skill `scripts/` 中的 `.py` 或 `.sh` 文件 | 每次本地审批后执行 |
+| 仅 TUI | `git_stage` | 暂存 1 至 20 个明确指定的普通文件 | 每次本地审批后执行 |
+| 仅 TUI | `git_commit` | 以 `type: 中文描述` 提交当前暂存内容 | 每次本地审批后执行 |
+| 仅 TUI | `git_push` | 非强制推送当前分支到既有上游 | 每次本地审批后执行并访问网络 |
 
 典型流程为：模型先列举、搜索、读取和检查现有差异，再提出结构化修改；TUI 显示相对路径和完整有界 Diff，默认焦点为拒绝。确认后模型可运行检查并继续修正。每个新写入和撤销都独立审批；Journal 最多保存 10 个批次且只存在当前 TUI 进程，重启后不能撤销旧批次。
 
 安全和成本边界：
 
-- 工具只能从根目录 `tools/` 显式注册；不提供模型自由拼接的 Shell/Python、动态 import、数据库、依赖安装或 Git 提交/推送。唯一脚本入口是 TUI 的 `run_skill_script`，且只能执行已发现 Skill 的固定文件。
+- 工具只能从根目录 `tools/` 显式注册；不提供模型自由拼接的 Shell/Python、动态 import、数据库或依赖安装。Git 只能通过三个固定结构化工具执行，不能传入任意命令或参数。
 - Workspace 固定为 TUI 启动目录；绝对路径、`..`、符号链接、二进制和保护路径会被拒绝。
 - `.env*`、`.git/`、`.venv/`、`data/`、`logs/` 和缓存目录不可读写；`AGENTS.md`、Rules、依赖文件和 Workspace 安全实现额外禁止写入。
 - `apply_workspace_edits` 只支持创建已有目录下的 UTF-8 文件和精确替换，不支持删除、移动、重命名或创建目录。
@@ -79,6 +83,7 @@ HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间�
 - Skill 脚本使用参数数组而非 Shell 拼接，`.py` 固定使用当前 Python，`.sh` 固定使用 `/bin/sh`；运行环境不继承 API Key 等宿主变量，30 秒超时，stdout/stderr 合计最多 32 KiB。
 - Skill 脚本没有文件系统或网络沙箱，能够读取工作区、修改文件及访问网络；审批界面会展示解释器、相对脚本、逐项转义参数和该风险，每次调用都重新确认。
 - `install_skill` 只接受公开 `github.com` HTTPS Skill 目录和 `~/.codex/skills` 直属目录；不读取私有仓库凭据，不覆盖同名目标，不执行安装包中的脚本或安装依赖。安装审批与脚本审批相互独立。
+- Git 写工具仅存在于 TUI：Stage 不接受目录、删除、glob 或全仓库参数；Commit 只使用当前 Index 并关闭 hooks/GPG；Push 只使用当前分支已有的 HTTPS/SSH 上游，不支持 force、Tag、删远端或设置上游。审批后状态变化会返回冲突。
 - 达到上限时 `/chat` 返回安全的 502；TUI 显示安全错误。已确认并完成的磁盘修改不会因后续模型失败自动回滚，界面会列出仍保留的相对路径。
 
 ## 启动 TUI
@@ -243,6 +248,7 @@ llm_request -> llm_http_request -> llm_http_response -> llm_token_usage -> llm_r
 - `llm_http_response`：外部 HTTP 收到响应后立即记录，包含状态码（含非 2xx）、Content-Type 和单调时钟耗时 `duration_ms`，不记录原始响应体。
 - `llm_token_usage`：每个成功解析的模型步骤各记录一次，包含同一 request ID、从 1 开始的步骤编号，以及输入、输出和总 Token；工具循环会产生多条，日志不保存 Provider 私有 usage 对象。
 - `llm_response`：成功统一输出文本。
+- `llm_error`：Runtime 最终失败，包含同一 request ID、Provider、模型、安全错误代码、异常类型、上游状态和可展示文案。它可以区分“HTTP 已响应但内容语义无效”和网络失败。
 
 需要工具时，同一个 request ID 下会出现多组 `llm_http_request/llm_http_response`，并在工具执行处插入：
 
@@ -253,9 +259,9 @@ llm_request -> llm_http_request -> llm_http_response -> llm_token_usage -> llm_r
 
 本轮 Token 合计是同一请求内所有模型步骤 usage 的逐项相加。它表示已经发生的上游消耗，不等于下一次请求的上下文窗口占比；当前不持久化会话累计、不换算费用，也不单独展示缓存或推理 Token。
 
-连接超时或网络失败时，`llm_http_request` 后写一条 `llm_http_error`，仅包含 `timeout` 或 `connection` 安全分类和耗时，不记录异常类名、异常原文或 Traceback。非 2xx 已收到响应，只写 `llm_http_response`，不再写 `llm_http_error`。
+连接超时或网络失败时，`llm_http_request` 后写一条 `llm_http_error`，随后 Runtime 写 `llm_error`。非 2xx 或语义无效响应会先写 `llm_http_response`，随后写 `llm_error`；后者保存最多 256 KiB 的上游原始响应体前缀，并标明是否截断，不记录响应 Header 或 Traceback。
 
-日志不记录环境 API Key、真实 `Authorization`、Provider 原始响应体、Cookie 或异常原文。
+日志不记录环境 API Key、真实 `Authorization`、响应 Header、Cookie 或异常堆栈。失败事件会按上述边界记录上游原始响应体，其中可能包含模型生成内容或上游诊断信息。
 
 > 隐私警告：输入、输出、工具参数、工具结果、TUI 加载的 `AGENTS.md`、Skill Catalog/正文/文本资源、脚本参数及 stdout/stderr 和完整请求体都会以明文写入本地文件；HTTP 入口还会同步写入 stderr，且多轮历史会在每次调用时重复落盘。不要在这些位置放置密码、Token、个人隐私或其他不应发送和持久化的数据。具有本地文件读取权限的用户或进程可以读取日志内容。
 

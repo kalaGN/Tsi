@@ -8,7 +8,7 @@
 
 ## 阿里云返回 `Upstream service returned an invalid response`
 
-先查看 `logs/runtime/model-calls.log` 中对应请求是否已获得 HTTP 响应。阿里云 Responses API 的真实 SSE 可能发送空字符串 `response.output_text.delta`、当前版 `response.custom_tool_call_input.*` 工具参数事件，或在 EOF 前省略最后一个事件后的空行；项目会兼容这些合法差异。`output_item.done` 和 `response.completed` 只交叉校验工具调用稳定字段，允许最终对象补充 `status` 等元数据。非字符串 Delta、缺少完成事件、稳定字段不一致或非法工具调用结构仍会返回该中立错误。
+先查看 `logs/runtime/model-calls.log` 中对应请求是否已获得 HTTP 响应。新版会在最终失败处追加同一请求 ID 的“模型调用失败”分块，并保存有界的“上游原始响应”；如果前面是 HTTP 200，说明网络成功但协议或最终模型步骤结构无效。阿里云 Responses API 的真实 SSE 可能发送空字符串 `response.output_text.delta`、当前版 `response.custom_tool_call_input.*` 工具参数事件，或在 EOF 前省略最后一个事件后的空行；项目会兼容这些合法差异。`output_item.done` 和 `response.completed` 只交叉校验工具调用稳定字段，允许最终对象补充 `status` 等元数据。非字符串 Delta、缺少完成事件、稳定字段不一致或非法工具调用结构仍会返回该中立错误。
 
 如果只在启用项目 Skill 后出现该错误，还应检查 Function Tool Schema：`required` 中的每个字段都必须在 `properties` 中声明。项目会在 Registry 创建阶段拒绝矛盾 Schema，避免将其发送给阿里云；`read_skill_resource` 当前只要求 `name` 和 `path`。
 
@@ -50,6 +50,16 @@ TUI 启动时只捕获一次命令执行目录。确认该目录存在、是普�
 - `check_timeout` / `check_unavailable`：固定检查超过 120 秒，或本地 Python/Git 不可用。检查工具不会接受自定义命令作为替代。
 
 审批通过的修改可能在模型后续失败或取消前已经落盘；TUI 会显示“本轮已写入但尚未完成”和相对路径。检查失败也不会自动回滚。需要撤销时在同一 TUI 进程中要求模型调用 `undo_workspace_change`，并再次确认反向 Diff。Journal 只保留最近 10 个批次且不持久化，重启后无法撤销旧记录。
+
+## Git 写工具返回错误
+
+- `git_nothing_to_stage` / `git_nothing_to_commit` / `git_nothing_to_push`：当前没有对应增量。
+- `git_no_upstream`：当前不是命名分支，或尚未配置上游；第一版不会自动设置。
+- `git_remote_unsafe`：Push URL 不是受支持的 HTTPS/SSH 形式，或包含不安全结构。
+- `git_conflict`：审批后文件、Index、HEAD、上游或远端地址发生变化；重新查看状态并发起新调用。
+- `git_failed` / `git_unavailable`：固定 Git 操作失败或当前目录不是可用仓库。原始 Git stderr 不回传模型。
+
+Stage、Commit、Push 必须分别审批。工具不会自动暂存整个仓库、执行 hooks、创建上游、推送 Tag、force push 或删除远端引用。
 
 ## 消息可以选中但没有进入系统剪贴板
 

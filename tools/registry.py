@@ -9,6 +9,8 @@ from pathlib import PurePosixPath
 
 from tools.contracts import (
     ApprovalTool,
+    GIT_APPROVAL_WARNING_TEXT,
+    GitApprovalRequest,
     SCRIPT_APPROVAL_WARNING_TEXT,
     SKILL_INSTALL_APPROVAL_WARNING_TEXT,
     ScriptApprovalRequest,
@@ -55,6 +57,14 @@ _SAFE_ERROR_MESSAGES = {
     "skill_refresh_failed": "Skill refresh failed",
     "tool_group_unavailable": "Tool group is unavailable",
     "tool_group_limit": "Tool group activation limit exceeded",
+    "git_unavailable": "Git repository is unavailable",
+    "git_conflict": "Git state changed before execution",
+    "git_nothing_to_stage": "Selected files have no changes to stage",
+    "git_nothing_to_commit": "There are no staged changes to commit",
+    "git_no_upstream": "Current branch has no configured upstream",
+    "git_nothing_to_push": "Current branch has no commits to push",
+    "git_remote_unsafe": "Configured Git remote is not allowed",
+    "git_failed": "Git operation failed",
 }
 
 
@@ -247,6 +257,8 @@ def _valid_approval_request(
         return _valid_script_approval_request(request, call)
     if isinstance(request, SkillInstallApprovalRequest):
         return _valid_skill_install_approval_request(request, call)
+    if isinstance(request, GitApprovalRequest):
+        return _valid_git_approval_request(request, call)
     if not isinstance(request, ToolApprovalRequest):
         return False
     if request.call_id != call.call_id or request.tool_name != call.name:
@@ -348,6 +360,33 @@ def _valid_skill_install_approval_request(
         and isinstance(request.network_access, bool)
         and request.network_access == (request.source_type == "github")
         and request.warning_text == SKILL_INSTALL_APPROVAL_WARNING_TEXT
+        and isinstance(request.fingerprint, str)
+        and bool(_FINGERPRINT_PATTERN.fullmatch(request.fingerprint))
+    )
+
+
+def _valid_git_approval_request(
+    request: GitApprovalRequest,
+    call: ToolCall,
+) -> bool:
+    """只接受固定操作、有限正文和匹配网络语义的 Git 审批。"""
+
+    return (
+        request.call_id == call.call_id
+        and request.tool_name == call.name
+        and request.operation in {"stage", "commit", "push"}
+        and isinstance(request.title, str)
+        and bool(request.title.strip())
+        and len(request.title.encode("utf-8")) <= 1024
+        and isinstance(request.summary, str)
+        and bool(request.summary.strip())
+        and len(request.summary.encode("utf-8")) <= 4096
+        and isinstance(request.preview_text, str)
+        and bool(request.preview_text)
+        and len(request.preview_text.encode("utf-8")) <= MAX_APPROVAL_DIFF_BYTES
+        and request.warning_text == GIT_APPROVAL_WARNING_TEXT
+        and type(request.network_access) is bool
+        and request.network_access == (request.operation == "push")
         and isinstance(request.fingerprint, str)
         and bool(_FINGERPRINT_PATTERN.fullmatch(request.fingerprint))
     )

@@ -990,6 +990,7 @@ def create_intent_workspace_registry(
         journal=journal,
         skill_catalog=skill_catalog,
         install_skill_tool=install_skill_tool,
+        include_git_write=True,
     )
     names = {tool.definition.name for tool in tools}
     read_names = (
@@ -1037,6 +1038,13 @@ def create_intent_workspace_registry(
                 ("install_skill",),
             )
         )
+    groups.append(
+        ToolGroupDefinition(
+            ToolGroup.GIT_WRITE,
+            "经逐次审批暂存文件、创建中文提交并推送既有上游",
+            ("git_stage", "git_commit", "git_push"),
+        )
+    )
     return GroupedToolRegistry(
         tools,
         groups,
@@ -1049,6 +1057,8 @@ def _create_workspace_tools(
     journal: WorkspaceChangeJournal | None = None,
     skill_catalog: "SkillCatalog | None" = None,
     install_skill_tool: "InstallSkillTool | None" = None,
+    *,
+    include_git_write: bool = False,
 ):
     """构造静态与分组 Registry 共用的同一套工具对象。"""
 
@@ -1068,6 +1078,12 @@ def _create_workspace_tools(
             RunProjectCheckTool(policy),
             UndoWorkspaceChangeTool(policy, active_journal),
     ]
+    if include_git_write:
+        from tools.git import GitCommitTool, GitPushTool, GitStageTool
+
+        tools.extend(
+            (GitStageTool(policy), GitCommitTool(policy), GitPushTool(policy))
+        )
     if install_skill_tool is not None:
         tools.append(install_skill_tool)
     if skill_catalog is not None and skill_catalog.count:

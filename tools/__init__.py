@@ -3,6 +3,8 @@
 from tools.builtin import GetCurrentTimeTool
 from tools.contracts import (
     AnyToolApprovalRequest,
+    GIT_APPROVAL_WARNING_TEXT,
+    GitApprovalRequest,
     SKILL_INSTALL_APPROVAL_WARNING_TEXT,
     SCRIPT_APPROVAL_WARNING_TEXT,
     ScriptApprovalRequest,
@@ -27,6 +29,7 @@ from tools.groups import (
     ToolGroup,
     ToolGroupDefinition,
 )
+from tools.git import GitCommitTool, GitPushTool, GitStageTool
 from tools.skills import (
     LoadSkillTool,
     ReadSkillResourceTool,
@@ -46,6 +49,8 @@ def create_default_registry() -> ToolRegistry:
 __all__ = [
     "GetCurrentTimeTool",
     "AnyToolApprovalRequest",
+    "GIT_APPROVAL_WARNING_TEXT",
+    "GitApprovalRequest",
     "ScriptApprovalRequest",
     "SkillInstallApprovalRequest",
     "SCRIPT_APPROVAL_WARNING_TEXT",
@@ -67,6 +72,9 @@ __all__ = [
     "ToolRegistry",
     "ActivateToolGroupsTool",
     "GroupedToolRegistry",
+    "GitStageTool",
+    "GitCommitTool",
+    "GitPushTool",
     "ToolGroup",
     "ToolGroupDefinition",
     "ToolResult",

@@ -13,6 +13,11 @@ from app.runtime.chat import (
     ChatRuntimeInfo,
 )
 from app.runtime.memory import ConversationState, UserPreference
+from app.runtime.model_selection_store import (
+    ModelSelection,
+    ModelSelectionStore,
+    ModelSelectionStoreError,
+)
 from app.runtime.session import ChatSession
 from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.session_store import SessionStore, SessionStoreError
@@ -185,6 +190,7 @@ def test_model_command_lists_navigates_and_switches_next_session_request(
             ModelOption("aliyun", "qwen3-max", True),
         )
         factory_calls = []
+        selection_store = ModelSelectionStore(tmp_path / "model-selection.json")
 
         def create_selected(provider, model):
             factory_calls.append((provider, model))
@@ -199,6 +205,7 @@ def test_model_command_lists_navigates_and_switches_next_session_request(
             chat_session=session,
             runtime_info=DEEPSEEK_INFO,
             model_options=options,
+            model_selection_store=selection_store,
         )
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
@@ -225,6 +232,182 @@ def test_model_command_lists_navigates_and_switches_next_session_request(
             await app.workers.wait_for_complete()
 
             assert selected.calls == [(ChatMessage(ChatRole.USER, "继续对话"),)]
+            assert original.calls == []
+            assert selection_store.load() == ModelSelection("aliyun", "qwen3-max")
+
+    asyncio.run(scenario())
+
+
+def test_saved_model_selection_restores_status_palette_and_session_provider(
+    tmp_path,
+    monkeypatch,
+):
+    async def scenario():
+        selection_store = ModelSelectionStore(tmp_path / "model-selection.json")
+        selection_store.save(ModelSelection("aliyun", "qwen3-max"))
+        selected = ImmediateProvider("aliyun", "qwen3-max", "恢复后回答")
+        options = (
+            ModelOption("deepseek", "deepseek-v4-flash", True),
+            ModelOption("aliyun", "qwen3-max", True),
+        )
+        monkeypatch.setattr(
+            tui_application,
+            "SessionStore",
+            lambda: SessionStore(tmp_path / "chat-session.json"),
+        )
+        monkeypatch.setattr(
+            tui_application,
+            "create_provider_for_model",
+            lambda provider, model: selected,
+        )
+
+        app = ChatTuiApp(
+            model_options=options,
+            model_selection_store=selection_store,
+        )
+        async with app.run_test() as pilot:
+            assert "Aliyun | qwen3-max" in str(
+                app.query_one("#status-bar", Static).content
+            )
+
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("使用恢复模型")
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            assert selected.calls == [
+                (ChatMessage(ChatRole.USER, "使用恢复模型"),)
+            ]
+
+            prompt.load_text("/model")
+            await pilot.press("enter")
+            palette = app.query_one(ModelPalette)
+            assert "Aliyun · qwen3-max  当前" in str(palette.content)
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("saved_state", ["corrupt", "removed", "missing-key"])
+def test_unrestorable_model_selection_warns_and_uses_environment_default(
+    tmp_path,
+    monkeypatch,
+    saved_state,
+):
+    async def scenario():
+        path = tmp_path / "model-selection.json"
+        store = ModelSelectionStore(path)
+        options = (ModelOption("deepseek", "deepseek-v4-flash", True),)
+        if saved_state == "corrupt":
+            path.write_text("not-json", encoding="utf-8")
+        else:
+            store.save(ModelSelection("aliyun", "qwen3-max"))
+            if saved_state == "missing-key":
+                options = options + (ModelOption("aliyun", "qwen3-max", False),)
+        monkeypatch.setattr(
+            tui_application,
+            "SessionStore",
+            lambda: SessionStore(tmp_path / "chat-session.json"),
+        )
+
+        app = ChatTuiApp(
+            runtime_info=DEEPSEEK_INFO,
+            model_options=options,
+            model_selection_store=store,
+        )
+        async with app.run_test():
+            transcript = transcript_text(app)
+            assert "已忽略无法恢复的模型选择，当前使用环境默认模型" in transcript
+            assert str(tmp_path) not in transcript
+            assert "DeepSeek | deepseek-v4-flash" in str(
+                app.query_one("#status-bar", Static).content
+            )
+            assert app.run_status is RunStatus.READY
+            if saved_state == "corrupt":
+                assert path.read_text(encoding="utf-8") == "not-json"
+            else:
+                assert store.load() == ModelSelection("aliyun", "qwen3-max")
+
+    asyncio.run(scenario())
+
+
+def test_saved_model_provider_creation_failure_falls_back_safely(
+    tmp_path,
+    monkeypatch,
+):
+    async def scenario():
+        store = ModelSelectionStore(tmp_path / "model-selection.json")
+        store.save(ModelSelection("aliyun", "qwen3-max"))
+
+        def fail_provider_creation(_provider, _model):
+            raise ProviderConfigurationError("sensitive provider detail")
+
+        monkeypatch.setattr(
+            tui_application,
+            "SessionStore",
+            lambda: SessionStore(tmp_path / "chat-session.json"),
+        )
+        monkeypatch.setattr(
+            tui_application,
+            "create_provider_for_model",
+            fail_provider_creation,
+        )
+        app = ChatTuiApp(
+            runtime_info=DEEPSEEK_INFO,
+            model_options=(ModelOption("aliyun", "qwen3-max", True),),
+            model_selection_store=store,
+        )
+
+        async with app.run_test():
+            transcript = transcript_text(app)
+            assert "已忽略无法恢复的模型选择" in transcript
+            assert "sensitive provider detail" not in transcript
+            assert app.run_status is RunStatus.READY
+
+    asyncio.run(scenario())
+
+
+def test_model_switch_save_failure_keeps_selected_provider(tmp_path, monkeypatch):
+    class FailingStore(ModelSelectionStore):
+        def save(self, selection):
+            raise ModelSelectionStoreError("Unable to save model selection")
+
+    async def scenario():
+        original = ImmediateProvider("deepseek", "deepseek-v4-flash")
+        selected = ImmediateProvider("aliyun", "qwen3-max")
+        session = ChatSession(
+            SessionStore(tmp_path / "chat-session.json"),
+            provider=original,
+        )
+        monkeypatch.setattr(
+            tui_application,
+            "create_provider_for_model",
+            lambda provider, model: selected,
+        )
+        app = ChatTuiApp(
+            chat_session=session,
+            runtime_info=DEEPSEEK_INFO,
+            model_options=(
+                ModelOption("deepseek", "deepseek-v4-flash", True),
+                ModelOption("aliyun", "qwen3-max", True),
+            ),
+            model_selection_store=FailingStore(tmp_path / "model-selection.json"),
+        )
+
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("/model")
+            await pilot.press("enter", "down", "enter")
+
+            transcript = transcript_text(app)
+            assert "已切换模型：Aliyun · qwen3-max" in transcript
+            assert "模型已切换，但无法保存启动选择" in transcript
+            assert "Aliyun | qwen3-max" in str(
+                app.query_one("#status-bar", Static).content
+            )
+
+            prompt.load_text("继续")
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            assert selected.calls == [(ChatMessage(ChatRole.USER, "继续"),)]
             assert original.calls == []
 
     asyncio.run(scenario())
@@ -1504,6 +1687,7 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
         skills_count,
         skills_error,
         skill_runtime,
+        model_selection_store,
     ):
         observed["kitty_keyboard_disabled"] = (
             tui_main.os.environ.get("TEXTUAL_DISABLE_KITTY_KEY")
@@ -1517,6 +1701,10 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
         observed["skills_count"] = skills_count
         observed["skills_error"] = skills_error
         observed["skill_runtime"] = skill_runtime is not None
+        observed["model_selection_store"] = isinstance(
+            model_selection_store,
+            ModelSelectionStore,
+        )
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
@@ -1549,6 +1737,7 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
         "skills_count": 0,
         "skills_error": None,
         "skill_runtime": True,
+        "model_selection_store": True,
         "run": True,
     }
 
@@ -1570,6 +1759,7 @@ def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
         skills_count,
         skills_error,
         skill_runtime,
+        model_selection_store,
     ):
         observed["system_prompt"] = system_prompt
         observed["system_prompt_error"] = system_prompt_error
@@ -1578,6 +1768,10 @@ def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
         observed["skills_count"] = skills_count
         observed["skills_error"] = skills_error
         observed["skill_runtime"] = skill_runtime is not None
+        observed["model_selection_store"] = isinstance(
+            model_selection_store,
+            ModelSelectionStore,
+        )
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
@@ -1597,6 +1791,7 @@ def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
         "skills_count": 0,
         "skills_error": None,
         "skill_runtime": True,
+        "model_selection_store": True,
         "run": True,
     }
 
@@ -2380,8 +2575,14 @@ def test_memory_commands_list_and_clear_preferences_without_calling_model(tmp_pa
             "2026-09-09T00:00:00Z",
         )
         store.save_state(ConversationState(preferences=(preference,)))
+        selection_store = ModelSelectionStore(tmp_path / "model-selection.json")
+        selection_store.save(ModelSelection("aliyun", "qwen3-max"))
         session = ChatSession.load(store)
-        app = ChatTuiApp(chat_session=session, runtime_info=ALIYUN_INFO)
+        app = ChatTuiApp(
+            chat_session=session,
+            runtime_info=ALIYUN_INFO,
+            model_selection_store=selection_store,
+        )
 
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
@@ -2396,6 +2597,7 @@ def test_memory_commands_list_and_clear_preferences_without_calling_model(tmp_pa
             assert session.preferences == ()
             assert not store.path.exists()
             assert app._input_history.entries == []
+            assert selection_store.load() == ModelSelection("aliyun", "qwen3-max")
 
     asyncio.run(scenario())
 
@@ -2418,8 +2620,14 @@ def test_clear_command_preserves_long_term_preferences(tmp_path):
                 preferences=(preference,),
             )
         )
+        selection_store = ModelSelectionStore(tmp_path / "model-selection.json")
+        selection_store.save(ModelSelection("aliyun", "qwen3-max"))
         session = ChatSession.load(store)
-        app = ChatTuiApp(chat_session=session, runtime_info=ALIYUN_INFO)
+        app = ChatTuiApp(
+            chat_session=session,
+            runtime_info=ALIYUN_INFO,
+            model_selection_store=selection_store,
+        )
 
         async with app.run_test() as pilot:
             app.query_one("#prompt", TextArea).load_text("/clear")
@@ -2429,6 +2637,7 @@ def test_clear_command_preserves_long_term_preferences(tmp_path):
             assert session.messages == ()
             assert session.preferences == (preference,)
             assert store.load_state().preferences == (preference,)
+            assert selection_store.load() == ModelSelection("aliyun", "qwen3-max")
 
     asyncio.run(scenario())
 

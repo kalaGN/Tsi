@@ -34,7 +34,7 @@ ALIYUN_MODEL=qwen3-max
 ALIYUN_MODELS=qwen3-max,qwen-plus
 ```
 
-`ALIYUN_MODEL`、`DEEPSEEK_MODEL` 都是启动时的当前模型，空白或未设置时使用示例中的默认值。`ALIYUN_MODELS`、`DEEPSEEK_MODELS` 是 TUI `/model` 的可选候选，使用英文逗号分隔；示例只说明配置格式，不承诺对应模型在上游可用。Provider 只能为 `aliyun` 或 `deepseek`；显式空白或其他值会返回配置错误。
+`ALIYUN_MODEL`、`DEEPSEEK_MODEL` 是尚未保存 TUI 选择时的初始模型，空白或未设置时使用示例中的默认值。`ALIYUN_MODELS`、`DEEPSEEK_MODELS` 是 TUI `/model` 的可选候选，使用英文逗号分隔；示例只说明配置格式，不承诺对应模型在上游可用。Provider 只能为 `aliyun` 或 `deepseek`；显式空白或其他值会返回配置错误。TUI 每次成功切换后会记住供应商和模型，下次启动优先恢复；HTTP 始终忽略该本地选择并继续使用环境配置。
 
 ## 工具调用
 
@@ -149,7 +149,7 @@ TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统
 - `/clear`：清空界面、模型上下文、滚动摘要和本地对话历史；长期偏好保留。
 - `/memory`：查看从明确表达中保存的长期偏好，不显示滚动摘要。
 - `/memory clear`：只清除长期偏好，不清除当前对话和摘要。
-- `/model`：打开模型候选列表；`↑/↓` 循环移动，`Enter` 确认，`Esc` 取消。切换只影响当前 TUI 进程并保留会话，重启后重新使用环境配置。
+- `/model`：打开模型候选列表；`↑/↓` 循环移动，`Enter` 确认，`Esc` 取消。切换保留会话并立即保存，重启 TUI 后恢复最后一次成功选择。
 - `/skills`：列出当前运行时已发布的 Skill 名称、描述和项目相对入口；不会调用模型或重新扫描磁盘。
 - `/quit`：取消运行中请求并退出。
 
@@ -187,15 +187,18 @@ curl --location 'http://127.0.0.1:8000/chat' \
 
 接口不再返回阿里云或 DeepSeek 的原始响应字段。
 
-## TUI 会话历史
+## TUI 本地状态
 
 TUI 每个成功轮次都会原子保存到：
 
 ```text
 data/chat-session.json
+data/model-selection.json
 ```
 
-重新启动 TUI 会自动恢复该文件中的完整界面消息、滚动摘要和长期偏好。如果文件损坏，TUI 不会静默覆盖；输入 `/clear` 可清理损坏文件并重置会话。
+`chat-session.json` 保存完整界面消息、滚动摘要和长期偏好；`model-selection.json` 独立保存最近一次成功切换的供应商与模型。重新启动 TUI 会恢复两者。模型选择仍在当前候选中且对应 Key 可用时优先于 `.env`，否则显示安全提示并回退环境默认模型。无效选择文件不会在启动时自动覆盖，之后成功切换可原子替换它。
+
+`/clear` 可清理损坏的会话文件并重置会话，但不会删除模型选择；`/memory clear` 同样不影响模型选择。两个文件均使用标准库原子写入和 `0600` 权限，模型选择文件不包含 API Key、聊天内容或其他环境配置。
 
 模型请求使用本地估算管理上下文：默认窗口为 `128000` Token，可通过 `TUI_CONTEXT_WINDOW_TOKENS` 设置实际模型窗口。达到约 70% 时，当前模型会在不开放工具的情况下把旧轮次合并成滚动摘要，正常保留最近 6 个完整轮次；压缩后仍超出目标或摘要失败时，从最旧完整轮次开始淘汰模型上下文。淘汰不会删除文件中的完整 Transcript，单条当前输入自身超过硬预算时会被安全拒绝。估算值不等于 Provider 的计费 Token。
 

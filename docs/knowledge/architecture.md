@@ -122,7 +122,8 @@ python -m app.tui
   -> read cwd/AGENTS.md once as an optional bounded system prompt
   -> load cwd/.agents/skills as initial Catalog
   -> capture cwd once and create Workspace Policy, shared Journal and SkillRuntime
-  -> Runtime resolves Provider, model and safe key status
+  -> resolve bounded model catalog and load data/model-selection.json
+  -> restore an available saved Provider or fall back to environment configuration
   -> load v1/v2 data/chat-session.json and restore complete turns plus memory
   -> Textual Worker calls ChatSession.send
   -> send passes original input and reads one system prompt/Registry/Catalog execution snapshot
@@ -162,7 +163,7 @@ TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只�
 
 显式空白或未知 `LLM_PROVIDER` 是配置错误，不静默回退。模型变量空白时使用默认值。上游 URL 固定在相应适配器中，不能通过环境变量覆盖。
 
-TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默认模型组成的安全候选快照。候选按 DeepSeek、Aliyun 及各自配置顺序展示，每家最多 50 项；缺少 Key 的候选可见但不可确认。切换先创建完整 Provider，再由 Session 在无活动请求时替换，保留消息和存储且不写回环境。HTTP 仍只使用部署环境选择。
+TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默认模型组成的安全候选快照。候选按 DeepSeek、Aliyun 及各自配置顺序展示，每家最多 50 项；缺少 Key 的候选可见但不可确认。切换先创建完整 Provider，再由 Session 在无活动请求时替换，保留消息和存储且不写回环境；成功后将安全的供应商和模型标识原子保存到 `data/model-selection.json`。下次启动只有在保存项仍位于候选且 Key 可用时才把同一 Provider 同时注入 Session 和状态栏，否则保留文件、显示非阻断提示并回退环境默认。HTTP 不读取该 Store，仍只使用部署环境选择。
 
 ## 设计决策
 
@@ -190,6 +191,7 @@ TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默�
 - TUI 每个活动请求最多创建一个 100 ms Timer，空闲时没有周期任务；Timer 回调同样校验捕获的请求代次。
 - TUI 上下键固定用于输入历史，历史不去重、不循环且没有独立持久化文件；`/clear` 同步清空。
 - TUI 模型候选打开时优先消费上下键、Enter 和 Esc；选择器只保存安全候选快照，Provider 创建和 Session 替换仍由应用协调。
+- TUI 使用独立的 `data/model-selection.json` v1 保存最近一次成功切换的供应商和模型；文件以 `0600` 原子替换，不含 Key，且不受 `/clear` 或 `/memory clear` 影响。
 - TUI 使用唯一 `data/chat-session.json` v2 保存完整 Transcript、滚动摘要边界和最多 50 条显式长期偏好；v1 延迟迁移，损坏历史不自动覆盖。
 - 模型上下文按本地估算在 70% 触发、以 50% 为压缩目标，正常保留最近 6 轮；摘要调用不开放工具，失败或仍超预算时按完整轮次淘汰上下文但不删除 Transcript。
 - `/clear` 清除 Transcript 和摘要但保留长期偏好；`/memory` 只读偏好，`/memory clear` 单独原子清除偏好。

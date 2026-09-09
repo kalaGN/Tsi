@@ -645,8 +645,7 @@ class ChatTuiApp(App[None]):
             self._flush_stream_output(generation)
             self._finish_stream_output(generation)
             self._write_message("Assistant", result.output_text)
-            self._write_elapsed_time(started_at)
-            self._write_token_usage(result.token_usage)
+            self._write_request_statistics(started_at, result.token_usage)
             self.run_status = RunStatus.READY
         except ChatRuntimeError as exc:
             if worker.is_cancelled or generation != self._request_generation:
@@ -850,19 +849,22 @@ class ChatTuiApp(App[None]):
         elapsed = self.clock() - started_at
         self._write_message("System", f"耗时：{elapsed:.2f} 秒")
 
-    def _write_token_usage(self, usage: TokenUsage | None) -> None:
-        """在成功响应后展示本轮上游接口返回的 Token 消耗。"""
+    def _write_request_statistics(
+        self,
+        started_at: float,
+        usage: TokenUsage | None,
+    ) -> None:
+        """在一条系统消息中展示成功请求的耗时和 Token 消耗。"""
 
+        elapsed = self.clock() - started_at
         if usage is None:
-            self._write_message("System", "Token：不可用")
-            return
-        self._write_message(
-            "System",
-            (
+            token_text = "Token：不可用"
+        else:
+            token_text = (
                 f"Token：输入 {usage.input_tokens} | "
                 f"输出 {usage.output_tokens} | 合计 {usage.total_tokens}"
-            ),
-        )
+            )
+        self._write_message("System", f"耗时：{elapsed:.2f} 秒 | {token_text}")
 
     def action_confirm_exit(self) -> None:
         """优先清空输入；输入为空时才进入取消请求和双 Esc 退出。"""

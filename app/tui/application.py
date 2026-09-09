@@ -1,5 +1,6 @@
 """Textual 多轮对话界面、状态切换与请求取消逻辑。"""
 
+import os
 import time
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Protocol
@@ -18,6 +19,7 @@ from app.runtime.chat import (
     get_chat_runtime_info,
 )
 from app.runtime.session import ChatSession
+from app.runtime.memory import MemoryPolicy, resolve_memory_policy
 from app.runtime.session_store import SessionStore
 from app.services.llm.contracts import (
     ChatRole,
@@ -111,6 +113,7 @@ class ChatTuiApp(App[None]):
         skills_error: str | None = None,
         skill_runtime: "SkillRuntime | None" = None,
         model_options: tuple[ModelOption, ...] | None = None,
+        memory_policy: MemoryPolicy | None = None,
     ) -> None:
         """初始化运行时信息、可恢复会话以及可注入的测试边界。"""
 
@@ -144,6 +147,13 @@ class ChatTuiApp(App[None]):
                 self._configuration_error = exc.user_message
                 runtime_info = ChatRuntimeInfo("unknown", "-", False)
         self.runtime_info = runtime_info
+        if memory_policy is None:
+            try:
+                memory_policy = resolve_memory_policy(os.environ)
+            except ValueError as exc:
+                if self._configuration_error is None:
+                    self._configuration_error = str(exc)
+                memory_policy = MemoryPolicy()
         if chat_session is None and chat_runner is None:
             store = SessionStore()
             try:
@@ -159,6 +169,7 @@ class ChatTuiApp(App[None]):
                         if workspace_registry is not None
                         else DEFAULT_TOOL_LOOP_LIMITS
                     ),
+                    memory_policy=memory_policy,
                 )
             except ChatRuntimeError as exc:
                 # 保留损坏文件，只允许用户通过 /clear 显式删除。
@@ -175,6 +186,7 @@ class ChatTuiApp(App[None]):
                         if workspace_registry is not None
                         else DEFAULT_TOOL_LOOP_LIMITS
                     ),
+                    memory_policy=memory_policy,
                 )
         self.chat_session = chat_session
         self._system_prompt_loaded = (
@@ -329,6 +341,14 @@ class ChatTuiApp(App[None]):
         if command is LocalCommand.CLEAR:
             self._clear_conversation(prompt)
             return True
+        if command is LocalCommand.MEMORY:
+            prompt.load_text("")
+            self._write_memory_preferences()
+            return True
+        if command is LocalCommand.MEMORY_CLEAR:
+            prompt.load_text("")
+            self._clear_memory_preferences()
+            return True
         if command is LocalCommand.MODEL:
             self._open_model_palette(prompt)
             return True
@@ -337,6 +357,33 @@ class ChatTuiApp(App[None]):
             self._write_available_skills()
             return True
         return False
+
+    def _write_memory_preferences(self) -> None:
+        """显示长期偏好摘要，不展示滚动会话摘要。"""
+
+        if self.chat_session is None or not self.chat_session.preferences:
+            self._write_message("System", "尚未保存长期偏好")
+            return
+        lines = [f"长期偏好（{len(self.chat_session.preferences)}）："]
+        lines.extend(
+            f"{index}. {item.content}"
+            for index, item in enumerate(self.chat_session.preferences, start=1)
+        )
+        self._write_message("System", "\n".join(lines))
+
+    def _clear_memory_preferences(self) -> None:
+        """原子清除长期偏好，不改变对话和摘要。"""
+
+        if self.chat_session is None:
+            self._write_message("System", "尚未保存长期偏好")
+            return
+        try:
+            self.chat_session.clear_preferences()
+        except ChatRuntimeError as exc:
+            self._write_message("Error", exc.user_message)
+            self.run_status = RunStatus.ERROR
+            return
+        self._write_message("System", "长期偏好已清除")
 
     def _clear_conversation(self, prompt: TextArea) -> None:
         """先清理持久化会话，成功后再重置界面与内存历史。"""
@@ -361,6 +408,11 @@ class ChatTuiApp(App[None]):
 
     def _can_start_prompt(self, input_text: str) -> bool:
         """按既有优先级展示阻断原因，避免启动无效请求。"""
+
+        if self._configuration_error is not None:
+            self._write_message("Error", self._configuration_error)
+            self.run_status = RunStatus.ERROR
+            return False
 
         if self._history_error is not None:
             self._write_message("Error", self._history_error)

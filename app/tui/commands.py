@@ -8,6 +8,8 @@ class LocalCommand(str, Enum):
     """应用支持且不会发送给模型的本地命令。"""
 
     CLEAR = "/clear"
+    MEMORY = "/memory"
+    MEMORY_CLEAR = "/memory clear"
     MODEL = "/model"
     SKILLS = "/skills"
     QUIT = "/quit"
@@ -25,6 +27,8 @@ COMMAND_SPECS = (
     CommandSpec(LocalCommand.CLEAR, "清空对话、上下文和历史"),
     CommandSpec(LocalCommand.SKILLS, "查看可用技能"),
     CommandSpec(LocalCommand.MODEL, "切换模型供应商和模型"),
+    CommandSpec(LocalCommand.MEMORY, "查看长期用户偏好"),
+    CommandSpec(LocalCommand.MEMORY_CLEAR, "清除长期用户偏好"),
     CommandSpec(LocalCommand.QUIT, "退出 TUI"),
 )
 
@@ -42,9 +46,7 @@ def parse_local_command(input_text: str) -> LocalCommand | None:
 def suggest_local_commands(input_text: str) -> tuple[CommandSpec, ...]:
     """返回未完成的无空白命令前缀对应候选。"""
 
-    if not input_text.startswith("/") or any(
-        character.isspace() for character in input_text
-    ):
+    if not input_text.startswith("/") or "\n" in input_text or "\t" in input_text:
         return ()
     if any(spec.command.value == input_text for spec in COMMAND_SPECS):
         return ()

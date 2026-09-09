@@ -70,6 +70,7 @@ class ChatErrorCode(str, Enum):
     INVALID_RESPONSE = "invalid_response"
     STORAGE = "storage"
     TOOL_LIMIT = "tool_limit"
+    CONTEXT_LIMIT = "context_limit"
 
 
 class ChatRuntimeError(Exception):

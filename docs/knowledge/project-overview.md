@@ -63,12 +63,13 @@ git diff --check
 - 严格非空的单轮文本输入。
 - HTTP 部署级选择 `aliyun` 或 `deepseek`；TUI 可通过 `/model` 在有界环境候选中切换当前进程后续请求的 Provider 和模型。
 - 两家上游均使用 SSE；HTTP 聚合后固定返回 `{"output_text": "..."}`，TUI 增量展示纯文本并在完成后用同一原文渲染 Assistant Markdown。
-- 中文输入、`Cmd+A` / `Ctrl+A` 全选输入、Esc 清空输入、最终耗时统计、请求中动画与实时耗时、请求取消、`/clear`、`/model`、`/skills`、`/quit`、Enter 和双击 Esc。
+- 中文输入、`Cmd+A` / `Ctrl+A` 全选输入、Esc 清空输入、最终耗时统计、请求中动画与实时耗时、请求取消、`/clear`、`/memory`、`/model`、`/skills`、`/quit`、Enter 和双击 Esc。
 - TUI 启动目录直属 `AGENTS.md` 的 32 KiB UTF-8 有界读取，以及不持久化的 Provider 标准 system 消息。
 - TUI 启动目录 `.agents/skills/*/SKILL.md` 的安全 YAML Catalog、渐进读取，以及每次审批的 `.py`/`.sh` 脚本执行。
 - TUI 经逐次审批从公开 GitHub 目录或当前用户 `~/.codex/skills` 直属目录原子安装 Skill；成功后下一次请求热刷新。
 - `/skills` 只读当前运行时已发布 Catalog 的名称、描述和相对入口，不调用模型、不进入会话历史，也不触发磁盘重扫。
-- TUI 输入 `/` 或命令前缀时预览 `/clear`、`/skills`、`/model`、`/quit`；`/model` 打开单层供应商/模型列表，上下循环移动、Enter 确认、Esc 取消。
+- TUI 输入 `/` 或命令前缀时预览 `/clear`、`/skills`、`/model`、`/memory`、`/memory clear`、`/quit`；`/model` 打开单层供应商/模型列表，上下循环移动、Enter 确认、Esc 取消。
+- v2 会话完整保存 Transcript、滚动摘要和显式长期偏好；模型上下文达到 70% 后自动摘要，并以完整轮次淘汰作为失败兜底。
 - 上下键输入历史、草稿恢复，以及从成功 Session user 消息恢复历史。
 - 用户消息以不解析 Markdown 的全宽背景卡片展示；Assistant 支持标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；系统和错误保持纯文本。
 - 最终消息和流式临时文本支持鼠标选择，并通过 `Cmd+C` / `Ctrl+C` 复制渲染后的可见文字；对话记录还可双击立即复制当前渲染行。
@@ -81,7 +82,7 @@ git diff --check
 
 明确不支持：
 
-- HTML、远程图片、Mermaid、Markdown 代码执行、HTTP SSE、HTTP 请求级 Provider/模型选择、模型目录联网发现、多会话管理、上下文压缩、任意 Shell、MCP、动态插件、多 Agent 和多模态。
+- HTML、远程图片、Mermaid、Markdown 代码执行、HTTP SSE、HTTP 请求级 Provider/模型选择、模型目录联网发现、多会话管理、向量记忆、任意 Shell、MCP、动态插件、多 Agent 和多模态。
 - 文件删除、移动、重命名、自动依赖安装、Git Tag/force push/设置上游/任意命令、Skill 覆盖/升级/卸载、手动目录监控和跨重启撤销。
 - 自动重试、降级、负载均衡、熔断、限流、用户认证授权和任务队列。
 - 容器、反向代理、进程管理、CI/CD、Trace、指标、告警、远程日志采集和正式健康检查。

@@ -12,6 +12,7 @@ from app.runtime.chat import (
     ChatRuntimeError,
     ChatRuntimeInfo,
 )
+from app.runtime.memory import ConversationState, UserPreference
 from app.runtime.session import ChatSession
 from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.session_store import SessionStore, SessionStoreError
@@ -145,6 +146,25 @@ def test_command_preview_escape_closes_before_clearing_input():
             assert prompt.text == ""
             await pilot.press("/", "h")
             assert not preview.display
+
+    asyncio.run(scenario())
+
+
+def test_invalid_context_window_configuration_blocks_model_request(monkeypatch):
+    async def scenario():
+        received = []
+
+        async def runner(text, **kwargs):
+            received.append(text)
+            return ChatResult("answer", "fake", "fake")
+
+        monkeypatch.setenv("TUI_CONTEXT_WINDOW_TOKENS", "invalid")
+        app = ChatTuiApp(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
+        async with app.run_test() as pilot:
+            assert "must be a positive integer" in transcript_text(app)
+            app.query_one("#prompt", TextArea).load_text("不应发送")
+            await pilot.press("enter")
+            assert received == []
 
     asyncio.run(scenario())
 
@@ -2337,6 +2357,69 @@ def test_clear_command_removes_saved_conversation(tmp_path):
             assert transcript_text(app) == ""
             assert app.chat_session.messages == ()
             assert not store.path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_memory_commands_list_and_clear_preferences_without_calling_model(tmp_path):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        preference = UserPreference(
+            "0" * 16,
+            "使用中文回复",
+            "explicit",
+            "2026-09-09T00:00:00Z",
+        )
+        store.save_state(ConversationState(preferences=(preference,)))
+        session = ChatSession.load(store)
+        app = ChatTuiApp(chat_session=session, runtime_info=ALIYUN_INFO)
+
+        async with app.run_test() as pilot:
+            prompt = app.query_one("#prompt", TextArea)
+            prompt.load_text("/memory")
+            await pilot.press("enter")
+            assert "长期偏好（1）" in transcript_text(app)
+            assert "使用中文回复" in transcript_text(app)
+
+            prompt.load_text("/memory clear")
+            await pilot.press("enter")
+            assert "长期偏好已清除" in transcript_text(app)
+            assert session.preferences == ()
+            assert not store.path.exists()
+            assert app._input_history.entries == []
+
+    asyncio.run(scenario())
+
+
+def test_clear_command_preserves_long_term_preferences(tmp_path):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        preference = UserPreference(
+            "0" * 16,
+            "提交信息使用中文",
+            "explicit",
+            "2026-09-09T00:00:00Z",
+        )
+        store.save_state(
+            ConversationState(
+                messages=(
+                    ChatMessage(ChatRole.USER, "问题"),
+                    ChatMessage(ChatRole.ASSISTANT, "回答"),
+                ),
+                preferences=(preference,),
+            )
+        )
+        session = ChatSession.load(store)
+        app = ChatTuiApp(chat_session=session, runtime_info=ALIYUN_INFO)
+
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("/clear")
+            await pilot.press("enter")
+
+            assert transcript_text(app) == ""
+            assert session.messages == ()
+            assert session.preferences == (preference,)
+            assert store.load_state().preferences == (preference,)
 
     asyncio.run(scenario())
 

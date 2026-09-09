@@ -12,6 +12,7 @@ from tools.project_checks import RunProjectCheckTool
 from tools.registry import ToolRegistry
 from tools.workspace import (
     ApplyWorkspaceEditsTool,
+    DeleteWorkspaceFileTool,
     GetWorkspaceGitDiffTool,
     GetWorkspaceGitStatusTool,
     ListWorkspaceFilesTool,
@@ -50,7 +51,7 @@ def test_static_and_intent_workspace_factories_keep_distinct_visibility(tmp_path
     static = create_workspace_registry(policy)
     intent = create_intent_workspace_registry(policy)
 
-    assert len(static.definitions) == 9
+    assert len(static.definitions) == 10
     assert tuple(item.name for item in intent.definitions) == (
         "activate_tool_groups",
     )
@@ -59,6 +60,15 @@ def test_static_and_intent_workspace_factories_keep_distinct_visibility(tmp_path
         "workspace_read",
         "workspace_write",
         "git_write",
+    ]
+    delete_definition = next(
+        item for item in static.definitions
+        if item.name == "delete_workspace_file"
+    )
+    assert delete_definition.effect.value == "mutating"
+    assert delete_definition.parameters["required"] == [
+        "path",
+        "expected_sha256",
     ]
 
 
@@ -109,6 +119,7 @@ def test_intent_workspace_write_group_contains_read_and_write_tools(tmp_path):
         "get_workspace_git_status",
         "get_workspace_git_diff",
         "apply_workspace_edits",
+        "delete_workspace_file",
         "run_project_check",
         "undo_workspace_change",
     )
@@ -265,6 +276,358 @@ def test_apply_create_then_undo_removes_created_file(tmp_path):
     )
     assert undo_result.is_error is False
     assert not created.exists()
+
+
+def test_delete_file_preview_approval_and_undo_restores_content_and_mode(tmp_path):
+    target = tmp_path / "待删除.txt"
+    content = "需要删除的中文内容\n"
+    target.write_text(content, encoding="utf-8")
+    target.chmod(0o640)
+    policy = WorkspacePolicy(tmp_path)
+    journal = WorkspaceChangeJournal()
+    approvals = []
+    digest = hashlib.sha256(content.encode()).hexdigest()
+
+    deleted, result = execute(
+        DeleteWorkspaceFileTool(policy, journal),
+        {"path": target.name, "expected_sha256": digest},
+        approvals,
+    )
+
+    assert result.is_error is False
+    assert not target.exists()
+    assert approvals[0].paths == (target.name,)
+    assert "-需要删除的中文内容" in approvals[0].diff_text
+    assert deleted["data"] == {
+        "change_id": deleted["data"]["change_id"],
+        "path": target.name,
+        "deleted_sha256": digest,
+    }
+
+    _, undo_result = execute(
+        UndoWorkspaceChangeTool(policy, journal),
+        {"change_id": deleted["data"]["change_id"]},
+        [],
+    )
+
+    assert undo_result.is_error is False
+    assert target.read_text(encoding="utf-8") == content
+    assert target.stat().st_mode & 0o777 == 0o640
+
+
+def test_delete_empty_file_still_has_approval_preview(tmp_path):
+    target = tmp_path / "empty.txt"
+    target.write_bytes(b"")
+    approvals = []
+
+    _, result = execute(
+        DeleteWorkspaceFileTool(
+            WorkspacePolicy(tmp_path),
+            WorkspaceChangeJournal(),
+        ),
+        {
+            "path": target.name,
+            "expected_sha256": hashlib.sha256(b"").hexdigest(),
+        },
+        approvals,
+    )
+
+    assert result.is_error is False
+    assert approvals[0].diff_text
+    assert "empty.txt" in approvals[0].diff_text
+    assert not target.exists()
+
+
+def test_delete_requires_approval_and_matching_hash(tmp_path):
+    target = tmp_path / "demo.txt"
+    target.write_text("keep", encoding="utf-8")
+    tool = DeleteWorkspaceFileTool(
+        WorkspacePolicy(tmp_path),
+        WorkspaceChangeJournal(),
+    )
+    arguments = {
+        "path": target.name,
+        "expected_sha256": hashlib.sha256(b"keep").hexdigest(),
+    }
+
+    unavailable, unavailable_result = execute(tool, arguments)
+    wrong_hash, wrong_hash_result = execute(
+        tool,
+        {"path": target.name, "expected_sha256": "0" * 64},
+        [],
+    )
+
+    assert unavailable_result.is_error is True
+    assert unavailable["error"]["code"] == "approval_unavailable"
+    assert wrong_hash_result.is_error is True
+    assert wrong_hash["error"]["code"] == "workspace_conflict"
+    assert target.read_text(encoding="utf-8") == "keep"
+
+
+def test_delete_denied_by_user_preserves_file(tmp_path):
+    target = tmp_path / "denied.txt"
+    target.write_text("keep", encoding="utf-8")
+    tool = DeleteWorkspaceFileTool(
+        WorkspacePolicy(tmp_path),
+        WorkspaceChangeJournal(),
+    )
+
+    async def deny(_request):
+        return False
+
+    result = asyncio.run(
+        ToolRegistry([tool]).execute(
+            ToolCall(
+                "denied-delete",
+                tool.definition.name,
+                json.dumps({
+                    "path": target.name,
+                    "expected_sha256": hashlib.sha256(b"keep").hexdigest(),
+                }),
+            ),
+            ToolExecutionContext(approval_handler=deny),
+        )
+    )
+
+    assert result.is_error is True
+    assert json.loads(result.output)["error"]["code"] == "approval_denied"
+    assert target.read_text(encoding="utf-8") == "keep"
+
+
+def test_delete_detects_content_change_during_approval(tmp_path):
+    target = tmp_path / "race.txt"
+    target.write_text("before", encoding="utf-8")
+    tool = DeleteWorkspaceFileTool(
+        WorkspacePolicy(tmp_path),
+        WorkspaceChangeJournal(),
+    )
+    arguments = {
+        "path": target.name,
+        "expected_sha256": hashlib.sha256(b"before").hexdigest(),
+    }
+
+    async def scenario():
+        async def approve(_request):
+            target.write_text("user", encoding="utf-8")
+            return True
+
+        return await ToolRegistry([tool]).execute(
+            ToolCall("race-delete", tool.definition.name, json.dumps(arguments)),
+            ToolExecutionContext(approval_handler=approve),
+        )
+
+    result = asyncio.run(scenario())
+
+    assert result.is_error is True
+    assert json.loads(result.output)["error"]["code"] == "workspace_conflict"
+    assert target.read_text(encoding="utf-8") == "user"
+
+
+def test_delete_detects_mode_change_during_approval(tmp_path):
+    target = tmp_path / "mode.txt"
+    target.write_text("same", encoding="utf-8")
+    target.chmod(0o644)
+    tool = DeleteWorkspaceFileTool(
+        WorkspacePolicy(tmp_path),
+        WorkspaceChangeJournal(),
+    )
+
+    async def scenario():
+        async def approve(_request):
+            target.chmod(0o600)
+            return True
+
+        return await ToolRegistry([tool]).execute(
+            ToolCall(
+                "mode-delete",
+                tool.definition.name,
+                json.dumps({
+                    "path": target.name,
+                    "expected_sha256": hashlib.sha256(b"same").hexdigest(),
+                }),
+            ),
+            ToolExecutionContext(approval_handler=approve),
+        )
+
+    result = asyncio.run(scenario())
+
+    assert result.is_error is True
+    assert json.loads(result.output)["error"]["code"] == "workspace_conflict"
+    assert target.read_text(encoding="utf-8") == "same"
+    assert target.stat().st_mode & 0o777 == 0o600
+
+
+def test_undo_delete_rejects_recreated_target_without_overwrite(tmp_path):
+    target = tmp_path / "recreated.txt"
+    target.write_text("original", encoding="utf-8")
+    policy = WorkspacePolicy(tmp_path)
+    journal = WorkspaceChangeJournal()
+    deleted, _ = execute(
+        DeleteWorkspaceFileTool(policy, journal),
+        {
+            "path": target.name,
+            "expected_sha256": hashlib.sha256(b"original").hexdigest(),
+        },
+        [],
+    )
+    target.write_text("user", encoding="utf-8")
+
+    output, result = execute(
+        UndoWorkspaceChangeTool(policy, journal),
+        {"change_id": deleted["data"]["change_id"]},
+        [],
+    )
+
+    assert result.is_error is True
+    assert output["error"]["code"] == "workspace_conflict"
+    assert target.read_text(encoding="utf-8") == "user"
+
+
+@pytest.mark.parametrize(
+    ("path", "expected_code"),
+    (
+        ("../outside.txt", "invalid_arguments"),
+        ("/tmp/outside.txt", "invalid_arguments"),
+        (".env", "protected_path"),
+        ("AGENTS.md", "protected_path"),
+        ("docs/rules/base.md", "protected_path"),
+    ),
+)
+def test_delete_rejects_unsafe_paths(tmp_path, path, expected_code):
+    target = tmp_path.joinpath(*Path(path).parts)
+    if not Path(path).is_absolute() and ".." not in Path(path).parts:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("protected", encoding="utf-8")
+
+    output, result = execute(
+        DeleteWorkspaceFileTool(
+            WorkspacePolicy(tmp_path),
+            WorkspaceChangeJournal(),
+        ),
+        {"path": path, "expected_sha256": hashlib.sha256(b"protected").hexdigest()},
+        [],
+    )
+
+    assert result.is_error is True
+    assert output["error"]["code"] == expected_code
+    if target.is_file():
+        assert target.read_text(encoding="utf-8") == "protected"
+
+
+@pytest.mark.parametrize(
+    "kind",
+    ("directory", "symlink", "binary", "non_utf8", "large_diff", "oversized"),
+)
+def test_delete_rejects_non_text_file_boundaries(tmp_path, kind):
+    target = tmp_path / "target"
+    if kind == "directory":
+        target.mkdir()
+        content = b""
+    elif kind == "symlink":
+        real = tmp_path / "real.txt"
+        real.write_text("real", encoding="utf-8")
+        target.symlink_to(real)
+        content = b"real"
+    elif kind == "binary":
+        content = b"a\x00b"
+        target.write_bytes(content)
+    elif kind == "non_utf8":
+        content = b"\xff\xfe"
+        target.write_bytes(content)
+    elif kind == "large_diff":
+        content = ("删除内容\n" * 10_000).encode()
+        target.write_bytes(content)
+    else:
+        content = b"x" * (workspace_module.MAX_EDIT_FILE_BYTES + 1)
+        target.write_bytes(content)
+
+    output, result = execute(
+        DeleteWorkspaceFileTool(
+            WorkspacePolicy(tmp_path),
+            WorkspaceChangeJournal(),
+        ),
+        {
+            "path": target.name,
+            "expected_sha256": hashlib.sha256(content).hexdigest(),
+        },
+        [],
+    )
+
+    assert result.is_error is True
+    assert output["error"]["code"] == "invalid_arguments"
+    assert target.exists() or target.is_symlink()
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    (
+        {"path": "demo.txt"},
+        {"path": "demo.txt", "expected_sha256": "A" * 64},
+        {"path": "demo.txt", "expected_sha256": "0" * 63},
+        {"path": "demo.txt", "expected_sha256": "0" * 64, "extra": True},
+    ),
+)
+def test_delete_rejects_invalid_arguments(tmp_path, arguments):
+    target = tmp_path / "demo.txt"
+    target.write_text("keep", encoding="utf-8")
+
+    output, result = execute(
+        DeleteWorkspaceFileTool(
+            WorkspacePolicy(tmp_path),
+            WorkspaceChangeJournal(),
+        ),
+        arguments,
+        [],
+    )
+
+    assert result.is_error is True
+    assert output["error"]["code"] == "invalid_arguments"
+    assert target.read_text(encoding="utf-8") == "keep"
+
+
+def test_delete_restores_file_when_journal_append_fails(tmp_path):
+    class FailingJournal(WorkspaceChangeJournal):
+        def append(self, change):
+            raise OSError("simulated journal failure")
+
+    target = tmp_path / "restore.txt"
+    target.write_text("restore me", encoding="utf-8")
+
+    output, result = execute(
+        DeleteWorkspaceFileTool(WorkspacePolicy(tmp_path), FailingJournal()),
+        {
+            "path": target.name,
+            "expected_sha256": hashlib.sha256(b"restore me").hexdigest(),
+        },
+        [],
+    )
+
+    assert result.is_error is True
+    assert output["error"]["code"] == "execution_failed"
+    assert target.read_text(encoding="utf-8") == "restore me"
+    assert "simulated journal failure" not in result.output
+    assert str(tmp_path) not in result.output
+
+
+def test_delete_rejects_when_journal_has_no_capacity(tmp_path):
+    target = tmp_path / "capacity.txt"
+    target.write_text("keep", encoding="utf-8")
+
+    output, result = execute(
+        DeleteWorkspaceFileTool(
+            WorkspacePolicy(tmp_path),
+            WorkspaceChangeJournal(max_entries=0),
+        ),
+        {
+            "path": target.name,
+            "expected_sha256": hashlib.sha256(b"keep").hexdigest(),
+        },
+        [],
+    )
+
+    assert result.is_error is True
+    assert output["error"]["code"] == "workspace_conflict"
+    assert target.read_text(encoding="utf-8") == "keep"
 
 
 def test_apply_detects_change_during_approval_without_overwrite(tmp_path):

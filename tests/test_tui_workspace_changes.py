@@ -25,6 +25,22 @@ def _result(
     )
 
 
+def _delete_result(change_id: str, path: str) -> ToolResult:
+    return ToolResult(
+        call_id="call-delete",
+        output=json.dumps(
+            {
+                "data": {
+                    "change_id": change_id,
+                    "path": path,
+                    "deleted_sha256": "a" * 64,
+                }
+            },
+            ensure_ascii=False,
+        ),
+    )
+
+
 def test_tracker_collects_unique_sorted_paths() -> None:
     tracker = AppliedChangeTracker()
 
@@ -38,6 +54,23 @@ def test_tracker_collects_unique_sorted_paths() -> None:
     )
 
     assert tracker.paths() == ("a.py", "b.py", "中文.md")
+
+
+def test_tracker_collects_deleted_path_and_removes_it_after_undo() -> None:
+    tracker = AppliedChangeTracker()
+
+    tracker.observe(
+        _call("delete_workspace_file", "call-delete"),
+        _delete_result("change-delete", "docs/旧文件.md"),
+    )
+    assert tracker.paths() == ("docs/旧文件.md",)
+
+    tracker.observe(
+        _call("undo_workspace_change"),
+        _result("change-delete", ["docs/旧文件.md"]),
+    )
+
+    assert tracker.paths() == ()
 
 
 def test_tracker_removes_undone_change() -> None:

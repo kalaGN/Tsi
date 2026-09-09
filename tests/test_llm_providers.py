@@ -531,7 +531,7 @@ def test_both_providers_send_all_workspace_schemas_without_host_metadata(
     assert {item["name"] for item in declared} == {
         definition.name for definition in definitions
     }
-    assert len(declared) == 9
+    assert len(declared) == 10
     assert all(
         set(item) == {"name", "description", "parameters"}
         or set(item) == {"type", "name", "description", "parameters"}

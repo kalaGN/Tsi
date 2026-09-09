@@ -44,7 +44,7 @@ HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间�
 |---|---|
 | `general` | 当前时间 |
 | `workspace_read` | 文件列举、搜索、读取及 Git 状态、Diff |
-| `workspace_write` | `workspace_read` 全部能力，加结构化修改、固定检查和撤销 |
+| `workspace_write` | `workspace_read` 全部能力，加结构化修改、单文件删除、固定检查和撤销 |
 | `skills` | 加载 Skill、读取资源、执行脚本 |
 | `skill_install` | 安装 Skill |
 | `git_write` | 暂存指定文件、创建中文提交、推送既有上游 |
@@ -60,6 +60,7 @@ HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间�
 | 仅 TUI | `get_workspace_git_status` | 查看 Git 状态 | 自动执行 |
 | 仅 TUI | `get_workspace_git_diff` | 查看分页 Diff | 自动执行 |
 | 仅 TUI | `apply_workspace_edits` | 创建文件或执行带哈希前置条件的精确替换 | 本地审批后执行 |
+| 仅 TUI | `delete_workspace_file` | 删除一个带哈希前置条件的 UTF-8 文本文件 | 本地审批后执行，可在当前进程撤销 |
 | 仅 TUI | `run_project_check` | 运行 `compile`、`test_all`、`pip_check`、`diff_check` 四个固定检查 | 自动执行 |
 | 仅 TUI | `undo_workspace_change` | 撤销当前进程最近一次 Agent 修改 | 本地审批后执行 |
 | 仅 TUI | `install_skill` | 从公开 GitHub Skill 目录或当前用户 `~/.codex/skills` 直属目录安装 Skill | 每次本地审批后安装，下一次请求生效 |
@@ -70,7 +71,7 @@ HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间�
 | 仅 TUI | `git_commit` | 以 `type: 中文描述` 提交当前暂存内容 | 每次本地审批后执行 |
 | 仅 TUI | `git_push` | 非强制推送当前分支到既有上游 | 每次本地审批后执行并访问网络 |
 
-典型流程为：模型先列举、搜索、读取和检查现有差异，再提出结构化修改；TUI 显示相对路径和完整有界 Diff，默认焦点为拒绝。确认后模型可运行检查并继续修正。每个新写入和撤销都独立审批；Journal 最多保存 10 个批次且只存在当前 TUI 进程，重启后不能撤销旧批次。
+典型流程为：模型先列举、搜索、读取和检查现有差异，再提出结构化修改或单文件删除；TUI 显示相对路径和完整有界 Diff，默认焦点为拒绝。确认后模型可运行检查并继续修正。每个写入、删除和撤销都独立审批；Journal 最多保存 10 个批次且只存在当前 TUI 进程，重启后不能撤销旧批次。
 
 安全和成本边界：
 
@@ -78,6 +79,7 @@ HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间�
 - Workspace 固定为 TUI 启动目录；绝对路径、`..`、符号链接、二进制和保护路径会被拒绝。
 - `.env*`、`.git/`、`.venv/`、`data/`、`logs/` 和缓存目录不可读写；`AGENTS.md`、Rules、依赖文件和 Workspace 安全实现额外禁止写入。
 - `apply_workspace_edits` 只支持创建已有目录下的 UTF-8 文件和精确替换，不支持删除、移动、重命名或创建目录。
+- `delete_workspace_file` 只接受一个现有 UTF-8 普通文本文件及 `read_workspace_file` 返回的当前 SHA-256；拒绝目录、链接、批量、保护路径、审批后变化和无审批删除，成功后可用 `change_id` 撤销。
 - HTTP 默认最多 5 个模型步骤、每步 4 次、总计 16 次工具调用；TUI 分别为 41、4、40，工具组激活也计入预算。
 - 普通参数最多 8 KiB，编辑参数最多 64 KiB，结果最多 32 KiB；多个调用串行执行。
 - Skill 脚本使用参数数组而非 Shell 拼接，`.py` 固定使用当前 Python，`.sh` 固定使用 `/bin/sh`；运行环境不继承 API Key 等宿主变量，30 秒超时，stdout/stderr 合计最多 32 KiB。

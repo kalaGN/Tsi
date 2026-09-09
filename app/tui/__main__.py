@@ -13,35 +13,20 @@ from app.runtime.system_prompt import (
     load_system_prompt,
 )
 from app.runtime.skill_runtime import SkillRuntime
+from app.tui.bootstrap import TuiDependencies, build_tui_dependencies
 from tools.skills import SkillLoadError, load_skill_catalog
 from tools.workspace import WorkspacePolicy, create_intent_workspace_registry
 
 
 def _create_app(
     *,
-    system_prompt: str | None,
-    system_prompt_error: str | None,
-    workspace_registry,
-    workspace_error: str | None,
-    skills_count: int,
-    skills_error: str | None,
-    skill_runtime: SkillRuntime | None = None,
-    model_selection_store: ModelSelectionStore | None = None,
+    dependencies: TuiDependencies,
 ):
     """延迟导入 Textual，确保终端兼容配置先于框架初始化生效。"""
 
     from app.tui.application import ChatTuiApp
 
-    return ChatTuiApp(
-        system_prompt=system_prompt,
-        system_prompt_error=system_prompt_error,
-        workspace_registry=workspace_registry,
-        workspace_error=workspace_error,
-        skills_count=skills_count,
-        skills_error=skills_error,
-        skill_runtime=skill_runtime,
-        model_selection_store=model_selection_store,
-    )
+    return ChatTuiApp(dependencies)
 
 
 def main() -> None:
@@ -88,7 +73,7 @@ def main() -> None:
         workspace_error = "Workspace tools are unavailable"
         skills_count = 0
         system_prompt = compose_system_prompt(agents_prompt, None)
-    _create_app(
+    dependencies = build_tui_dependencies(
         system_prompt=system_prompt,
         system_prompt_error=system_prompt_error,
         workspace_registry=workspace_registry,
@@ -97,7 +82,8 @@ def main() -> None:
         skills_error=skills_error,
         skill_runtime=skill_runtime,
         model_selection_store=ModelSelectionStore(),
-    ).run()
+    )
+    _create_app(dependencies=dependencies).run()
 
 
 if __name__ == "__main__":

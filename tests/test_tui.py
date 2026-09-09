@@ -1,4 +1,7 @@
 import asyncio
+import subprocess
+import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -18,6 +21,7 @@ from app.runtime.model_selection_store import (
     ModelSelectionStore,
     ModelSelectionStoreError,
 )
+from app.runtime import model_selection as runtime_model_selection
 from app.runtime.session import ChatSession
 from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.session_store import SessionStore, SessionStoreError
@@ -31,7 +35,12 @@ from app.services.llm.contracts import (
 )
 from app.tui import __main__ as tui_main
 from app.tui import application as tui_application
+from app.tui import bootstrap as tui_bootstrap
 from app.tui.application import ChatTuiApp
+from app.tui.bootstrap import (
+    build_tui_dependencies,
+    injected_tui_dependencies,
+)
 from app.tui.model_palette import ModelPalette
 from app.tui.skill_palette import SkillPalette
 from app.tui.state import RunStatus
@@ -101,6 +110,85 @@ def transcript_text(app: ChatTuiApp) -> str:
     )
 
 
+def make_app(
+    *,
+    chat_runner=None,
+    runtime_info=None,
+    clock=None,
+    chat_session=None,
+    system_prompt=None,
+    system_prompt_error=None,
+    workspace_registry=None,
+    workspace_error=None,
+    skills_count=0,
+    skills_error=None,
+    skill_runtime=None,
+    model_options=None,
+    model_selection_store=None,
+    configuration_error=None,
+):
+    runtime_info_was_given = runtime_info is not None
+    runtime_info = runtime_info or DEEPSEEK_INFO
+    provider_factory = runtime_model_selection.create_provider_for_model
+    if chat_runner is None and chat_session is None:
+        dependencies = build_tui_dependencies(
+            system_prompt=system_prompt,
+            system_prompt_error=system_prompt_error,
+            workspace_registry=workspace_registry,
+            workspace_error=workspace_error,
+            skills_count=skills_count,
+            skills_error=skills_error,
+            skill_runtime=skill_runtime,
+            model_selection_store=model_selection_store,
+            model_options=model_options,
+            runtime_info=runtime_info if runtime_info_was_given else None,
+            runtime_info_factory=tui_bootstrap.get_chat_runtime_info,
+            provider_factory=provider_factory,
+            clock=clock or time.monotonic,
+        )
+    else:
+        dependencies = injected_tui_dependencies(
+            chat_runner=chat_runner,
+            chat_session=chat_session,
+            runtime_info=runtime_info,
+            clock=clock or time.monotonic,
+            skill_runtime=skill_runtime,
+            skills_count=skills_count,
+            skills_error=skills_error,
+            configuration_error=configuration_error,
+            system_prompt_error=system_prompt_error,
+            system_prompt_loaded=bool(system_prompt),
+            workspace_error=workspace_error,
+            workspace_enabled=workspace_registry is not None,
+            model_options=tuple(model_options or ()),
+            model_selection_store=model_selection_store,
+            provider_factory=provider_factory,
+        )
+    return ChatTuiApp(dependencies)
+
+
+def test_tui_entrypoint_import_does_not_initialize_textual_early():
+    """终端兼容环境变量设置前，入口及 bootstrap 都不得加载 Textual。"""
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import sys; import app.tui.__main__; "
+                "print(any(name == 'textual' or name.startswith('textual.') "
+                "for name in sys.modules))"
+            ),
+        ],
+        cwd=Path(__file__).resolve().parents[1],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.stdout.strip() == "False"
+
+
 def test_command_preview_filters_selects_completes_and_executes_locally():
     async def scenario():
         received = []
@@ -109,7 +197,7 @@ def test_command_preview_filters_selects_completes_and_executes_locally():
             received.append(text)
             return ChatResult("answer", "fake", "fake")
 
-        app = ChatTuiApp(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             preview = app.query_one("#command-preview", Static)
@@ -138,7 +226,7 @@ def test_command_preview_escape_closes_before_clearing_input():
         async def runner(text, **kwargs):
             raise AssertionError("local interaction must not call model")
 
-        app = ChatTuiApp(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             preview = app.query_one("#command-preview", Static)
@@ -164,7 +252,13 @@ def test_invalid_context_window_configuration_blocks_model_request(monkeypatch):
             return ChatResult("answer", "fake", "fake")
 
         monkeypatch.setenv("TUI_CONTEXT_WINDOW_TOKENS", "invalid")
-        app = ChatTuiApp(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(
+            chat_runner=runner,
+            runtime_info=DEEPSEEK_INFO,
+            configuration_error=(
+                "TUI_CONTEXT_WINDOW_TOKENS must be a positive integer"
+            ),
+        )
         async with app.run_test() as pilot:
             assert "must be a positive integer" in transcript_text(app)
             app.query_one("#prompt", TextArea).load_text("不应发送")
@@ -197,11 +291,11 @@ def test_model_command_lists_navigates_and_switches_next_session_request(
             return selected
 
         monkeypatch.setattr(
-            tui_application,
+            runtime_model_selection,
             "create_provider_for_model",
             create_selected,
         )
-        app = ChatTuiApp(
+        app = make_app(
             chat_session=session,
             runtime_info=DEEPSEEK_INFO,
             model_options=options,
@@ -251,17 +345,17 @@ def test_saved_model_selection_restores_status_palette_and_session_provider(
             ModelOption("aliyun", "qwen3-max", True),
         )
         monkeypatch.setattr(
-            tui_application,
+            tui_bootstrap,
             "SessionStore",
             lambda: SessionStore(tmp_path / "chat-session.json"),
         )
         monkeypatch.setattr(
-            tui_application,
+            runtime_model_selection,
             "create_provider_for_model",
             lambda provider, model: selected,
         )
 
-        app = ChatTuiApp(
+        app = make_app(
             model_options=options,
             model_selection_store=selection_store,
         )
@@ -303,12 +397,12 @@ def test_unrestorable_model_selection_warns_and_uses_environment_default(
             if saved_state == "missing-key":
                 options = options + (ModelOption("aliyun", "qwen3-max", False),)
         monkeypatch.setattr(
-            tui_application,
+            tui_bootstrap,
             "SessionStore",
             lambda: SessionStore(tmp_path / "chat-session.json"),
         )
 
-        app = ChatTuiApp(
+        app = make_app(
             runtime_info=DEEPSEEK_INFO,
             model_options=options,
             model_selection_store=store,
@@ -341,16 +435,16 @@ def test_saved_model_provider_creation_failure_falls_back_safely(
             raise ProviderConfigurationError("sensitive provider detail")
 
         monkeypatch.setattr(
-            tui_application,
+            tui_bootstrap,
             "SessionStore",
             lambda: SessionStore(tmp_path / "chat-session.json"),
         )
         monkeypatch.setattr(
-            tui_application,
+            runtime_model_selection,
             "create_provider_for_model",
             fail_provider_creation,
         )
-        app = ChatTuiApp(
+        app = make_app(
             runtime_info=DEEPSEEK_INFO,
             model_options=(ModelOption("aliyun", "qwen3-max", True),),
             model_selection_store=store,
@@ -378,11 +472,11 @@ def test_model_switch_save_failure_keeps_selected_provider(tmp_path, monkeypatch
             provider=original,
         )
         monkeypatch.setattr(
-            tui_application,
+            runtime_model_selection,
             "create_provider_for_model",
             lambda provider, model: selected,
         )
-        app = ChatTuiApp(
+        app = make_app(
             chat_session=session,
             runtime_info=DEEPSEEK_INFO,
             model_options=(
@@ -424,7 +518,7 @@ def test_model_command_escape_and_missing_key_keep_current_model(tmp_path):
             ModelOption("deepseek", "deepseek-v4-flash", True),
             ModelOption("aliyun", "qwen3-max", False),
         )
-        app = ChatTuiApp(
+        app = make_app(
             chat_session=session,
             runtime_info=DEEPSEEK_INFO,
             model_options=options,
@@ -464,11 +558,11 @@ def test_model_command_factory_failure_keeps_current_model(tmp_path, monkeypatch
             raise ProviderConfigurationError("unsafe upstream detail")
 
         monkeypatch.setattr(
-            tui_application,
+            runtime_model_selection,
             "create_provider_for_model",
             fail_creation,
         )
-        app = ChatTuiApp(
+        app = make_app(
             chat_session=session,
             runtime_info=DEEPSEEK_INFO,
             model_options=(
@@ -496,7 +590,7 @@ def test_model_command_is_unavailable_without_chat_session():
         async def runner(_input_text, **_kwargs):
             raise AssertionError("/model must not call the model")
 
-        app = ChatTuiApp(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             app.query_one("#prompt", TextArea).load_text("/model")
             await pilot.press("enter")
@@ -528,7 +622,7 @@ def test_skill_reference_preview_completes_before_sending(tmp_path):
             received.append(text)
             return ChatResult("完成", "fake", "fake")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=runner,
             runtime_info=DEEPSEEK_INFO,
             skill_runtime=runtime,
@@ -560,7 +654,7 @@ def test_tui_uses_selectable_logs_for_transcript_and_stream_output():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test():
             transcript = app.query_one("#transcript", SelectableRichLog)
             stream = app.query_one("#stream-output", SelectableRichLog)
@@ -587,7 +681,7 @@ def test_workspace_approval_modal_defaults_to_reject_and_supports_y(tmp_path):
             decisions.append(await kwargs["on_tool_approval"](request))
             return ChatResult("完成", "fake", "fake-model")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             workspace_registry=create_workspace_registry(WorkspacePolicy(tmp_path)),
@@ -631,7 +725,7 @@ def test_skill_script_approval_shows_warning_command_and_execute_action():
             decisions.append(await kwargs["on_tool_approval"](request))
             return ChatResult("完成", "fake", "fake-model")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             workspace_registry=create_workspace_registry(
@@ -684,7 +778,7 @@ def test_skill_install_approval_shows_source_target_and_install_action():
             decisions.append(await kwargs["on_tool_approval"](request))
             return ChatResult("完成", "fake", "fake-model")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             workspace_registry=create_workspace_registry(
@@ -736,7 +830,7 @@ def test_git_approval_shows_operation_preview_and_network_risk():
             decisions.append(await kwargs["on_tool_approval"](request))
             return ChatResult("完成", "fake", "fake-model")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             workspace_registry=create_workspace_registry(
@@ -789,7 +883,7 @@ def test_workspace_approval_modal_rejects_without_exiting_main_app(
             decisions.append(await kwargs["on_tool_approval"](request))
             return ChatResult("已拒绝", "fake", "fake-model")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             workspace_registry=create_workspace_registry(WorkspacePolicy(tmp_path)),
@@ -832,7 +926,7 @@ def test_tui_reports_applied_paths_when_model_fails_after_write(tmp_path):
             )
             raise ChatRuntimeError(ChatErrorCode.UPSTREAM, "Upstream failed")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             workspace_registry=create_workspace_registry(WorkspacePolicy(tmp_path)),
@@ -854,7 +948,7 @@ def test_cmd_or_ctrl_a_selects_all_prompt_text():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during selection")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("第一行\n第二行")
@@ -875,7 +969,7 @@ def test_selectable_log_extracts_multiline_chinese_selection():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             transcript = app.query_one("#transcript", SelectableRichLog)
             transcript.clear().write("你好\n世界")
@@ -893,7 +987,7 @@ def test_selectable_log_supports_mouse_drag_and_ctrl_c_copy():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             transcript = app.query_one("#transcript", SelectableRichLog)
             transcript.clear().write("中文复制")
@@ -918,7 +1012,7 @@ def test_transcript_double_click_copies_only_rendered_chinese_line():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during selection")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             transcript = app.query_one("#transcript", SelectableRichLog)
             transcript.clear().write("第一行\n第二行\n第三行")
@@ -943,7 +1037,7 @@ def test_transcript_double_click_uses_vertical_scroll_offset():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during selection")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test(size=(80, 18)) as pilot:
             transcript = app.query_one("#transcript", SelectableRichLog)
             transcript.clear().write("\n".join(f"第{index}行" for index in range(20)))
@@ -971,7 +1065,7 @@ def test_transcript_double_click_blank_line_keeps_clipboard_and_clears_select_al
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during selection")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             transcript = app.query_one("#transcript", SelectableRichLog)
             transcript.clear().write("有内容\n\n下一行")
@@ -997,7 +1091,7 @@ def test_transcript_double_click_copies_rendered_markdown_without_source_markers
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during selection")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             transcript = app.query_one("#transcript", SelectableRichLog)
             transcript.clear()
@@ -1030,7 +1124,7 @@ def test_selectable_log_copies_rendered_markdown_text_with_builtin_action():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             transcript = app.query_one("#transcript", SelectableRichLog)
             transcript.clear()
@@ -1055,7 +1149,7 @@ def test_selectable_log_renders_visible_selection_highlight():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             transcript = app.query_one("#transcript", SelectableRichLog)
             transcript.clear().write("中文")
@@ -1082,7 +1176,7 @@ def test_transcript_and_prompt_selection_use_semitransparent_gray():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test():
             transcript_selection = app.screen.get_component_styles(
                 "screen--selection"
@@ -1105,7 +1199,7 @@ def test_cleared_selectable_log_cannot_copy_removed_message():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             transcript = app.query_one("#transcript", SelectableRichLog)
             transcript.clear().write("已经清除的消息")
@@ -1133,7 +1227,7 @@ def test_tui_initial_state_shows_provider_model_and_key_status():
         ) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test():
             status_bar = app.query_one("#status-bar", Static)
 
@@ -1152,7 +1246,7 @@ def test_tui_uses_official_project_name_for_app_and_header():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test():
             assert app.TITLE == "Tsi 助手"
             assert str(app.query_one("#title", Static).content) == "Tsi 助手"
@@ -1170,7 +1264,7 @@ def test_tui_status_shows_loaded_system_prompt_without_exposing_content():
         ) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             system_prompt="private project rules",
@@ -1199,7 +1293,7 @@ def test_tui_system_prompt_error_blocks_normal_request_but_keeps_input():
             return ChatResult("unexpected", "fake", "fake-model")
 
         error = "Unable to load AGENTS.md"
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             system_prompt_error=error,
@@ -1232,7 +1326,7 @@ def test_tui_initial_state_supports_deepseek_status():
         ) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test():
             status = str(app.query_one("#status-bar", Static).content)
 
@@ -1251,7 +1345,7 @@ def test_tui_skill_error_is_visible_but_does_not_block_chat():
             received.append(input_text)
             return ChatResult("仍可对话", "fake", "fake-model")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             skills_error="Project skills are unavailable",
@@ -1290,7 +1384,7 @@ def test_tui_refreshes_skill_count_from_runtime_after_request(tmp_path):
             runtime.publish(load_skill_catalog(tmp_path))
             return ChatResult("安装完成", "fake", "fake-model")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             skill_runtime=runtime,
@@ -1323,7 +1417,7 @@ def test_activity_bar_starts_empty_above_prompt_without_footer():
         ) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test():
             activity = app.query_one("#activity-bar", Static)
             prompt = app.query_one("#prompt", TextArea)
@@ -1332,7 +1426,7 @@ def test_activity_bar_starts_empty_above_prompt_without_footer():
             assert str(activity.content) == ""
             assert activity.region.y < prompt.region.y < status.region.y
             assert not list(app.query(Footer))
-            assert app._activity_timer is None
+            assert app._request.activity_timer is None
 
     asyncio.run(scenario())
 
@@ -1353,7 +1447,7 @@ def test_activity_bar_updates_elapsed_time_and_clears_after_success():
             await release.wait()
             return ChatResult("done", "fake", "fake-model")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             clock=clock,
@@ -1369,7 +1463,7 @@ def test_activity_bar_updates_elapsed_time_and_clears_after_success():
             assert "思考中" in initial
             assert "0.0 秒" in initial
             assert "Esc 取消" in initial
-            assert app._activity_timer is not None
+            assert app._request.activity_timer is not None
 
             clock.advance(1.2)
             await pilot.pause(0.15)
@@ -1381,7 +1475,7 @@ def test_activity_bar_updates_elapsed_time_and_clears_after_success():
             await app.workers.wait_for_complete()
 
             assert str(activity.content) == ""
-            assert app._activity_timer is None
+            assert app._request.activity_timer is None
             assert (
                 "System\n耗时：1.20 秒 | Token：不可用"
                 in transcript_text(app)
@@ -1407,7 +1501,7 @@ def test_tui_streams_plain_text_then_writes_final_markdown_once():
             await release.wait()
             return ChatResult("**重要**", "fake", "fake-model")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("hello")
@@ -1461,7 +1555,7 @@ def test_tui_resets_tool_step_stream_before_showing_final_step():
             await release.wait()
             return ChatResult("最终文本", "fake", "fake-model")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             app.query_one("#prompt", TextArea).load_text("hello")
             await pilot.press("enter")
@@ -1509,7 +1603,7 @@ def test_activity_bar_clears_after_known_and_unexpected_errors():
             raise RuntimeError("internal detail")
 
         for runner in (known_error, unexpected_error):
-            app = ChatTuiApp(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
+            app = make_app(chat_runner=runner, runtime_info=DEEPSEEK_INFO)
             async with app.run_test() as pilot:
                 prompt = app.query_one("#prompt", TextArea)
                 prompt.load_text("hello")
@@ -1517,7 +1611,7 @@ def test_activity_bar_clears_after_known_and_unexpected_errors():
                 await app.workers.wait_for_complete()
 
                 assert str(app.query_one("#activity-bar", Static).content) == ""
-                assert app._activity_timer is None
+                assert app._request.activity_timer is None
 
     asyncio.run(scenario())
 
@@ -1553,7 +1647,7 @@ def test_cancelled_worker_and_timer_cannot_clear_new_request_activity():
             await release_second.wait()
             return ChatResult("second answer", "fake", "fake-model")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             clock=clock,
@@ -1576,12 +1670,12 @@ def test_cancelled_worker_and_timer_cannot_clear_new_request_activity():
             assert "思考中" in current_activity
 
             # 模拟已经排队的旧 Timer tick，并让吞掉取消的旧 Worker 返回。
-            app._refresh_activity(1)
+            app._request.refresh_activity(1)
             assert str(activity.content) == current_activity
             release_first.set()
             await pilot.pause()
             assert "思考中" in str(activity.content)
-            assert app._activity_generation == app._request_generation
+            assert app._request.activity_generation == app._request.generation
             assert "late first" not in transcript_text(app)
 
             release_second.set()
@@ -1602,7 +1696,7 @@ def test_tui_missing_key_starts_in_safe_error_state():
         ) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=MISSING_KEY_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=MISSING_KEY_INFO)
         async with app.run_test():
             status_bar = app.query_one("#status-bar", Static)
 
@@ -1625,7 +1719,7 @@ def test_tui_status_never_displays_api_key():
         ) -> ChatResult:
             raise AssertionError("runner should not be called during startup")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test():
             status_content = str(app.query_one("#status-bar", Static).content)
 
@@ -1645,11 +1739,11 @@ def test_tui_invalid_provider_configuration_starts_in_safe_error_state(monkeypat
             )
 
         monkeypatch.setattr(
-            tui_application,
+            tui_bootstrap,
             "get_chat_runtime_info",
             fail_to_get_info,
         )
-        app = ChatTuiApp()
+        app = make_app()
 
         async with app.run_test():
             assert app.run_status is RunStatus.ERROR
@@ -1678,33 +1772,30 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
         def run(self):
             observed["run"] = True
 
-    def fake_create_app(
-        *,
-        system_prompt,
-        system_prompt_error,
-        workspace_registry,
-        workspace_error,
-        skills_count,
-        skills_error,
-        skill_runtime,
-        model_selection_store,
-    ):
+    dependencies_sentinel = object()
+
+    def fake_build_tui_dependencies(**kwargs):
         observed["kitty_keyboard_disabled"] = (
             tui_main.os.environ.get("TEXTUAL_DISABLE_KITTY_KEY")
         )
-        observed["system_prompt"] = system_prompt
-        observed["system_prompt_error"] = system_prompt_error
+        observed["system_prompt"] = kwargs["system_prompt"]
+        observed["system_prompt_error"] = kwargs["system_prompt_error"]
         observed["workspace_tools"] = tuple(
-            definition.name for definition in workspace_registry.definitions
+            definition.name
+            for definition in kwargs["workspace_registry"].definitions
         )
-        observed["workspace_error"] = workspace_error
-        observed["skills_count"] = skills_count
-        observed["skills_error"] = skills_error
-        observed["skill_runtime"] = skill_runtime is not None
+        observed["workspace_error"] = kwargs["workspace_error"]
+        observed["skills_count"] = kwargs["skills_count"]
+        observed["skills_error"] = kwargs["skills_error"]
+        observed["skill_runtime"] = kwargs["skill_runtime"] is not None
         observed["model_selection_store"] = isinstance(
-            model_selection_store,
+            kwargs["model_selection_store"],
             ModelSelectionStore,
         )
+        return dependencies_sentinel
+
+    def fake_create_app(*, dependencies: object):
+        assert dependencies is dependencies_sentinel
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
@@ -1719,6 +1810,11 @@ def test_tui_entrypoint_loads_project_env_and_cwd_agents_once(
         tui_main,
         "load_system_prompt",
         observed_load_system_prompt,
+    )
+    monkeypatch.setattr(
+        tui_main,
+        "build_tui_dependencies",
+        fake_build_tui_dependencies,
     )
     monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
 
@@ -1750,33 +1846,33 @@ def test_tui_entrypoint_passes_safe_agents_error_to_app(tmp_path, monkeypatch):
         def run(self):
             observed["run"] = True
 
-    def fake_create_app(
-        *,
-        system_prompt,
-        system_prompt_error,
-        workspace_registry,
-        workspace_error,
-        skills_count,
-        skills_error,
-        skill_runtime,
-        model_selection_store,
-    ):
-        observed["system_prompt"] = system_prompt
-        observed["system_prompt_error"] = system_prompt_error
-        observed["workspace_registry"] = workspace_registry is not None
-        observed["workspace_error"] = workspace_error
-        observed["skills_count"] = skills_count
-        observed["skills_error"] = skills_error
-        observed["skill_runtime"] = skill_runtime is not None
+    dependencies = object()
+
+    def fake_build_tui_dependencies(**kwargs):
+        observed["system_prompt"] = kwargs["system_prompt"]
+        observed["system_prompt_error"] = kwargs["system_prompt_error"]
+        observed["workspace_registry"] = kwargs["workspace_registry"] is not None
+        observed["workspace_error"] = kwargs["workspace_error"]
+        observed["skills_count"] = kwargs["skills_count"]
+        observed["skills_error"] = kwargs["skills_error"]
+        observed["skill_runtime"] = kwargs["skill_runtime"] is not None
         observed["model_selection_store"] = isinstance(
-            model_selection_store,
+            kwargs["model_selection_store"],
             ModelSelectionStore,
         )
+        return dependencies
+
+    def fake_create_app(*, dependencies: object):
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tui_main, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(tui_main, "configure_model_logging", lambda **kwargs: None)
+    monkeypatch.setattr(
+        tui_main,
+        "build_tui_dependencies",
+        fake_build_tui_dependencies,
+    )
     monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
 
     tui_main.main()
@@ -1809,13 +1905,23 @@ def test_tui_entrypoint_loads_skills_only_into_tui_registry(tmp_path, monkeypatc
         def run(self):
             observed["run"] = True
 
-    def fake_create_app(**kwargs):
+    dependencies = object()
+
+    def fake_build_tui_dependencies(**kwargs):
         observed.update(kwargs)
+        return dependencies
+
+    def fake_create_app(*, dependencies):
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tui_main, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(tui_main, "configure_model_logging", lambda **kwargs: None)
+    monkeypatch.setattr(
+        tui_main,
+        "build_tui_dependencies",
+        fake_build_tui_dependencies,
+    )
     monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
 
     tui_main.main()
@@ -1851,13 +1957,23 @@ def test_tui_entrypoint_invalid_skill_keeps_workspace_tools(tmp_path, monkeypatc
         def run(self):
             observed["run"] = True
 
-    def fake_create_app(**kwargs):
+    dependencies = object()
+
+    def fake_build_tui_dependencies(**kwargs):
         observed.update(kwargs)
+        return dependencies
+
+    def fake_create_app(*, dependencies):
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tui_main, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(tui_main, "configure_model_logging", lambda **kwargs: None)
+    monkeypatch.setattr(
+        tui_main,
+        "build_tui_dependencies",
+        fake_build_tui_dependencies,
+    )
     monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
 
     tui_main.main()
@@ -1892,14 +2008,24 @@ def test_tui_entrypoint_reports_workspace_failure_without_path(tmp_path, monkeyp
     def fail_registry(_policy, **_kwargs):
         raise ValueError(f"sensitive path: {tmp_path}")
 
-    def fake_create_app(**kwargs):
+    dependencies = object()
+
+    def fake_build_tui_dependencies(**kwargs):
         observed.update(kwargs)
+        return dependencies
+
+    def fake_create_app(*, dependencies):
         return FakeApp()
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(tui_main, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(tui_main, "configure_model_logging", lambda **kwargs: None)
     monkeypatch.setattr(tui_main, "create_intent_workspace_registry", fail_registry)
+    monkeypatch.setattr(
+        tui_main,
+        "build_tui_dependencies",
+        fake_build_tui_dependencies,
+    )
     monkeypatch.setattr(tui_main, "_create_app", fake_create_app)
 
     tui_main.main()
@@ -1929,7 +2055,7 @@ def test_enter_submits_input():
                 TokenUsage(input_tokens=12, output_tokens=5, total_tokens=17),
             )
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=ALIYUN_INFO,
             clock=lambda: next(clock_values),
@@ -1967,7 +2093,7 @@ def test_up_down_navigates_input_history_and_restores_draft():
         ) -> ChatResult:
             return ChatResult(f"answer: {input_text}", "fake", "fake-model")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             for text in ("first", "second", "third"):
@@ -2010,7 +2136,7 @@ def test_empty_input_history_keeps_current_draft():
         ) -> ChatResult:
             raise AssertionError("runner should not be called")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("当前草稿")
@@ -2037,7 +2163,7 @@ def test_input_history_restores_only_user_messages_with_original_text(tmp_path):
                 ChatMessage(ChatRole.ASSISTANT, "answer 3"),
             )
         )
-        app = ChatTuiApp(
+        app = make_app(
             chat_session=ChatSession.load(store),
             runtime_info=ALIYUN_INFO,
         )
@@ -2068,7 +2194,7 @@ def test_failed_input_remains_in_current_process_history():
                 "Upstream request timed out",
             )
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("失败输入")
@@ -2096,7 +2222,7 @@ def test_clear_failure_preserves_input_history(tmp_path, monkeypatch):
             raise SessionStoreError("Unable to clear saved conversation")
 
         monkeypatch.setattr(store, "clear", fail_clear)
-        app = ChatTuiApp(chat_session=session, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_session=session, runtime_info=ALIYUN_INFO)
 
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
@@ -2137,7 +2263,7 @@ print("hello")
         ) -> ChatResult:
             return ChatResult(markdown_answer, "fake", "fake-model")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("render markdown")
@@ -2174,7 +2300,7 @@ def test_restored_assistant_history_renders_markdown(tmp_path):
                 ChatMessage(ChatRole.ASSISTANT, "**重要回答**"),
             )
         )
-        app = ChatTuiApp(
+        app = make_app(
             chat_session=ChatSession.load(store),
             runtime_info=ALIYUN_INFO,
         )
@@ -2200,7 +2326,7 @@ def test_non_assistant_messages_keep_markdown_markers_as_plain_text():
         ) -> ChatResult:
             return ChatResult("ok", "fake", "fake-model")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("# 用户标题 **原文**")
@@ -2228,7 +2354,7 @@ def test_user_message_uses_background_card_without_styling_other_roles():
         ) -> ChatResult:
             return ChatResult("普通回答", "fake", "fake-model")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test(size=(140, 24)) as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("用户 **原文**")
@@ -2279,7 +2405,7 @@ def test_runtime_error_displays_request_duration():
                 "Upstream request timed out",
             )
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=ALIYUN_INFO,
             clock=lambda: next(clock_values),
@@ -2308,7 +2434,7 @@ def test_text_area_accepts_chinese_input_directly():
         ) -> ChatResult:
             raise AssertionError("runner should not be called while editing")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.focus()
@@ -2330,7 +2456,7 @@ def test_blank_input_is_rejected_without_calling_runner():
         ) -> ChatResult:
             raise AssertionError("runner must not receive blank input")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("  \n")
@@ -2357,7 +2483,7 @@ def test_help_and_chat_are_sent_as_ordinary_model_input():
             received_inputs.append(input_text)
             return ChatResult("ok", "fake", "fake-model")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             for text in ("/help", "/chat"):
@@ -2383,7 +2509,7 @@ def test_clear_command_clears_transcript_without_calling_runner():
             received_inputs.append(input_text)
             return ChatResult("answer", "fake", "fake-model")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("hello")
@@ -2426,7 +2552,7 @@ def test_skills_command_lists_current_runtime_without_calling_runner(tmp_path):
             received_inputs.append(input_text)
             return ChatResult("answer", "fake", "fake-model")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=ALIYUN_INFO,
             skill_runtime=runtime,
@@ -2473,7 +2599,7 @@ def test_skills_command_handles_empty_catalog_and_missing_runtime(
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not receive /skills")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=ALIYUN_INFO,
             skill_runtime=runtime_factory(tmp_path),
@@ -2500,7 +2626,7 @@ def test_skills_command_reports_safe_runtime_catalog_error(tmp_path):
             initial_error="Project skills are unavailable",
             codex_skills_root=tmp_path / "codex-skills",
         )
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=ALIYUN_INFO,
             skill_runtime=runtime,
@@ -2525,7 +2651,7 @@ def test_tui_restores_saved_conversation_on_mount(tmp_path):
                 ChatMessage(ChatRole.ASSISTANT, "上次的回答"),
             )
         )
-        app = ChatTuiApp(
+        app = make_app(
             chat_session=ChatSession.load(store),
             runtime_info=ALIYUN_INFO,
         )
@@ -2548,7 +2674,7 @@ def test_clear_command_removes_saved_conversation(tmp_path):
                 ChatMessage(ChatRole.ASSISTANT, "answer"),
             )
         )
-        app = ChatTuiApp(
+        app = make_app(
             chat_session=ChatSession.load(store),
             runtime_info=ALIYUN_INFO,
         )
@@ -2578,7 +2704,7 @@ def test_memory_commands_list_and_clear_preferences_without_calling_model(tmp_pa
         selection_store = ModelSelectionStore(tmp_path / "model-selection.json")
         selection_store.save(ModelSelection("aliyun", "qwen3-max"))
         session = ChatSession.load(store)
-        app = ChatTuiApp(
+        app = make_app(
             chat_session=session,
             runtime_info=ALIYUN_INFO,
             model_selection_store=selection_store,
@@ -2623,7 +2749,7 @@ def test_clear_command_preserves_long_term_preferences(tmp_path):
         selection_store = ModelSelectionStore(tmp_path / "model-selection.json")
         selection_store.save(ModelSelection("aliyun", "qwen3-max"))
         session = ChatSession.load(store)
-        app = ChatTuiApp(
+        app = make_app(
             chat_session=session,
             runtime_info=ALIYUN_INFO,
             model_selection_store=selection_store,
@@ -2647,8 +2773,8 @@ def test_corrupt_history_requires_explicit_clear(tmp_path, monkeypatch):
         path = tmp_path / "chat-session.json"
         path.write_text("not-json", encoding="utf-8")
         store = SessionStore(path)
-        monkeypatch.setattr(tui_application, "SessionStore", lambda: store)
-        app = ChatTuiApp(runtime_info=ALIYUN_INFO)
+        monkeypatch.setattr(tui_bootstrap, "SessionStore", lambda: store)
+        app = make_app(runtime_info=ALIYUN_INFO)
 
         async with app.run_test() as pilot:
             assert app.run_status is RunStatus.ERROR
@@ -2685,7 +2811,7 @@ def test_thinking_state_blocks_duplicate_submission():
             await release.wait()
             return ChatResult("done", "fake", "fake-model")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("first")
@@ -2730,7 +2856,7 @@ def test_runtime_error_is_recoverable_on_next_submission():
                 )
             return ChatResult("recovered", "fake", "fake-model")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("first")
@@ -2762,7 +2888,7 @@ def test_unexpected_error_is_hidden_and_app_remains_available():
         ) -> ChatResult:
             raise RuntimeError(secret_detail)
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("hello")
@@ -2784,7 +2910,7 @@ def test_escape_clears_prompt_before_starting_exit_confirmation():
         async def fake_runner(input_text: str, **kwargs) -> ChatResult:
             raise AssertionError("runner should not be called while clearing input")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
             clock=clock,
@@ -2816,7 +2942,7 @@ def test_escape_clears_draft_before_cancelling_active_request():
             await release.wait()
             return ChatResult("done", "fake", "fake-model")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=DEEPSEEK_INFO)
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("正在发送")
@@ -2827,7 +2953,7 @@ def test_escape_clears_draft_before_cancelling_active_request():
             await pilot.press("escape")
 
             assert prompt.text == ""
-            assert app._active_worker is not None
+            assert app._request.active_worker is not None
             assert app.run_status is RunStatus.THINKING
             assert app._last_escape_at is None
 
@@ -2857,7 +2983,7 @@ def test_double_escape_cancels_active_request_then_exits():
                 cancelled.set()
                 return ChatResult("late result", "fake", "fake-model")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=ALIYUN_INFO,
             clock=clock,
@@ -2882,7 +3008,7 @@ def test_double_escape_cancels_active_request_then_exits():
             await asyncio.wait_for(cancelled.wait(), timeout=1)
             assert not exit_called
             assert str(app.query_one("#activity-bar", Static).content) == ""
-            assert app._activity_timer is None
+            assert app._request.activity_timer is None
             assert "System\n再次按 Esc 退出" in transcript_text(app)
             assert "耗时：" not in transcript_text(app)
             assert "Token：" not in transcript_text(app)
@@ -2921,7 +3047,7 @@ def test_quit_command_exits_without_calling_runner():
         ) -> ChatResult:
             raise AssertionError("runner must not receive /quit")
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         original_exit = app.exit
 
         def record_exit(*args, **kwargs):
@@ -2954,7 +3080,7 @@ def test_double_escape_exits_when_no_request_is_running():
             raise AssertionError("runner should not be called")
 
         clock_values = iter([10.0, 10.5])
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=ALIYUN_INFO,
             clock=lambda: next(clock_values),
@@ -2992,7 +3118,7 @@ def test_escape_confirmation_expires_after_timeout():
         ) -> ChatResult:
             raise AssertionError("runner should not be called")
 
-        app = ChatTuiApp(
+        app = make_app(
             chat_runner=fake_runner,
             runtime_info=ALIYUN_INFO,
             clock=lambda: next(clock_values),
@@ -3036,7 +3162,7 @@ def test_quit_command_cancels_active_request_before_exit():
                 cancelled.set()
                 raise
 
-        app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
+        app = make_app(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
         original_exit = app.exit
 
         def record_exit(*args, **kwargs):
@@ -3056,6 +3182,6 @@ def test_quit_command_cancels_active_request_before_exit():
 
         assert exit_called
         assert cancelled.is_set()
-        assert app._activity_timer is None
+        assert app._request.activity_timer is None
 
     asyncio.run(scenario())

@@ -14,6 +14,7 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `app/runtime/tool_loop.py`：默认/Workspace 循环预算、请求级审批上下文、串行工具编排、逐步骤 Token 聚合和结果观察回调。
 - `app/runtime/session.py`：串行化 TUI 发送，只提交 Provider 和持久化均成功的完整轮次。
 - `app/runtime/skill_runtime.py`：持有当前 Skill Catalog、共享 Workspace Journal 和安装器，在每次发送开始时生成不可变执行快照。
+- `app/runtime/model_selection.py`：持有有界模型候选快照，封装最近选择恢复、Provider 创建、Session 替换和成功后持久化。
 - `app/runtime/session_store.py`：版本化 JSON 会话校验、原子保存、恢复与清理。
 - `app/services/llm/contracts.py`：中立角色/消息、不可变 TokenUsage、ModelStep、Provider Turn、文本 Delta/reset 回调协议和共享异常。
 - `app/services/llm/factory.py`：解析环境并创建当前 Provider。
@@ -29,21 +30,23 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `tools/skill_installation.py`：公开 GitHub/个人 Codex 来源解析、无跟随复制、安装审批、候选校验、原子提交和刷新回滚。
 - `tools/git.py`：TUI 专属的临时 Index Stage 预览、中文 Commit 和既有上游非强制 Push。
 - `app/runtime/system_prompt.py`：从 TUI 启动目录有界读取可选 `AGENTS.md`，并与 Skill Catalog 组合为单条系统提示词。
-- `app/tui/__main__.py`：加载根目录 `.env`，捕获一次启动目录，独立加载 Skill，创建 TUI Registry 并启动 Textual。
-- `app/tui/application.py`：终端输入与历史、消息展示、请求活动、审批回调、已落盘失败提醒、状态、耗时和取消。
+- `app/tui/__main__.py`：加载根目录 `.env`，捕获一次启动目录，独立加载 Skill、创建 TUI Registry，并把启动参数交给 bootstrap；在设置终端键盘兼容变量前不导入 Textual。
+- `app/tui/bootstrap.py`：在 Textual App 外解析模型与 Memory 配置、恢复 Provider 和 Session，并生成统一 `TuiDependencies` 与启动健康状态；只在类型检查时引用请求协议，避免间接提前加载 Textual。
+- `app/tui/application.py`：接收已装配依赖，负责终端布局、输入历史、命令与 Palette 优先级、消息和状态栏投影。
+- `app/tui/request.py`：TUI 专属请求协调器，独占 Worker、Timer、请求代次、流式输出、审批回调、已落盘失败提醒、耗时和取消。
 - `app/tui/approval.py`：默认拒绝且可复制的纯文本完整 Diff Modal。
 - `app/tui/commands.py`：本地命令枚举、候选说明与完整命令解析的唯一来源；不依赖 Textual 或 Runtime。
 - `app/tui/command_palette.py`：使用统一命令目录完成前缀过滤、循环选择、补全消费与关闭状态；不执行命令，不调用 Runtime。
 - `app/tui/model_palette.py`：展示安全的供应商/模型候选快照，负责当前项定位、循环选择、确认与取消；不读取环境或创建 Provider。
 - `app/tui/skill_palette.py`：识别光标所在 `$前缀`，使用内存 Skill 摘要完成有限候选、循环选择和精确替换结果；不读取正文或磁盘。
-- `app/tui/transcript.py`：`Transcript` 渲染用户卡片、Assistant Markdown 和系统纯文本；`StreamOutput` 管理流式纯文本缓冲、批量绘制与清理。主应用仍拥有请求代次与取消校验。
+- `app/tui/transcript.py`：`Transcript` 渲染用户卡片、Assistant Markdown 和系统纯文本；`StreamOutput` 管理流式纯文本缓冲、批量绘制与清理，请求协调器拥有代次与取消校验。
 - `app/tui/input_history.py`：纯 Python 输入历史状态，负责已发送记录、导航索引与草稿恢复；不读取文件或操作组件。
-- `app/tui/activity_bar.py`：显示思考/审批、动画与耗时，主应用负责时间计算、Timer 调度和请求代次。
+- `app/tui/activity_bar.py`：显示思考/审批、动画与耗时，请求协调器负责时间计算、Timer 调度和请求代次。
 - `app/tui/status_bar.py`：接收有限状态快照并生成底部运行摘要，不读取 Runtime 或环境变量。
 - `app/tui/workspace_changes.py`：解析请求内工作区工具结果，跟踪成功应用且尚未撤销的路径；不负责界面展示。
 - `app/tui/styles/application.tcss`、`approval.tcss`：分别由 App 和审批 Screen 的 `CSS_PATH` 加载，维护布局与外观；Rich 消息卡片样式仍由消息渲染代码负责。
 - `app/tui/widgets.py`：为 RichLog 补齐鼠标选择坐标、选择高亮、可见文本复制及可选的双击单行复制，并为输入框补充 `Cmd+A` / `Ctrl+A` 全选。
-- `app/tui/state.py`：定义 `Ready`、`Thinking`、`Awaiting approval`、`Error`。
+- `app/tui/state.py`：定义运行状态及结构化启动诊断，分别表达错误展示和请求阻断语义。
 - `tests/test_llm_providers.py`：Provider、工厂和共享 HTTP Mock 测试。
 - `tests/test_chat_runtime.py`：Runtime 单元测试。
 - `tests/test_tool_loop.py`、`tests/test_tools.py`：有界编排、审批、Registry 和内置工具测试。
@@ -122,10 +125,11 @@ python -m app.tui
   -> read cwd/AGENTS.md once as an optional bounded system prompt
   -> load cwd/.agents/skills as initial Catalog
   -> capture cwd once and create Workspace Policy, shared Journal and SkillRuntime
-  -> resolve bounded model catalog and load data/model-selection.json
-  -> restore an available saved Provider or fall back to environment configuration
-  -> load v1/v2 data/chat-session.json and restore complete turns plus memory
-  -> Textual Worker calls ChatSession.send
+  -> bootstrap resolves the bounded model catalog and loads data/model-selection.json
+  -> ModelSelectionService restores an available Provider or returns a safe fallback warning
+  -> bootstrap loads v1/v2 data/chat-session.json and returns one TuiDependencies snapshot
+  -> ChatTuiApp delegates the accepted input to RequestCoordinator
+  -> RequestCoordinator creates the Textual Worker and calls ChatSession.send
   -> send passes original input and reads one system prompt/Registry/Catalog execution snapshot
   -> valid $skill references add at most three complete SKILL.md files to this snapshot
   -> initial Provider Turn sees only activate_tool_groups (plus preactivated Skill tools)
@@ -146,13 +150,13 @@ python -m app.tui
   -> TUI stops the Timer, clears activity and records final monotonic elapsed time
 ```
 
-TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只读取 `Path.cwd()/AGENTS.md` 一次，并把同一启动目录固定为 Workspace；AGENTS 不热加载。SkillRuntime 启动时加载 Catalog，之后只在一次获批安装完整成功时发布下一版本，不监控手动目录变化。每次 `ChatSession.send()` 创建独立 `GroupedToolRegistry`：首步只披露 `activate_tool_groups`，模型可从 `general`、`workspace_read`、`workspace_write`、`skills`、`skill_install` 中按当前 Catalog 激活最多两次；一次可选择多个组，重复激活不消耗次数。Tool Loop 只在定义变化后调用当前 Provider Turn 的 `replace_tools`，新工具从下一模型步骤生效，同一步伪造调用仍返回 `unknown_tool`。完整且存在的 `$技能名` 会按首次出现去重，将最多 3 个 `SKILL.md` 作为不可信 JSON 数据追加到本轮 system 上下文，并免费预激活 `skills`；未知名称保持普通文本，资源正文仍按需读取。当前 Provider Turn 不会使用刚安装的 Skill，下一次发送才生效。系统提示词、Skill 内容和工具轨迹不进入 Session，Session 仍只提交最终 user/assistant。文件审批 Modal 显示相对路径和完整 Diff；安装审批显示安全来源、固定目标和联网风险；脚本审批显示 Skill、相对脚本、转义命令和无沙箱风险。安装只允许公开 GitHub Contents API 或当前用户 Codex 直属目录，候选经项目临时目录校验和原子 rename，刷新失败回滚。脚本每次都重新审批，使用固定解释器、最小环境、30 秒超时和 32 KiB 合计输出边界，并在超时、输出超限或取消时终止进程组。成功编辑或删除保留 `change_id`，三态 Journal 记录创建、替换或删除后的内容状态，最多保存 10 个批次且不跨重启；删除撤销只在同名路径仍不存在时原子恢复。Registry 快照复用同一 Journal。请求内变更追踪器同时记录编辑和删除，后续模型失败时仍提示受影响路径，撤销成功后移除。请求代次会阻止取消后的陈旧 Delta 或审批结果写回。HTTP `/chat` 不加载 Workspace/Skill 安装模块、不读取 Home、宿主规则或 TUI 会话文件，仍使用固定时间工具并在 Runtime 汇总完成后返回 JSON。
+TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只读取 `Path.cwd()/AGENTS.md` 一次，并把同一启动目录固定为 Workspace；AGENTS 不热加载。bootstrap 是 Session、模型恢复和 Memory Policy 的唯一 TUI 装配边界，`ChatTuiApp` 构造本身不读环境或磁盘。SkillRuntime 启动时加载 Catalog，之后只在一次获批安装完整成功时发布下一版本，不监控手动目录变化。每次 `ChatSession.send()` 创建独立 `GroupedToolRegistry`：首步只披露 `activate_tool_groups`，模型可从 `general`、`workspace_read`、`workspace_write`、`skills`、`skill_install` 中按当前 Catalog 激活最多两次；一次可选择多个组，重复激活不消耗次数。Tool Loop 只在定义变化后调用当前 Provider Turn 的 `replace_tools`，新工具从下一模型步骤生效，同一步伪造调用仍返回 `unknown_tool`。完整且存在的 `$技能名` 会按首次出现去重，将最多 3 个 `SKILL.md` 作为不可信 JSON 数据追加到本轮 system 上下文，并免费预激活 `skills`；未知名称保持普通文本，资源正文仍按需读取。当前 Provider Turn 不会使用刚安装的 Skill，下一次发送才生效。系统提示词、Skill 内容和工具轨迹不进入 Session，Session 仍只提交最终 user/assistant。文件审批 Modal 显示相对路径和完整 Diff；安装审批显示安全来源、固定目标和联网风险；脚本审批显示 Skill、相对脚本、转义命令和无沙箱风险。安装只允许公开 GitHub Contents API 或当前用户 Codex 直属目录，候选经项目临时目录校验和原子 rename，刷新失败回滚。脚本每次都重新审批，使用固定解释器、最小环境、30 秒超时和 32 KiB 合计输出边界，并在超时、输出超限或取消时终止进程组。成功编辑或删除保留 `change_id`，三态 Journal 记录创建、替换或删除后的内容状态，最多保存 10 个批次且不跨重启；删除撤销只在同名路径仍不存在时原子恢复。Registry 快照复用同一 Journal。请求协调器内的变更追踪器同时记录编辑和删除，后续模型失败时仍提示受影响路径，撤销成功后移除。其请求代次会阻止取消后的陈旧 Delta、审批结果或最终结果写回。HTTP `/chat` 不加载 Workspace/Skill 安装模块、不读取 Home、宿主规则、TUI 会话或模型选择文件，仍使用固定时间工具并在 Runtime 汇总完成后返回 JSON。
 
-状态栏只接收应用汇总后的有限快照，不直接访问密钥、环境或模型正文。单次请求的工作区工具结果由独立追踪器解析；若后续模型步骤失败，主应用会列出已经落盘且尚未撤销的相对路径，避免错误提示掩盖实际磁盘变化。
+状态栏只接收应用汇总后的有限快照，不直接访问密钥、环境或模型正文。单次请求的工作区工具结果由独立追踪器解析；若后续模型步骤失败，请求协调器会让应用列出已经落盘且尚未撤销的相对路径，避免错误提示掩盖实际磁盘变化。
 
 输入历史是 `ChatTuiApp` 内存状态：启动时从 Session 的 user 消息初始化，当前进程每次真正启动的请求立即追加，因此失败或取消输入也可临时召回；只有完整成功轮次由既有 Session 规则跨重启保存。高优先级 Up/Down Binding 负责不循环浏览和草稿恢复，不修改 Session schema。
 
-输入提交由主应用按固定顺序协调：审批界面 Enter、模型选择确认、命令/Skill 候选补全、可随时执行的 `/quit`、仅空闲时执行的本地命令、历史/系统提示词/Workspace/空白校验，最后才创建请求 Worker。命令目录负责定义和解析，三个候选组件只返回补全或选择结果；命令消费、模型切换、会话清理、校验和请求启动分别由主应用具名方法承担，避免候选模块反向操作 Textual 输入框、Session 或 Runtime。
+输入提交由主应用按固定顺序协调：审批界面 Enter、模型选择确认、命令/Skill 候选补全、可随时执行的 `/quit`、仅空闲时执行的本地命令、启动健康状态与空白校验，最后把输入交给 RequestCoordinator 创建请求 Worker。命令目录负责定义和解析，三个候选组件只返回补全或选择结果；ModelSelectionService 执行 Provider 切换事务，请求协调器独占 Worker、Timer、流输出和取消代次，候选模块仍不反向操作输入框、Session 或 Runtime。
 
 ## 配置
 

@@ -190,6 +190,19 @@ python3 --version
 - 输入框为空时，第一次按 `Esc` 会取消当前请求并提示，1.5 秒内再次按 `Esc` 才退出 TUI。
 - 输入 `/quit` 会先取消运行中请求再退出。
 - TUI 不自动重试；上游最长等待仍受现有 60 秒总超时限制。
+- 内部请求协调器会先递增请求代次，再停止临时流和活动 Timer 并取消 Worker；因此取消后迟到的文本、审批或最终结果不会写回界面。
+
+## TUI 启动配置或历史错误
+
+- TUI 启动入口先完成模型选择、Memory Policy 和 Session 恢复，再构造 Textual App；配置错误不会导致半初始化界面崩溃。
+- 损坏的会话文件会原样保留，界面提示使用 `/clear` 显式重置；不要直接编辑或自动覆盖故障文件。
+- 无法恢复最近模型选择时会显示安全提示并回退环境默认模型；原选择文件保留到下一次成功切换时再原子覆盖。
+
+## TUI 启动后键盘输入不显示
+
+- macOS 中文输入法依赖入口在 Textual 初始化前设置 `TEXTUAL_DISABLE_KITTY_KEY=1`。
+- `app.tui.__main__` 和 `app.tui.bootstrap` 不得在模块导入阶段直接或间接加载 Textual；Textual App 继续由 `_create_app()` 延迟导入。
+- 可在全新 Python 进程中导入 `app.tui.__main__`，确认 `sys.modules` 尚无 `textual` 模块，再运行 TUI 定向测试。
 
 ## Pytest 启动时出现 LangSmith 或 Pydantic 错误
 

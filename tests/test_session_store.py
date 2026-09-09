@@ -4,6 +4,7 @@ import stat
 import pytest
 
 from app.runtime import session_store
+from app.runtime.memory import ConversationState, UserPreference
 from app.runtime.session_store import SessionStore, SessionStoreError
 from app.services.llm.contracts import ChatMessage, ChatRole
 
@@ -31,11 +32,87 @@ def test_session_store_round_trips_utf8_and_uses_private_file_mode(tmp_path):
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
 
 
+def test_session_store_loads_v1_and_saves_v2_memory_state(tmp_path):
+    path = tmp_path / "chat-session.json"
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "messages": [
+                    {"role": "user", "content": "旧问题"},
+                    {"role": "assistant", "content": "旧回答"},
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    store = SessionStore(path)
+
+    state = store.load_state()
+    preference = UserPreference(
+        "0" * 16,
+        "使用中文回复",
+        "explicit",
+        "2026-09-09T00:00:00Z",
+    )
+    store.save_state(
+        ConversationState(
+            messages=state.messages,
+            summary="旧会话摘要",
+            summarized_message_count=2,
+            preferences=(preference,),
+        )
+    )
+
+    restored = store.load_state()
+    assert restored.messages == (
+        ChatMessage(ChatRole.USER, "旧问题"),
+        ChatMessage(ChatRole.ASSISTANT, "旧回答"),
+    )
+    assert restored.summary == "旧会话摘要"
+    assert restored.preferences == (preference,)
+    assert json.loads(path.read_text(encoding="utf-8"))["version"] == 2
+
+
+@pytest.mark.parametrize(
+    "preference",
+    [
+        {
+            "id": "0" * 16,
+            "content": "API_KEY=secret",
+            "source": "explicit",
+            "updated_at": "2026-09-09T00:00:00Z",
+        },
+        {
+            "id": "0" * 16,
+            "content": "使用中文回复",
+            "source": "explicit",
+            "updated_at": "not-a-timeZ",
+        },
+    ],
+)
+def test_session_store_rejects_unsafe_v2_preferences(tmp_path, preference):
+    path = tmp_path / "chat-session.json"
+    payload = {
+        "version": 2,
+        "messages": [],
+        "context": {"summary": None, "summarized_message_count": 0},
+        "preferences": [preference],
+    }
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises(SessionStoreError):
+        SessionStore(path).load_state()
+
+    assert json.loads(path.read_text(encoding="utf-8")) == payload
+
+
 @pytest.mark.parametrize(
     "payload",
     [
         "not-json",
-        json.dumps({"version": 2, "messages": []}),
+        json.dumps({"version": 3, "messages": []}),
         json.dumps(
             {
                 "version": 1,

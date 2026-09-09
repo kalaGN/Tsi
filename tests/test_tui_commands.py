@@ -15,6 +15,8 @@ def test_command_catalog_contains_each_supported_command_once() -> None:
         LocalCommand.CLEAR,
         LocalCommand.SKILLS,
         LocalCommand.MODEL,
+        LocalCommand.MEMORY,
+        LocalCommand.MEMORY_CLEAR,
         LocalCommand.QUIT,
     )
     assert len(commands) == len(set(commands))
@@ -24,6 +26,7 @@ def test_command_catalog_contains_each_supported_command_once() -> None:
 def test_parse_local_command_accepts_complete_command_with_outer_whitespace() -> None:
     assert parse_local_command(" \n/skills\t") is LocalCommand.SKILLS
     assert parse_local_command(" /model ") is LocalCommand.MODEL
+    assert parse_local_command(" /memory clear ") is LocalCommand.MEMORY_CLEAR
 
 
 def test_parse_local_command_rejects_partial_unknown_and_regular_input() -> None:
@@ -40,8 +43,11 @@ def test_suggest_local_commands_returns_only_unfinished_prefix_matches() -> None
     assert suggest_local_commands("/skills") == ()
     assert tuple(
         spec.command for spec in suggest_local_commands("/m")
-    ) == (LocalCommand.MODEL,)
+    ) == (LocalCommand.MODEL, LocalCommand.MEMORY, LocalCommand.MEMORY_CLEAR)
     assert parse_local_command("/model deepseek") is None
     assert suggest_local_commands(" /s") == ()
     assert suggest_local_commands("/s ") == ()
+    assert tuple(
+        spec.command for spec in suggest_local_commands("/memory ")
+    ) == (LocalCommand.MEMORY_CLEAR,)
     assert suggest_local_commands("/unknown") == ()

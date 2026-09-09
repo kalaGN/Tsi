@@ -4,6 +4,7 @@ import pytest
 
 from app.runtime import session as session_module
 from app.runtime.chat import ChatErrorCode, ChatResult, ChatRuntimeError
+from app.runtime.memory import ConversationState, MemoryPolicy
 from app.runtime.session import ChatExecutionSnapshot, ChatSession
 from app.runtime.session_store import SessionStore, SessionStoreError
 from app.runtime.skill_runtime import SkillRuntime
@@ -13,6 +14,7 @@ from app.services.llm.contracts import (
     ChatRole,
     ModelStep,
     ProviderTimeoutError,
+    TokenUsage,
 )
 from tools import create_default_registry
 from tools.contracts import ToolCall
@@ -343,7 +345,7 @@ def test_chat_session_does_not_commit_when_persistence_fails(tmp_path, monkeypat
         def fail_save(messages):
             raise SessionStoreError("Unable to save conversation")
 
-        monkeypatch.setattr(store, "save", fail_save)
+        monkeypatch.setattr(store, "save_state", fail_save)
 
         with pytest.raises(ChatRuntimeError) as captured:
             await session.send("hello")
@@ -496,5 +498,202 @@ def test_chat_session_persists_only_final_turn_after_automatic_tool_call(tmp_pat
             ChatMessage(ChatRole.ASSISTANT, "final answer"),
         )
         assert SessionStore(store.path).load() == session.messages
+
+    asyncio.run(scenario())
+
+
+def test_chat_session_compacts_model_context_but_preserves_full_transcript(tmp_path):
+    async def scenario():
+        history = tuple(
+            message
+            for number in range(8)
+            for message in (
+                ChatMessage(ChatRole.USER, f"问题{number}" + "中" * 30),
+                ChatMessage(ChatRole.ASSISTANT, f"回答{number}" + "文" * 30),
+            )
+        )
+        store = SessionStore(tmp_path / "chat-session.json")
+        store.save_state(ConversationState(messages=history))
+        provider = RecordingProvider(["本轮回答"])
+        summary_calls = []
+
+        async def summarize(previous, messages):
+            summary_calls.append((previous, messages))
+            return "此前摘要"
+
+        session = ChatSession.load(
+            store,
+            provider=provider,
+            memory_summarizer=summarize,
+            memory_policy=MemoryPolicy(
+                context_window_tokens=260,
+                trigger_ratio=0.7,
+                target_ratio=0.6,
+                recent_turns=2,
+                reserved_tokens=20,
+            ),
+        )
+
+        await session.send("继续开发")
+
+        assert summary_calls
+        assert provider.calls[0][0].role is ChatRole.SYSTEM
+        assert "此前摘要" in provider.calls[0][0].content
+        assert provider.calls[0][-1] == ChatMessage(ChatRole.USER, "继续开发")
+        assert len(provider.calls[0]) < len(history) + 2
+        assert session.messages == history + (
+            ChatMessage(ChatRole.USER, "继续开发"),
+            ChatMessage(ChatRole.ASSISTANT, "本轮回答"),
+        )
+        persisted = store.load_state()
+        assert persisted.messages == session.messages
+        assert persisted.summary == "此前摘要"
+        assert persisted.summarized_message_count > 0
+
+    asyncio.run(scenario())
+
+
+def test_default_memory_summarizer_uses_current_provider_without_tools(tmp_path):
+    async def scenario():
+        class SummaryProvider(RecordingProvider):
+            def __init__(self):
+                super().__init__(["模型摘要", "业务回答"])
+                self.tools = []
+
+            def create_turn(self, messages, tools, *, request_id):
+                self.calls.append(tuple(messages))
+                self.tools.append(tuple(tools))
+                return RecordingTurn(self)
+
+        history = tuple(
+            message
+            for number in range(5)
+            for message in _history_turn(number, 30)
+        )
+        store = SessionStore(tmp_path / "chat-session.json")
+        store.save_state(ConversationState(messages=history))
+        provider = SummaryProvider()
+        session = ChatSession.load(
+            store,
+            provider=provider,
+            memory_policy=MemoryPolicy(
+                context_window_tokens=190,
+                trigger_ratio=0.7,
+                target_ratio=0.6,
+                recent_turns=1,
+                reserved_tokens=20,
+            ),
+        )
+
+        await session.send("继续")
+
+        assert provider.tools[0] == ()
+        assert "会话记忆压缩器" in provider.calls[0][0].content
+        assert provider.calls[1][-1] == ChatMessage(ChatRole.USER, "继续")
+        assert session.summary == "模型摘要"
+
+    def _history_turn(number, size):
+        return (
+            ChatMessage(ChatRole.USER, f"问{number}" + "中" * size),
+            ChatMessage(ChatRole.ASSISTANT, f"答{number}" + "文" * size),
+        )
+
+    asyncio.run(scenario())
+
+
+def test_default_memory_summarizer_usage_is_included_in_user_turn_total(tmp_path):
+    async def scenario():
+        class UsageProvider(RecordingProvider):
+            def __init__(self):
+                super().__init__()
+                self.steps = iter(
+                    (
+                        ModelStep(200, "摘要", (), TokenUsage(10, 2, 12)),
+                        ModelStep(200, "回答", (), TokenUsage(20, 3, 23)),
+                    )
+                )
+
+            async def next_step(self, tool_results=(), *, on_text_delta=None):
+                step = next(self.steps)
+                if on_text_delta is not None and step.output_text:
+                    on_text_delta(step.output_text)
+                return step
+
+        history = tuple(
+            message
+            for number in range(5)
+            for message in (
+                ChatMessage(ChatRole.USER, f"问{number}" + "中" * 30),
+                ChatMessage(ChatRole.ASSISTANT, f"答{number}" + "文" * 30),
+            )
+        )
+        store = SessionStore(tmp_path / "chat-session.json")
+        store.save_state(ConversationState(messages=history))
+        session = ChatSession.load(
+            store,
+            provider=UsageProvider(),
+            memory_policy=MemoryPolicy(
+                context_window_tokens=190,
+                trigger_ratio=0.7,
+                target_ratio=0.6,
+                recent_turns=1,
+                reserved_tokens=20,
+            ),
+        )
+
+        result = await session.send("继续")
+
+        assert result.token_usage == TokenUsage(30, 5, 35)
+
+    asyncio.run(scenario())
+
+
+def test_explicit_preference_is_injected_and_survives_clear(tmp_path):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        provider = RecordingProvider(["好的"])
+        session = ChatSession(store, provider=provider)
+
+        await session.send("以后请使用中文回复")
+
+        assert "使用中文回复" in provider.calls[0][0].content
+        assert [item.content for item in session.preferences] == ["使用中文回复"]
+        session.clear()
+        assert session.messages == ()
+        assert [item.content for item in session.preferences] == ["使用中文回复"]
+        restored = ChatSession.load(store)
+        assert restored.messages == ()
+        assert [item.content for item in restored.preferences] == ["使用中文回复"]
+
+        restored.clear_preferences()
+        assert restored.preferences == ()
+        assert not store.path.exists()
+
+    asyncio.run(scenario())
+
+
+def test_context_limit_does_not_call_provider_or_commit(tmp_path):
+    async def scenario():
+        store = SessionStore(tmp_path / "chat-session.json")
+        provider = RecordingProvider(["不应使用"])
+        session = ChatSession(
+            store,
+            provider=provider,
+            memory_policy=MemoryPolicy(
+                context_window_tokens=80,
+                trigger_ratio=0.7,
+                target_ratio=0.5,
+                recent_turns=0,
+                reserved_tokens=10,
+            ),
+        )
+
+        with pytest.raises(ChatRuntimeError) as captured:
+            await session.send("中" * 100)
+
+        assert captured.value.code is ChatErrorCode.CONTEXT_LIMIT
+        assert provider.calls == []
+        assert session.messages == ()
+        assert not store.path.exists()
 
     asyncio.run(scenario())

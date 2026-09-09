@@ -123,12 +123,14 @@ python -m app.tui
   -> load cwd/.agents/skills as initial Catalog
   -> capture cwd once and create Workspace Policy, shared Journal and SkillRuntime
   -> Runtime resolves Provider, model and safe key status
-  -> load data/chat-session.json and restore complete turns
+  -> load v1/v2 data/chat-session.json and restore complete turns plus memory
   -> Textual Worker calls ChatSession.send
   -> send passes original input and reads one system prompt/Registry/Catalog execution snapshot
   -> valid $skill references add at most three complete SKILL.md files to this snapshot
   -> initial Provider Turn sees only activate_tool_groups (plus preactivated Skill tools)
-  -> Runtime sends optional system + committed history + current user and runs tool loop
+  -> estimate optional system + memory + recent context before the business request
+  -> at 70% summarize older turns without tools; on failure evict complete old turns
+  -> Runtime sends optional system + preferences + summary + recent turns + current user
   -> model activates one or more fixed groups; Runtime refreshes this Turn for the next step
   -> read tools execute automatically; mutating tools preview a full bounded Diff
   -> Skill install previews source/target/network risk; scripts preview command/no-sandbox risk
@@ -138,7 +140,7 @@ python -m app.tui
   -> Provider text Delta crosses the neutral callback boundary
   -> request-scoped 100 ms Timer batches temporary plain-text output, spinner and elapsed time
   -> tool step reset removes text that is not the final answer
-  -> persist the new complete turn atomically
+  -> persist the full Transcript, summary boundary and preferences atomically as v2
   -> TUI removes temporary output and renders the complete Assistant content as Rich Markdown
   -> TUI stops the Timer, clears activity and records final monotonic elapsed time
 ```
@@ -188,7 +190,9 @@ TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默�
 - TUI 每个活动请求最多创建一个 100 ms Timer，空闲时没有周期任务；Timer 回调同样校验捕获的请求代次。
 - TUI 上下键固定用于输入历史，历史不去重、不循环且没有独立持久化文件；`/clear` 同步清空。
 - TUI 模型候选打开时优先消费上下键、Enter 和 Esc；选择器只保存安全候选快照，Provider 创建和 Session 替换仍由应用协调。
-- TUI 使用唯一 `data/chat-session.json` 保存完整轮次；启动恢复，`/clear` 删除，损坏历史不自动覆盖。
+- TUI 使用唯一 `data/chat-session.json` v2 保存完整 Transcript、滚动摘要边界和最多 50 条显式长期偏好；v1 延迟迁移，损坏历史不自动覆盖。
+- 模型上下文按本地估算在 70% 触发、以 50% 为压缩目标，正常保留最近 6 轮；摘要调用不开放工具，失败或仍超预算时按完整轮次淘汰上下文但不删除 Transcript。
+- `/clear` 清除 Transcript 和摘要但保留长期偏好；`/memory` 只读偏好，`/memory clear` 单独原子清除偏好。
 - TUI 只在启动时读取当前目录直属 `AGENTS.md`，不递归、不热重载；system 消息与 Session schema 隔离。
 - TUI 从 `.agents/skills/*/SKILL.md` 读取 Codex 兼容项目 Skill；Catalog 仅含名称、描述和相对位置，正文与资源按需读取，任一非法 Skill 会禁用整批但不影响 Workspace 和安装工具。
 - `install_skill` 每次审批，只支持匿名公开 GitHub 规范目录 URL 和当前用户 Codex Skill 直属目录；候选有界校验、同名拒绝、原子提交、刷新失败回滚，成功结果从下一次请求生效。不存在覆盖、升级、卸载、自动同步或文件监控。
@@ -199,5 +203,5 @@ TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默�
 - TUI 临时流只展示当前请求的纯文本；成功、错误、取消、工具 reset 和退出都会清理，部分文本不持久化。
 - TUI transcript 与临时流支持选择和复制当前可见文本；仅 transcript 启用双击复制命中的当前渲染行，并以内容坐标加纵向滚动偏移定位。复制通道使用 Textual 内置剪贴板与终端 OSC 52，不调用系统命令。
 - TUI 输入框以局部 TextArea 子类提供 `Cmd+A` / `Ctrl+A` 全选，兼容关闭 Kitty 扩展键盘协议后的终端按键降级。
-- 会话使用标准库 UTF-8 JSON 和同目录原子替换，不引入数据库或新依赖；历史明文且没有长度裁剪。
+- 会话使用标准库 UTF-8 JSON、`0600` 和同目录原子替换，不引入数据库或新依赖；完整历史明文保留，模型上下文受预算控制。
 - 当前不增加 Repository、Manager、数据库、缓存或其他无实际职责的层级。

@@ -1,6 +1,7 @@
 """最终消息与流式临时文本的展示组件。"""
 
 from rich import box
+from rich.align import Align
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text
@@ -21,11 +22,18 @@ class Transcript(SelectableRichLog):
         """只为 Assistant 解析 Markdown，用户与系统原文保持纯文本。"""
 
         if role == "You":
-            self.write(Panel(
-                Text(content), title=Text("You", style="bold"),
-                title_align="left", box=box.ROUNDED, border_style="#666666",
-                style="#f2f2f2 on #2b2b2b", padding=(0, 1), expand=True,
-            ))
+            message = Panel(
+                Text(content),
+                title=Text("You", style="bold"),
+                title_align="left",
+                box=box.ROUNDED,
+                border_style="#666666",
+                style="#f2f2f2 on #2b2b2b",
+                padding=(0, 1),
+                expand=False,
+            )
+            # RichLog 默认只按 min_width 渲染；扩展到当前内容区后才是真正贴右。
+            self.write(Align.right(message), expand=True)
         elif role == "Assistant":
             self.write(Text(role, style="bold"))
             self.write(Markdown(content))

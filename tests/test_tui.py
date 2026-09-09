@@ -1199,8 +1199,10 @@ def test_activity_bar_updates_elapsed_time_and_clears_after_success():
 
             assert str(activity.content) == ""
             assert app._activity_timer is None
-            assert "System\n耗时：1.20 秒" in transcript_text(app)
-            assert "System\nToken：不可用" in transcript_text(app)
+            assert (
+                "System\n耗时：1.20 秒 | Token：不可用"
+                in transcript_text(app)
+            )
 
     asyncio.run(scenario())
 
@@ -1752,8 +1754,10 @@ def test_enter_submits_input():
             assert "You" in transcript
             assert "hello" in transcript
             assert "Assistant\nanswer" in transcript
-            assert "System\n耗时：1.23 秒" in transcript
-            assert "System\nToken：输入 12 | 输出 5 | 合计 17" in transcript
+            assert (
+                "System\n耗时：1.23 秒 | "
+                "Token：输入 12 | 输出 5 | 合计 17"
+            ) in transcript
 
     asyncio.run(scenario())
 
@@ -2030,7 +2034,7 @@ def test_user_message_uses_background_card_without_styling_other_roles():
             return ChatResult("普通回答", "fake", "fake-model")
 
         app = ChatTuiApp(chat_runner=fake_runner, runtime_info=ALIYUN_INFO)
-        async with app.run_test() as pilot:
+        async with app.run_test(size=(140, 24)) as pilot:
             prompt = app.query_one("#prompt", TextArea)
             prompt.load_text("用户 **原文**")
 
@@ -2048,6 +2052,11 @@ def test_user_message_uses_background_card_without_styling_other_roles():
             )
 
             assert any("╭" in line.text and "You" in line.text for line in lines)
+            transcript = app.query_one("#transcript", RichLog)
+            assert user_line.cell_length == transcript.scrollable_content_region.width
+            assert user_line.text.index("│") > user_line.cell_length // 2
+            assert user_line.text.startswith(" ")
+            assert user_line.text.rstrip().endswith("│")
             assert user_segment.style is not None
             assert user_segment.style.color is not None
             assert user_segment.style.bgcolor is not None

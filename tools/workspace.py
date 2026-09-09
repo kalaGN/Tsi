@@ -637,7 +637,7 @@ class _FileChange:
     path: Path
     relative: str
     before: bytes | None
-    after: bytes
+    after: bytes | None
     mode: int
 
 
@@ -645,7 +645,7 @@ class _FileChange:
 class WorkspaceChange:
     change_id: str
     files: tuple[_FileChange, ...]
-    result_hashes: tuple[str, ...]
+    result_hashes: tuple[str | None, ...]
 
 
 class WorkspaceChangeJournal:
@@ -791,7 +791,7 @@ class ApplyWorkspaceEditsTool:
                 uuid4().hex,
                 tuple(changes),
                 tuple(
-                    hashlib.sha256(item.after).hexdigest() for item in changes
+                    _content_hash(item.after) for item in changes
                 ),
             )
             try:
@@ -874,6 +874,134 @@ class ApplyWorkspaceEditsTool:
         return changes, diff
 
 
+class DeleteWorkspaceFileTool:
+    definition = ToolDefinition(
+        "delete_workspace_file",
+        (
+            "删除工作区内一个经哈希确认的普通文本文件；执行前必须审批。"
+            "expected_sha256 必须来自 read_workspace_file"
+        ),
+        {
+            "type": "object",
+            "properties": {
+                "path": {
+                    "type": "string",
+                    "description": "工作区内待删除文件的相对路径",
+                },
+                "expected_sha256": {
+                    "type": "string",
+                    "description": "read_workspace_file 返回的完整文件 SHA-256",
+                    "pattern": "^[0-9a-f]{64}$",
+                },
+            },
+            "required": ["path", "expected_sha256"],
+            "additionalProperties": False,
+        },
+        effect=ToolEffect.MUTATING,
+    )
+
+    def __init__(
+        self,
+        policy: WorkspacePolicy,
+        journal: WorkspaceChangeJournal,
+    ) -> None:
+        self.policy = policy
+        self.journal = journal
+        self._lock = asyncio.Lock()
+        self._approved_plans: dict[str, str] = {}
+
+    async def preview(
+        self,
+        call_id: str,
+        arguments: Mapping[str, object],
+    ) -> ToolApprovalRequest:
+        async with self._lock:
+            change, diff = self._plan(arguments)
+            fingerprint = _fingerprint(self.definition.name, arguments, diff)
+            self._approved_plans[_argument_digest(arguments)] = fingerprint
+            return ToolApprovalRequest(
+                call_id,
+                self.definition.name,
+                "删除文件",
+                (change.relative,),
+                diff,
+                fingerprint,
+            )
+
+    async def invoke(self, arguments: Mapping[str, object]) -> object:
+        async with self._lock:
+            argument_digest = _argument_digest(arguments)
+            expected_plan = self._approved_plans.pop(argument_digest, None)
+            try:
+                change, diff = self._plan(arguments)
+            except ToolArgumentError as exc:
+                if expected_plan is not None:
+                    raise ToolRejectedError(
+                        ToolErrorCode.WORKSPACE_CONFLICT
+                    ) from exc
+                raise
+            fingerprint = _fingerprint(self.definition.name, arguments, diff)
+            if expected_plan != fingerprint:
+                raise ToolRejectedError(ToolErrorCode.WORKSPACE_CONFLICT)
+
+            self.journal.ensure_capacity((change,))
+            _commit_changes([change])
+            workspace_change = WorkspaceChange(
+                uuid4().hex,
+                (change,),
+                (None,),
+            )
+            try:
+                self.journal.append(workspace_change)
+            except Exception:
+                _restore_changes((change,))
+                raise
+            return {
+                "change_id": workspace_change.change_id,
+                "path": change.relative,
+                "deleted_sha256": hashlib.sha256(
+                    change.before or b""
+                ).hexdigest(),
+            }
+
+    def _plan(self, arguments: Mapping[str, object]) -> tuple[_FileChange, str]:
+        _arguments(arguments, {"path", "expected_sha256"})
+        expected_hash = arguments.get("expected_sha256")
+        if (
+            not isinstance(expected_hash, str)
+            or len(expected_hash) != 64
+            or any(
+                character not in "0123456789abcdef"
+                for character in expected_hash
+            )
+        ):
+            raise ToolArgumentError()
+        try:
+            relative = self.policy.normalize(arguments.get("path"), writing=True)
+            path = self.policy.resolve_write_file(relative, creating=False)
+        except WorkspacePathError as exc:
+            raise _path_error(exc) from exc
+
+        before, _ = _read_text(path, max_bytes=MAX_EDIT_FILE_BYTES)
+        if hashlib.sha256(before).hexdigest() != expected_hash:
+            raise ToolRejectedError(ToolErrorCode.WORKSPACE_CONFLICT)
+        change = _FileChange(
+            path,
+            relative,
+            before,
+            None,
+            stat.S_IMODE(path.stat().st_mode),
+        )
+        content_diff = _diff(relative, before, None)
+        if not content_diff:
+            # 空文件没有行级差异，仍需提供明确且可指纹化的删除预览。
+            content_diff = f"--- a/{relative}\n+++ /dev/null\n@@ -0,0 +0,0 @@\n"
+        diff = f"deleted file mode {change.mode:06o}\n{content_diff}"
+        if len(diff.encode("utf-8")) > MAX_DIFF_BYTES:
+            raise ToolArgumentError()
+        return change, diff
+
+
 class UndoWorkspaceChangeTool:
     definition = ToolDefinition(
         "undo_workspace_change",
@@ -939,6 +1067,9 @@ class UndoWorkspaceChangeTool:
             raise ToolRejectedError(ToolErrorCode.WORKSPACE_CONFLICT)
         for item, expected_hash in zip(change.files, change.result_hashes):
             try:
+                if expected_hash is None:
+                    self.policy.resolve_write_file(item.relative, creating=True)
+                    continue
                 self.policy.resolve_write_file(item.relative, creating=False)
                 current = item.path.read_bytes()
             except (OSError, WorkspacePathError) as exc:
@@ -1017,6 +1148,7 @@ def create_intent_workspace_registry(
             read_names
             + (
                 "apply_workspace_edits",
+                "delete_workspace_file",
                 "run_project_check",
                 "undo_workspace_change",
             ),
@@ -1075,6 +1207,7 @@ def _create_workspace_tools(
             GetWorkspaceGitStatusTool(policy),
             GetWorkspaceGitDiffTool(policy),
             ApplyWorkspaceEditsTool(policy, active_journal),
+            DeleteWorkspaceFileTool(policy, active_journal),
             RunProjectCheckTool(policy),
             UndoWorkspaceChangeTool(policy, active_journal),
     ]
@@ -1124,6 +1257,10 @@ def _fingerprint(tool_name: str, arguments: Mapping[str, object], diff: str) -> 
     return hashlib.sha256(value.encode()).hexdigest()
 
 
+def _content_hash(content: bytes | None) -> str | None:
+    return None if content is None else hashlib.sha256(content).hexdigest()
+
+
 def _diff(relative: str, before: bytes | None, after: bytes | None) -> str:
     old = "" if before is None else before.decode("utf-8")
     new = "" if after is None else after.decode("utf-8")
@@ -1160,6 +1297,8 @@ def _write_atomic(path: Path, content: bytes, mode: int) -> None:
 def _commit_changes(changes: list[_FileChange]) -> None:
     # 在准备落盘前统一重验，缩小审批后外部修改造成的竞态窗口。
     for item in changes:
+        if item.before is None and item.after is None:
+            raise ToolArgumentError()
         if item.before is None:
             if item.path.exists() or item.path.is_symlink():
                 raise ToolRejectedError(ToolErrorCode.WORKSPACE_CONFLICT)
@@ -1174,7 +1313,11 @@ def _commit_changes(changes: list[_FileChange]) -> None:
     try:
         for item in changes:
             if item.before is None:
+                if item.after is None:
+                    raise ToolArgumentError()
                 _write_new_file(item.path, item.after, item.mode)
+            elif item.after is None:
+                item.path.unlink()
             else:
                 _write_atomic(item.path, item.after, item.mode)
             applied.append(item)
@@ -1190,6 +1333,8 @@ def _restore_changes(changes) -> None:
                 item.path.unlink()
             except FileNotFoundError:
                 pass
+        elif item.after is None:
+            _write_new_file(item.path, item.before, item.mode)
         else:
             _write_atomic(item.path, item.before, item.mode)
 
@@ -1202,13 +1347,19 @@ def _undo_files(changes) -> None:
         for item in reversed(tuple(changes)):
             if item.before is None:
                 item.path.unlink()
+            elif item.after is None:
+                _write_new_file(item.path, item.before, item.mode)
             else:
                 _write_atomic(item.path, item.before, item.mode)
             applied.append(item)
     except Exception:
         for item in reversed(applied):
             if item.before is None:
+                if item.after is None:
+                    raise ToolArgumentError()
                 _write_new_file(item.path, item.after, item.mode)
+            elif item.after is None:
+                item.path.unlink()
             else:
                 _write_atomic(item.path, item.after, item.mode)
         raise

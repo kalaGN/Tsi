@@ -20,9 +20,15 @@ from app.runtime.chat import (
 )
 from app.runtime.session import ChatSession
 from app.runtime.memory import MemoryPolicy, resolve_memory_policy
+from app.runtime.model_selection_store import (
+    ModelSelection,
+    ModelSelectionStore,
+    ModelSelectionStoreError,
+)
 from app.runtime.session_store import SessionStore
 from app.services.llm.contracts import (
     ChatRole,
+    LlmProvider,
     LlmProviderError,
     ModelOption,
     TextDeltaHandler,
@@ -113,6 +119,7 @@ class ChatTuiApp(App[None]):
         skills_error: str | None = None,
         skill_runtime: "SkillRuntime | None" = None,
         model_options: tuple[ModelOption, ...] | None = None,
+        model_selection_store: ModelSelectionStore | None = None,
         memory_policy: MemoryPolicy | None = None,
     ) -> None:
         """初始化运行时信息、可恢复会话以及可注入的测试边界。"""
@@ -121,6 +128,8 @@ class ChatTuiApp(App[None]):
         self.clock = clock
         self._configuration_error: str | None = None
         self._history_error: str | None = None
+        self._model_selection_warning: str | None = None
+        self._model_selection_store = model_selection_store
         self._system_prompt_error = system_prompt_error
         self._workspace_error = workspace_error
         self._skill_runtime = skill_runtime
@@ -139,7 +148,20 @@ class ChatTuiApp(App[None]):
             if model_options is None
             else tuple(model_options)
         )
-        if runtime_info is None:
+        restored_provider = (
+            self._load_saved_model_provider()
+            if chat_session is None
+            and chat_runner is None
+            and self._model_selection_store is not None
+            else None
+        )
+        if restored_provider is not None:
+            runtime_info = ChatRuntimeInfo(
+                provider=restored_provider.name,
+                model=restored_provider.model,
+                api_key_configured=restored_provider.api_key_configured,
+            )
+        elif runtime_info is None:
             try:
                 runtime_info = get_chat_runtime_info()
             except ChatRuntimeError as exc:
@@ -155,10 +177,11 @@ class ChatTuiApp(App[None]):
                     self._configuration_error = str(exc)
                 memory_policy = MemoryPolicy()
         if chat_session is None and chat_runner is None:
-            store = SessionStore()
+            session_store = SessionStore()
             try:
                 chat_session = ChatSession.load(
-                    store,
+                    session_store,
+                    provider=restored_provider,
                     system_prompt=system_prompt,
                     registry=workspace_registry,
                     execution_snapshot_provider=(
@@ -175,7 +198,8 @@ class ChatTuiApp(App[None]):
                 # 保留损坏文件，只允许用户通过 /clear 显式删除。
                 self._history_error = exc.user_message
                 chat_session = ChatSession(
-                    store,
+                    session_store,
+                    provider=restored_provider,
                     system_prompt=system_prompt,
                     registry=workspace_registry,
                     execution_snapshot_provider=(
@@ -247,6 +271,8 @@ class ChatTuiApp(App[None]):
         elif not self.runtime_info.api_key_configured:
             self.run_status = RunStatus.ERROR
             self._write_message("Error", "Upstream API key is not configured")
+        if self._model_selection_warning is not None:
+            self._write_message("System", self._model_selection_warning)
         if self._history_error is not None:
             self.run_status = RunStatus.ERROR
             self._write_message("Error", self._history_error)
@@ -547,6 +573,57 @@ class ChatTuiApp(App[None]):
                 "已切换模型："
                 f"{provider_display_name(provider.name)} · {provider.model}"
             ),
+        )
+        if self._model_selection_store is not None:
+            try:
+                self._model_selection_store.save(
+                    ModelSelection(provider.name, provider.model)
+                )
+            except ModelSelectionStoreError:
+                self._write_message(
+                    "System",
+                    "模型已切换，但无法保存启动选择。",
+                )
+
+    def _load_saved_model_provider(self) -> LlmProvider | None:
+        """恢复仍在启动候选中且密钥可用的模型，否则安全降级。"""
+
+        if self._model_selection_store is None:
+            return None
+        try:
+            selection = self._model_selection_store.load()
+        except ModelSelectionStoreError:
+            self._warn_model_selection_fallback()
+            return None
+        if selection is None:
+            return None
+        option = next(
+            (
+                candidate
+                for candidate in self._model_options
+                if (candidate.provider, candidate.model)
+                == (selection.provider, selection.model)
+            ),
+            None,
+        )
+        if option is None or not option.api_key_configured:
+            self._warn_model_selection_fallback()
+            return None
+        try:
+            provider = create_provider_for_model(option.provider, option.model)
+        except (LlmProviderError, ValueError):
+            self._warn_model_selection_fallback()
+            return None
+        if not provider.api_key_configured:
+            self._warn_model_selection_fallback()
+            return None
+        return provider
+
+    def _warn_model_selection_fallback(self) -> None:
+        """记录一次非阻断、无本地细节的启动降级提示。"""
+
+        self._model_selection_warning = (
+            "已忽略无法恢复的模型选择，当前使用环境默认模型。"
         )
 
     def on_text_area_changed(self, event: TextArea.Changed) -> None:

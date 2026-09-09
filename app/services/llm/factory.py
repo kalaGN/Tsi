@@ -104,7 +104,7 @@ def create_provider_for_model(
 
     values = os.environ if environ is None else environ
     normalized_provider = provider.strip().lower() if isinstance(provider, str) else ""
-    normalized_model = _validated_model_name(model)
+    normalized_model = validate_model_name(model)
     if normalized_provider not in {"aliyun", "deepseek"}:
         raise ProviderConfigurationError("Unsupported LLM provider configuration")
     if normalized_model is None:
@@ -129,7 +129,7 @@ def _model_candidates(
 
     required: list[str] = []
     for value in (_model_or_default(configured_model, default_model), default_model):
-        normalized = _validated_model_name(value)
+        normalized = validate_model_name(value)
         if normalized is not None and normalized not in required:
             required.append(normalized)
 
@@ -140,7 +140,7 @@ def _model_candidates(
         and len(configured_list) <= MAX_MODEL_LIST_CHARACTERS
     ):
         for value in configured_list.split(","):
-            normalized = _validated_model_name(value)
+            normalized = validate_model_name(value)
             if normalized is None or normalized in candidates:
                 continue
             if len(candidates) >= available_slots:
@@ -158,7 +158,7 @@ def _model_or_default(value: str | None, default: str) -> str:
     return value.strip()
 
 
-def _validated_model_name(value: object) -> str | None:
+def validate_model_name(value: object) -> str | None:
     """拒绝可能污染终端或破坏列表格式的模型名称。"""
 
     if not isinstance(value, str):

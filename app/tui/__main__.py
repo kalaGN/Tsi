@@ -6,6 +6,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 from app.observability.model_logging import configure_model_logging
+from app.runtime.model_selection_store import ModelSelectionStore
 from app.runtime.system_prompt import (
     SystemPromptLoadError,
     compose_system_prompt,
@@ -25,6 +26,7 @@ def _create_app(
     skills_count: int,
     skills_error: str | None,
     skill_runtime: SkillRuntime | None = None,
+    model_selection_store: ModelSelectionStore | None = None,
 ):
     """延迟导入 Textual，确保终端兼容配置先于框架初始化生效。"""
 
@@ -38,6 +40,7 @@ def _create_app(
         skills_count=skills_count,
         skills_error=skills_error,
         skill_runtime=skill_runtime,
+        model_selection_store=model_selection_store,
     )
 
 
@@ -93,6 +96,7 @@ def main() -> None:
         skills_count=skills_count,
         skills_error=skills_error,
         skill_runtime=skill_runtime,
+        model_selection_store=ModelSelectionStore(),
     ).run()
 
 

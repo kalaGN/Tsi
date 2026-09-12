@@ -18,6 +18,14 @@ from app.services.llm.contracts import (
     TextResetHandler,
     TokenUsage,
 )
+from app.runtime.trace import (
+    ModelStepCompletedTraceEvent,
+    ToolApprovalCompletedTraceEvent,
+    ToolCallCompletedTraceEvent,
+    ToolCallStartedTraceEvent,
+    TraceObserver,
+    emit_trace,
+)
 from tools.contracts import (
     ToolApprovalRequest,
     ToolApprovalHandler,
@@ -68,6 +76,7 @@ async def run_tool_loop(
     on_tool_result: ToolResultHandler | None = None,
     limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
     clock: Callable[[], float] = time.monotonic,
+    trace_observer: TraceObserver | None = None,
 ) -> ToolLoopResult:
     """串行执行模型要求的白名单工具，直到得到最终文本或触达上限。"""
 
@@ -97,6 +106,16 @@ async def run_tool_loop(
             diff_chars=diff_chars,
             duration_ms=duration_ms,
         )
+        emit_trace(
+            trace_observer,
+            ToolApprovalCompletedTraceEvent(
+                request_id,
+                request.call_id,
+                request.tool_name,
+                approved is True,
+                duration_ms,
+            ),
+        )
         return approved
 
     execution_context = ToolExecutionContext(
@@ -108,7 +127,23 @@ async def run_tool_loop(
     usage_complete = True
     for step_number in range(1, limits.max_model_steps + 1):
         definitions_before = registry.definitions
+        model_started_at = clock() if trace_observer is not None else None
         step = await turn.next(results, on_text_delta=on_text_delta)
+        if model_started_at is not None:
+            model_duration_ms = round((clock() - model_started_at) * 1000, 2)
+            emit_trace(
+                trace_observer,
+                ModelStepCompletedTraceEvent(
+                    request_id,
+                    step_number,
+                    model_duration_ms,
+                    step.upstream_status,
+                    len(step.output_text or ""),
+                    tuple(call.name for call in step.tool_calls),
+                    tuple(definition.name for definition in definitions_before),
+                    step.token_usage,
+                ),
+            )
         if step.token_usage is None:
             usage_complete = False
         else:
@@ -146,6 +181,16 @@ async def run_tool_loop(
         current_results: list[ToolResult] = []
         visible_names = {definition.name for definition in definitions_before}
         for call in step.tool_calls:
+            emit_trace(
+                trace_observer,
+                ToolCallStartedTraceEvent(
+                    request_id,
+                    step_number,
+                    call.call_id,
+                    call.name,
+                    call.arguments_json,
+                ),
+            )
             log_model_tool_call(
                 request_id=request_id,
                 call_id=call.call_id,
@@ -171,6 +216,18 @@ async def run_tool_loop(
                 duration_ms=duration_ms,
                 output_chars=len(result.output),
                 output_text=result.output,
+            )
+            emit_trace(
+                trace_observer,
+                ToolCallCompletedTraceEvent(
+                    request_id,
+                    step_number,
+                    call.call_id,
+                    call.name,
+                    "error" if result.is_error else "success",
+                    duration_ms,
+                    result.output,
+                ),
             )
             if on_tool_result is not None:
                 on_tool_result(call, result)

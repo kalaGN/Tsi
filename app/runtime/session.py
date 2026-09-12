@@ -24,6 +24,7 @@ from app.runtime.memory import (
 from app.runtime.session_store import SessionStore, SessionStoreError
 from app.runtime.system_prompt import compose_system_prompt
 from app.runtime.tool_loop import DEFAULT_TOOL_LOOP_LIMITS, ToolLoopLimits
+from app.runtime.trace import TraceObserver
 from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
@@ -149,6 +150,7 @@ class ChatSession:
         on_text_reset: TextResetHandler | None = None,
         on_tool_approval: ToolApprovalHandler | None = None,
         on_tool_result: ToolResultHandler | None = None,
+        trace_observer: TraceObserver | None = None,
     ) -> ChatResult:
         """流式执行一轮，并只在完整成功后提交磁盘与内存历史。"""
 
@@ -207,6 +209,7 @@ class ChatSession:
                 on_tool_approval=on_tool_approval,
                 on_tool_result=on_tool_result,
                 tool_loop_limits=self._tool_loop_limits,
+                trace_observer=trace_observer,
             )
             if self._summary_attempted:
                 aggregate_usage = (

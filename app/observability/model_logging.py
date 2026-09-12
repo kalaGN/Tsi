@@ -14,6 +14,8 @@ from zoneinfo import ZoneInfo
 
 
 LOGGER_NAME = "app.model_calls"
+# 模块被脚本直接复用且入口尚未配置日志时，避免 ERROR 触发 logging.lastResort 污染终端。
+logging.getLogger(LOGGER_NAME).addHandler(logging.NullHandler())
 MAX_LOG_BYTES = 10 * 1024 * 1024
 BACKUP_COUNT = 5
 LOG_ROOT = Path(__file__).resolve().parents[2] / "logs"

@@ -1,0 +1,28 @@
+{
+  "version": 1,
+  "source": "20260911-205402-core-replay-scripted-v1-97a2117f.json",
+  "mode": "replay",
+  "provider": "replay",
+  "model": "scripted-v1",
+  "score": 100.0,
+  "pass_rate": 100.0,
+  "fingerprint": {
+    "agents_sha256": "121d4ac4cb22c0cfadb6481adcb7c14877988773250640a6ff3a54fa20693933",
+    "git_dirty": true,
+    "git_head": "f4d7e37ab8ef00a5d58083e6a3e459db90dd62a6",
+    "policy_sha256": "2be9f85d38c430b684a3ea2227871c37ac3d3e8739e693862cd95b8f8b3f07a0",
+    "skills_sha256": "c060e82913047f51901debb38228027093cb6f2f88058714a24c3caa353b2a6f",
+    "tools_sha256": "ff6e7251237e323a4f42e9104c31330323e0f77dd87192f2d7aec5e7b6f5f51a"
+  },
+  "cases": [
+    {"case_id": "direct-answer", "tags": ["basic"], "passed": true},
+    {"case_id": "readonly-tool", "tags": ["tools", "readonly"], "passed": true},
+    {"case_id": "write-approved", "tags": ["tools", "write", "safety"], "passed": true},
+    {"case_id": "write-denied", "tags": ["tools", "write", "safety"], "passed": true},
+    {"case_id": "tool-error-recovery", "tags": ["tools", "recovery"], "passed": true},
+    {"case_id": "tool-loop-limit", "tags": ["tools", "safety"], "passed": true},
+    {"case_id": "on-demand-tools", "tags": ["tools", "disclosure"], "passed": true},
+    {"case_id": "explicit-skill", "tags": ["skills"], "passed": true},
+    {"case_id": "memory-context", "tags": ["memory"], "passed": true}
+  ]
+}

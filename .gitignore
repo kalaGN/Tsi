@@ -7,3 +7,4 @@ env/
 .env
 logs/
 data/
+evals/reports/

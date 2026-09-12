@@ -4,6 +4,7 @@
 
 ## Documents
 
+- [Agent 评测系统设计](20260911-Agent评测系统-设计.md)：复用真实 ChatSession 与 Tool Loop，以 Runtime Trace、回放 Provider、临时工作区、确定性评分、报告、基线和可选 Judge 构成本地评测闭环；已完成。
 - [TUI 应用职责收敛设计](20260909-TUI应用职责收敛-设计.md)：通过扁平的 bootstrap、请求协调器和 Runtime 模型选择用例收敛 `ChatTuiApp` 职责；已完成。
 - [TUI 模型选择持久化设计](20260909-TUI模型选择持久化-设计.md)：独立保存最近模型选择，并在 TUI 生产装配路径中安全恢复与降级；已完成。
 - [TUI 单文件删除工具设计](20260909-TUI单文件删除工具-设计.md)：复用 Workspace Policy、审批 fingerprint 和三态 Journal，设计单文件删除及撤销恢复；已完成。

@@ -16,6 +16,13 @@ from app.runtime.tool_loop import (
     ToolLoopLimits,
     run_tool_loop,
 )
+from app.runtime.trace import (
+    RequestCompletedTraceEvent,
+    RequestFailedTraceEvent,
+    RequestStartedTraceEvent,
+    TraceObserver,
+    emit_trace,
+)
 from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
@@ -109,6 +116,7 @@ async def run_chat(
     on_tool_approval: ToolApprovalHandler | None = None,
     on_tool_result: ToolResultHandler | None = None,
     tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
+    trace_observer: TraceObserver | None = None,
 ) -> ChatResult:
     """校验输入、调用所选 Provider，并统一外部异常语义。"""
 
@@ -127,6 +135,7 @@ async def run_chat(
         on_tool_approval=on_tool_approval,
         on_tool_result=on_tool_result,
         tool_loop_limits=tool_loop_limits,
+        trace_observer=trace_observer,
     )
 
 
@@ -141,6 +150,7 @@ async def run_chat_messages(
     on_tool_approval: ToolApprovalHandler | None = None,
     on_tool_result: ToolResultHandler | None = None,
     tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
+    trace_observer: TraceObserver | None = None,
 ) -> ChatResult:
     """调用有序对话，可选 system 不改变当前 user 输入日志。"""
 
@@ -165,6 +175,15 @@ async def run_chat_messages(
             input_chars=len(current_input),
             input_text=current_input,
         )
+        emit_trace(
+            trace_observer,
+            RequestStartedTraceEvent(
+                request_id,
+                provider_name,
+                model,
+                tuple(provider_messages),
+            ),
+        )
         turn = active_provider.create_turn(
             provider_messages,
             active_registry.definitions,
@@ -179,6 +198,7 @@ async def run_chat_messages(
             on_tool_approval=on_tool_approval,
             on_tool_result=on_tool_result,
             limits=tool_loop_limits,
+            trace_observer=trace_observer,
         )
         output_text = loop_result.output_text
         log_model_response(
@@ -187,6 +207,14 @@ async def run_chat_messages(
             model=model,
             output_chars=len(output_text),
             output_text=output_text,
+        )
+        emit_trace(
+            trace_observer,
+            RequestCompletedTraceEvent(
+                request_id,
+                output_text,
+                loop_result.token_usage,
+            ),
         )
     except ToolLoopLimitError as exc:
         runtime_error = ChatRuntimeError(
@@ -204,6 +232,14 @@ async def run_chat_messages(
             raw_response=None,
             raw_response_truncated=False,
         )
+        emit_trace(
+            trace_observer,
+            RequestFailedTraceEvent(
+                request_id,
+                runtime_error.code.value,
+                runtime_error.user_message,
+            ),
+        )
         raise runtime_error from exc
     except LlmProviderError as exc:
         runtime_error = _runtime_error(exc)
@@ -219,6 +255,14 @@ async def run_chat_messages(
                 user_message=runtime_error.user_message,
                 raw_response=exc.raw_response,
                 raw_response_truncated=exc.raw_response_truncated,
+            )
+            emit_trace(
+                trace_observer,
+                RequestFailedTraceEvent(
+                    request_id,
+                    runtime_error.code.value,
+                    runtime_error.user_message,
+                ),
             )
         raise runtime_error from exc
 

@@ -36,12 +36,14 @@ Tsi 助手用于学习和验证 FastAPI、Textual、外部模型流式接口与�
 - `app/routers/chat.py`：`POST /chat` 请求与统一响应。
 - `app/runtime/chat.py`：HTTP/TUI 共享用例、结果和错误语义。
 - `app/runtime/tool_loop.py`：有界模型步骤和串行工具执行编排。
+- `app/runtime/trace.py`：供本地评测使用的可选结构化执行轨迹。
 - `app/runtime/skill_runtime.py`：TUI Skill Catalog 版本、安装器和请求级执行快照。
 - `app/services/llm/`：配置工厂、共享网络边界、阿里云与 DeepSeek Provider。
 - `tools/`：Provider 中立契约、静态/请求级分组 Registry、`get_current_time`、Workspace 策略、文件/Git 工具、固定项目检查以及 Skill 快照、安装和执行工具。
 - `app/tui/`：Textual 应用、状态和模块启动入口。
 - `tests/test_llm_providers.py`：Provider 协议与错误测试。
 - `tests/test_chat.py`、`tests/test_chat_runtime.py`、`tests/test_tui.py`：对应交互边界测试。
+- `app/evaluation/`、`evals/`、`tests/evaluation/`：本地 Agent 评测实现、版本化用例/基线和无网络自动化测试。
 
 ## 已确认命令
 
@@ -50,6 +52,8 @@ Tsi 助手用于学习和验证 FastAPI、Textual、外部模型流式接口与�
 .venv/bin/python -m pip install -r requirements.txt
 .venv/bin/python -m uvicorn main:app --reload --env-file .env
 .venv/bin/python -m app.tui
+.venv/bin/python -m app.evaluation run --suite evals/cases/core.jsonl
+.venv/bin/python -m app.evaluation compare --baseline evals/baselines/core.json --candidate <报告.json>
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 .venv/bin/python -m compileall -q main.py app tools tests
 .venv/bin/python -m pip check
@@ -79,13 +83,14 @@ git diff --check
 - TUI 支持逐次审批的指定文件 Stage、中文 Commit 和当前分支既有上游 Push。
 - request ID 关联的结构化模型、HTTP 和工具日志。
 - 完整上游请求日志包含实际 system 消息；HTTP `/chat` 不加载本地项目规则。
+- 默认无网络的 Agent 回放评测、显式真实模型评测、结构化轨迹、确定性评分、中文/JSON 报告、基线回归检测和可选独立 Judge。
 
 明确不支持：
 
 - HTML、远程图片、Mermaid、Markdown 代码执行、HTTP SSE、HTTP 请求级 Provider/模型选择、模型目录联网发现、多会话管理、向量记忆、任意 Shell、MCP、动态插件、多 Agent 和多模态。
 - 文件删除、移动、重命名、自动依赖安装、Git Tag/force push/设置上游/任意命令、Skill 覆盖/升级/卸载、手动目录监控和跨重启撤销。
 - 自动重试、降级、负载均衡、熔断、限流、用户认证授权和任务队列。
-- 容器、反向代理、进程管理、CI/CD、Trace、指标、告警、远程日志采集和正式健康检查。
+- 容器、反向代理、进程管理、CI/CD、分布式 Trace、指标、告警、远程日志采集和正式健康检查。
 
 ## 依赖变更
 

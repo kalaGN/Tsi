@@ -7,7 +7,7 @@
 ## Progressive Loading
 
 1. 每次任务先读根目录 `AGENTS.md`。
-2. 涉及代码或文档变更时读本索引和项目规则。
+2. 任务涉及本索引所列领域时，再读取对应项目规则。
 3. 再按任务加载相关 Spec、Knowledge、源文件和测试；不要一次加载全部历史文档。
 4. 外部 API 任务加载 `docs/knowledge/api-conventions.md` 和相关 Service；架构任务加载 `docs/knowledge/architecture.md`；排障任务加载 `docs/knowledge/troubleshooting.md`。
 
@@ -21,7 +21,7 @@
 4. 项目 Knowledge。
 5. 现有代码惯例。
 
-发现冲突时必须报告冲突文件、影响和可选方案，不得静默选择。源码与 Knowledge 冲突时先以可验证源码作为当前事实，并提出文档同步；源码与已确认 Spec 冲突时不得擅自改变任一方。
+冲突会改变范围、公开行为、安全或成本时，报告文件、影响和选项并等待确认；其他冲突按最小可逆方案继续并说明。源码与 Knowledge 冲突时以可验证源码作为当前事实并提出文档同步；源码与已确认 Spec 存在实质冲突时不得擅自改变任一方。
 
 ## Maintenance
 

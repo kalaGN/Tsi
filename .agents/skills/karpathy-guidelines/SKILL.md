@@ -1,67 +1,34 @@
 ---
 name: karpathy-guidelines
-description: Behavioral guidelines to reduce common LLM coding mistakes. Use when writing, reviewing, or refactoring code to avoid overcomplication, make surgical changes, surface assumptions, and define verifiable success criteria.
+description: Review a concrete code change for unnecessary complexity or unrelated edits. Use when simplifying, refactoring, or investigating overengineering.
 license: MIT
 ---
 
 # Karpathy Guidelines
 
-Behavioral guidelines to reduce common LLM coding mistakes, derived from [Andrej Karpathy's observations](https://x.com/karpathy/status/2015883857489522876) on LLM coding pitfalls.
+Use these checks on the concrete change in scope. Do not turn them into a mandatory workflow for unrelated tasks.
 
-**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
+## Think Before Coding
 
-## 1. Think Before Coding
+- State only assumptions that materially affect behavior.
+- Use repository precedent for safe, reversible choices.
+- Ask only when ambiguity changes scope, public behavior, safety, or cost.
+- Prefer the simplest approach that satisfies the request.
 
-**Don't assume. Don't hide confusion. Surface tradeoffs.**
+## Simplicity First
 
-Before implementing:
-- State your assumptions explicitly. If uncertain, ask.
-- If multiple interpretations exist, present them - don't pick silently.
-- If a simpler approach exists, say so. Push back when warranted.
-- If something is unclear, stop. Name what's confusing. Ask.
+- Do not add unrequested features, configurability, or speculative abstractions.
+- Avoid wrappers and error handling that do not protect a real boundary.
+- If a shorter design is equally clear and correct, use it.
 
-## 2. Simplicity First
+## Surgical Changes
 
-**Minimum code that solves the problem. Nothing speculative.**
+- Touch only lines that trace to the request.
+- Match existing style and avoid adjacent refactors.
+- Remove only dead code created by the current change; report pre-existing dead code instead of deleting it.
 
-- No features beyond what was asked.
-- No abstractions for single-use code.
-- No "flexibility" or "configurability" that wasn't requested.
-- No error handling for impossible scenarios.
-- If you write 200 lines and it could be 50, rewrite it.
+## Verification
 
-Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
-
-## 3. Surgical Changes
-
-**Touch only what you must. Clean up only your own mess.**
-
-When editing existing code:
-- Don't "improve" adjacent code, comments, or formatting.
-- Don't refactor things that aren't broken.
-- Match existing style, even if you'd do it differently.
-- If you notice unrelated dead code, mention it - don't delete it.
-
-When your changes create orphans:
-- Remove imports/variables/functions that YOUR changes made unused.
-- Don't remove pre-existing dead code unless asked.
-
-The test: Every changed line should trace directly to the user's request.
-
-## 4. Goal-Driven Execution
-
-**Define success criteria. Loop until verified.**
-
-Transform tasks into verifiable goals:
-- "Add validation" → "Write tests for invalid inputs, then make them pass"
-- "Fix the bug" → "Write a test that reproduces it, then make it pass"
-- "Refactor X" → "Ensure tests pass before and after"
-
-For multi-step tasks, state a brief plan:
-```
-1. [Step] → verify: [check]
-2. [Step] → verify: [check]
-3. [Step] → verify: [check]
-```
-
-Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+- Define observable success before editing.
+- During iteration, run the smallest relevant check.
+- Run the project's complete quality gate only when its rules require delivery-level verification.

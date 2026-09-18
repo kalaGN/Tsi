@@ -2,7 +2,7 @@
 
 ## 概览
 
-Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供聚合 JSON 的无状态 FastAPI HTTP 和支持流式展示、可恢复单会话及项目自修改的 Textual TUI。两个入口共享 Chat Runtime，但使用隔离的 Registry 和循环预算：HTTP 仅有只读时间工具，TUI 绑定启动目录并提供读取、审批编辑、受控单文件删除、固定检查和撤销工具。
+Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供聚合 JSON 的无状态 FastAPI HTTP、DSH 风格本机 Web UI，以及支持流式展示、可恢复单会话及项目自修改的 Textual TUI。三个入口共享 Chat Runtime，但使用隔离的会话与 Registry：HTTP 仅有只读时间工具，Web UI 持有独立会话和 Workspace 只读工具，TUI 绑定启动目录并提供读取、审批编辑、受控单文件删除、固定检查和撤销工具。
 
 ## 组件
 
@@ -14,6 +14,8 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `app/runtime/tool_loop.py`：默认/Workspace 循环预算、请求级审批上下文、串行工具编排、逐步骤 Token 聚合和结果观察回调。
 - `app/runtime/trace.py`：可选、Provider 中立的请求/模型步骤/工具/审批轨迹事件；无 Observer 时不改变 Runtime 行为。
 - `app/runtime/session.py`：串行化 TUI 发送，只提交 Provider 和持久化均成功的完整轮次。
+- `app/webui/service.py`：延迟装配 Web 独立 Session，把 Runtime 回调转换为有序 NDJSON 事件，并只注册只读 Workspace 工具。
+- `app/webui/router.py`、`static/`：本机访问控制、Web API 和无远程资源的响应式三栏页面。
 - `app/runtime/skill_runtime.py`：持有当前 Skill Catalog、共享 Workspace Journal 和安装器，在每次发送开始时生成不可变执行快照。
 - `app/runtime/model_selection.py`：持有有界模型候选快照，封装最近选择恢复、Provider 创建、Session 替换和成功后持久化。
 - `app/runtime/session_store.py`：版本化 JSON 会话校验、原子保存、恢复与清理。
@@ -76,6 +78,11 @@ main.py -> app.application -> app.routers.chat --------+
                                                                  \          /
                                                                   shared HTTP
 
+/ui -> app.webui.router -> WebUiService -> ChatSession -> app.runtime.chat
+             |               |
+             |               +-> data/web-session.json
+             +-> static UI + loopback-only API + readonly Workspace Policy
+
 python -m app.tui -> AGENTS + SkillRuntime -> app.tui.application
                               |       |
                               |       +-> install_skill -> next Catalog version
@@ -87,7 +94,7 @@ python -m app.evaluation -> isolated workspace -> ChatSession -> Runtime Trace
                               +-> replay/live Provider -> grader -> report
 ```
 
-- Router 和 TUI 只依赖 Runtime，不理解外部响应结构。
+- Router、Web UI 和 TUI 只依赖 Runtime，不理解外部响应结构。
 - Runtime 只依赖 Provider 契约、工厂和根目录工具契约，不导入具体 Provider 模块。
 - Tool Loop 只理解 ModelStep、ToolCall、ToolResult 和 Registry，不理解两家上游 JSON。
 - 根目录 `tools/` 不依赖 Runtime、Router、TUI 或具体 Provider。

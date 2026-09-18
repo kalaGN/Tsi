@@ -1,6 +1,6 @@
 # Tsi 助手
 
-Tsi 助手是一个轻量大模型调用项目，同时提供无状态 FastAPI HTTP 接口和可恢复上下文的 Textual TUI，支持阿里云 Responses API、DeepSeek Chat Completions API，以及带审批和撤销能力的本地项目工具。
+Tsi 助手是一个轻量大模型调用项目，同时提供无状态 FastAPI HTTP 接口、DSH 风格 Web UI 和可恢复上下文的 Textual TUI，支持阿里云 Responses API、DeepSeek Chat Completions API，以及受限的本地项目工具。
 
 ## 安装依赖
 
@@ -38,7 +38,7 @@ ALIYUN_MODELS=qwen3-max,qwen-plus
 
 ## 工具调用
 
-HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间工具；TUI 每轮首步只发送 `activate_tool_groups`，由模型按任务意图激活所需工具组，避免每个模型步骤重复携带完整工具 Schema。一次请求最多追加两次，可在一次激活中选择多个组；组状态不会跨请求保留。显式 `$技能名` 会预激活 `skills`，不消耗追加次数。创建、修改、撤销、安装或执行脚本的审批规则不因激活而改变。
+HTTP、Web UI 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间工具；Web UI 可按需激活时间和 Workspace 只读工具；TUI 每轮首步只发送 `activate_tool_groups`，由模型按任务意图激活所需工具组，避免每个模型步骤重复携带完整工具 Schema。一次请求最多追加两次，可在一次激活中选择多个组；组状态不会跨请求保留。显式 `$技能名` 会预激活 `skills`，不消耗追加次数。创建、修改、撤销、安装或执行脚本的审批规则不因激活而改变。
 
 | TUI 工具组 | 包含能力 |
 |---|---|
@@ -53,12 +53,12 @@ HTTP 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间�
 
 | 使用入口 | 工具 | 作用 | 执行方式 |
 | --- | --- | --- | --- |
-| HTTP、TUI | `get_current_time(timezone)` | 获取指定 IANA 时区（例如 `Asia/Shanghai`）的当前 ISO 8601 时间 | 自动执行 |
-| 仅 TUI | `list_workspace_files` | 分页列举允许读取的文件和目录 | 自动执行 |
-| 仅 TUI | `search_workspace_text` | 按字面量搜索 UTF-8 文本 | 自动执行 |
-| 仅 TUI | `read_workspace_file` | 按行读取文本并返回 SHA-256 | 自动执行 |
-| 仅 TUI | `get_workspace_git_status` | 查看 Git 状态 | 自动执行 |
-| 仅 TUI | `get_workspace_git_diff` | 查看分页 Diff | 自动执行 |
+| HTTP、Web UI、TUI | `get_current_time(timezone)` | 获取指定 IANA 时区（例如 `Asia/Shanghai`）的当前 ISO 8601 时间 | 自动执行 |
+| Web UI、TUI | `list_workspace_files` | 分页列举允许读取的文件和目录 | 自动执行 |
+| Web UI、TUI | `search_workspace_text` | 按字面量搜索 UTF-8 文本 | 自动执行 |
+| Web UI、TUI | `read_workspace_file` | 按行读取文本并返回 SHA-256 | 自动执行 |
+| Web UI、TUI | `get_workspace_git_status` | 查看 Git 状态 | 自动执行 |
+| Web UI、TUI | `get_workspace_git_diff` | 查看分页 Diff | 自动执行 |
 | 仅 TUI | `apply_workspace_edits` | 创建文件或执行带哈希前置条件的精确替换 | 本地审批后执行 |
 | 仅 TUI | `delete_workspace_file` | 删除一个带哈希前置条件的 UTF-8 文本文件 | 本地审批后执行，可在当前进程撤销 |
 | 仅 TUI | `run_project_check` | 运行 `compile`、`test_all`、`pip_check`、`diff_check` 四个固定检查 | 自动执行 |
@@ -156,6 +156,18 @@ TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统
 输入 `/` 会在输入框上方显示命令预览，继续输入 `/sk` 等前缀可过滤候选；在输入起点或空白后输入 `$` 会显示 Skill 候选。候选打开时，`↑/↓` 选择、`Tab` 或 `Enter` 补全，补全后再次 `Enter` 执行或发送；`Esc` 先关闭候选并保留输入。完整命令可直接回车执行，无匹配项时按普通输入处理。请求执行期间不显示候选。
 
 TUI 支持直接使用中文输入法。用户输入会用右对齐、按内容收缩的背景卡片区分，但仍逐字显示、不解析 Markdown；Assistant 生成中按纯文本增量显示，完成后按 Markdown 美化，系统提示和错误信息保持纯文本。最终消息、流式临时文本和审批 Diff 都可选择复制；对话记录额外支持双击复制单个渲染行。上下键通常用于输入历史，模型候选打开时改为移动候选，不承担多行输入的垂直光标移动；粘贴的多行文本仍可原样发送。`/help` 和 `/chat` 不是本地命令，会作为普通文本发送给模型。当前不支持 HTML、远程图片、Mermaid、HTTP SSE、多会话管理、历史搜索、向量记忆、任意命令工具或 HTTP 请求级模型切换。
+
+## 启动 Web UI
+
+Web UI 复用现有 FastAPI 服务。启动后访问 <http://127.0.0.1:8000/ui>：
+
+```bash
+.venv/bin/python -m uvicorn main:app --reload --env-file .env
+```
+
+页面采用 DSH 风格三栏布局，支持中文输入、流式回答、安全 Markdown、停止生成、模型切换、上下文/Token/耗时、浅色/深色主题，以及 Workspace 文件树和文本预览。当前只保存一个独立 Web 会话到 `data/web-session.json`，“新对话”会清空它；TUI 会话不受影响。
+
+Web UI 只允许本机 loopback 客户端访问。模型只能按需激活时间和 Workspace 只读工具，页面同样复用 Workspace Policy；当前不提供编辑、删除、Skill、Git 写或审批能力。左下角“设置”可调整主题、界面密度、发送快捷键和当前模型，其中界面偏好仅保存在当前浏览器，模型选择继续复用项目已有的持久化机制。静态页面不加载远程脚本、样式、图片或字体。
 
 ## 启动 HTTP 服务
 

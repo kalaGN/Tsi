@@ -2,14 +2,14 @@
 
 ## 目标
 
-Tsi 助手用于学习和验证 FastAPI、Textual、外部模型流式接口与受控 Function Calling。HTTP 提供聚合 JSON 的无状态文本调用和只读时间工具；本地全屏 TUI 提供流式展示、可恢复单会话、绑定启动目录的项目修改闭环，以及与 Codex 共用 `.agents/skills/` 的项目 Skill。
+Tsi 助手用于学习和验证 FastAPI、浏览器 UI、Textual、外部模型流式接口与受控 Function Calling。HTTP 提供聚合 JSON 的无状态文本调用；本机 Web UI 提供 DSH 风格三栏交互和 Workspace 只读能力；TUI 提供完整项目修改闭环和 Codex 兼容 Skill。
 
 ## 项目形态
 
-- 单 Git 仓库、单 Python 应用；HTTP 与 TUI 是两个独立入口。
-- HTTP 对外提供统一 JSON；TUI 只在本地终端运行。
+- 单 Git 仓库、单 Python 应用；HTTP、Web UI 与 TUI 是三个独立交互入口。
+- HTTP 对外提供统一 JSON；Web UI 仅允许本机访问；TUI 只在本地终端运行。
 - Textual Worker 只防止单次异步请求阻塞界面，不是后台任务系统。
-- 没有数据库、缓存、搜索、消息队列、多会话管理、微服务或定时任务；TUI 仅用本地 JSON 保存当前会话。
+- 没有数据库、缓存、搜索、消息队列、多会话管理、微服务或定时任务；Web UI 与 TUI 使用不同本地 JSON 保存各自当前会话。
 
 ## 技术栈
 
@@ -34,6 +34,7 @@ Tsi 助手用于学习和验证 FastAPI、Textual、外部模型流式接口与�
 - `main.py`：Uvicorn 兼容入口。
 - `app/application.py`：FastAPI 应用组装。
 - `app/routers/chat.py`：`POST /chat` 请求与统一响应。
+- `app/webui/`：仅限本机的响应式页面、流式 NDJSON 接口、独立会话和只读 Workspace 适配。
 - `app/runtime/chat.py`：HTTP/TUI 共享用例、结果和错误语义。
 - `app/runtime/tool_loop.py`：有界模型步骤和串行工具执行编排。
 - `app/runtime/trace.py`：供本地评测使用的可选结构化执行轨迹。
@@ -66,6 +67,7 @@ git diff --check
 
 - 严格非空的单轮文本输入。
 - HTTP 部署级选择 `aliyun` 或 `deepseek`；TUI 可通过 `/model` 在有界环境候选中切换 Provider 和模型，并在下次启动恢复最近一次成功选择。
+- Web UI 可在相同安全候选中切换模型，复用模型选择文件；会话独立保存到 `data/web-session.json`。
 - 两家上游均使用 SSE；HTTP 聚合后固定返回 `{"output_text": "..."}`，TUI 增量展示纯文本并在完成后用同一原文渲染 Assistant Markdown。
 - 中文输入、`Cmd+A` / `Ctrl+A` 全选输入、Esc 清空输入、耗时与 Token 单行统计、请求中动画与实时耗时、请求取消、`/clear`、`/memory`、`/model`、`/skills`、`/quit`、Enter 和双击 Esc。
 - TUI 启动目录直属 `AGENTS.md` 的 32 KiB UTF-8 有界读取，以及不持久化的 Provider 标准 system 消息。
@@ -79,6 +81,7 @@ git diff --check
 - 最终消息和流式临时文本支持鼠标选择，并通过 `Cmd+C` / `Ctrl+C` 复制渲染后的可见文字；对话记录还可双击立即复制当前渲染行。
 - 环境变量密钥、固定上游 URL、显式超时和脱敏错误分类。
 - HTTP 自动执行只读当前时间工具；TUI 先按模型意图激活固定工具组，再自动执行 Workspace/Skill 只读工具，审批每次写入、撤销、Skill 安装和 Skill 脚本。
+- Web UI 只允许模型激活时间与 Workspace 只读工具，并为页面文件树复用相同 Workspace Policy。
 - TUI 支持结构化 create/replace、哈希冲突保护、原子批次、固定项目检查和进程内 LIFO 撤销。
 - TUI 支持逐次审批的指定文件 Stage、中文 Commit 和当前分支既有上游 Push。
 - request ID 关联的结构化模型、HTTP 和工具日志。

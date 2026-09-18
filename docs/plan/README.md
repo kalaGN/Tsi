@@ -4,6 +4,7 @@
 
 ## Documents
 
+- [Web UI 与 macOS 桌面应用设计](20260918-mac桌面应用-设计.md)：第一阶段以 FastAPI、本机 Web UI、独立 Session 和只读工具复用 Runtime；Web 阶段已完成，WKWebView 壳待确认。
 - [Agent 评测系统设计](20260911-Agent评测系统-设计.md)：复用真实 ChatSession 与 Tool Loop，以 Runtime Trace、回放 Provider、临时工作区、确定性评分、报告、基线和可选 Judge 构成本地评测闭环；已完成。
 - [TUI 应用职责收敛设计](20260909-TUI应用职责收敛-设计.md)：通过扁平的 bootstrap、请求协调器和 Runtime 模型选择用例收敛 `ChatTuiApp` 职责；已完成。
 - [TUI 模型选择持久化设计](20260909-TUI模型选择持久化-设计.md)：独立保存最近模型选择，并在 TUI 生产装配路径中安全恢复与降级；已完成。

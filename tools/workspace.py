@@ -1184,6 +1184,43 @@ def create_intent_workspace_registry(
     )
 
 
+def create_readonly_intent_workspace_registry(policy: WorkspacePolicy):
+    """为无审批界面创建只暴露时间和 Workspace 读取能力的请求级 Registry。"""
+
+    from tools.builtin import GetCurrentTimeTool
+    from tools.groups import GroupedToolRegistry, ToolGroup, ToolGroupDefinition
+
+    tools = (
+        GetCurrentTimeTool(),
+        ListWorkspaceFilesTool(policy),
+        SearchWorkspaceTextTool(policy),
+        ReadWorkspaceFileTool(policy),
+        GetWorkspaceGitStatusTool(policy),
+        GetWorkspaceGitDiffTool(policy),
+    )
+    return GroupedToolRegistry(
+        tools,
+        (
+            ToolGroupDefinition(
+                ToolGroup.GENERAL,
+                "读取指定时区的当前时间",
+                ("get_current_time",),
+            ),
+            ToolGroupDefinition(
+                ToolGroup.WORKSPACE_READ,
+                "浏览、搜索、读取工作区并查看 Git 状态或差异",
+                (
+                    "list_workspace_files",
+                    "search_workspace_text",
+                    "read_workspace_file",
+                    "get_workspace_git_status",
+                    "get_workspace_git_diff",
+                ),
+            ),
+        ),
+    )
+
+
 def _create_workspace_tools(
     policy: WorkspacePolicy,
     journal: WorkspaceChangeJournal | None = None,

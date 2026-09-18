@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Tsi 助手</title>
+    <link rel="stylesheet" href="/ui/app.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" id="sidebar">
+        <div class="brand-row">
+          <div class="brand-mark">T</div>
+          <div>
+            <strong>Tsi 助手</strong>
+            <span>本地 Agent 工作台</span>
+          </div>
+          <button class="icon-button mobile-only" id="close-sidebar" aria-label="关闭侧栏">×</button>
+        </div>
+
+        <button class="new-chat" id="new-chat">
+          <span>＋</span>
+          新对话
+        </button>
+
+        <section class="nav-section">
+          <p class="section-label">工作区</p>
+          <div class="workspace-card">
+            <span class="workspace-icon">⌘</span>
+            <div>
+              <strong id="workspace-name">加载中</strong>
+              <span id="workspace-path"></span>
+            </div>
+          </div>
+        </section>
+
+        <section class="nav-section conversation-section">
+          <p class="section-label">会话</p>
+          <button class="conversation-item active">
+            <span class="status-dot"></span>
+            <span class="conversation-copy">
+              <strong>当前对话</strong>
+              <small id="conversation-preview">等待输入</small>
+            </span>
+          </button>
+        </section>
+
+        <div class="sidebar-footer">
+          <div class="capability-row"><span>AGENTS</span><strong id="agents-state">—</strong></div>
+          <div class="capability-row"><span>Workspace</span><strong>只读</strong></div>
+          <button class="quiet-button" id="open-settings">设置</button>
+        </div>
+      </aside>
+
+      <main class="conversation-pane">
+        <header class="topbar">
+          <button class="icon-button mobile-only" id="open-sidebar" aria-label="打开侧栏">☰</button>
+          <div class="session-heading">
+            <strong>当前对话</strong>
+            <span><i id="connection-dot"></i><span id="connection-text">正在连接</span></span>
+          </div>
+          <div class="topbar-actions">
+            <label class="model-select-wrap">
+              <span>模型</span>
+              <select id="model-select" aria-label="选择模型"></select>
+            </label>
+            <button class="icon-button" id="toggle-inspector" aria-label="切换右侧面板">◫</button>
+          </div>
+        </header>
+
+        <section class="messages" id="messages" aria-live="polite">
+          <div class="welcome" id="welcome">
+            <div class="welcome-mark">T</div>
+            <h1>今天想一起完成什么？</h1>
+            <p>我可以理解项目、读取文件、调用模型，并保持当前会话上下文。</p>
+            <div class="suggestions">
+              <button data-prompt="概括当前项目的架构和主要模块">概括项目架构</button>
+              <button data-prompt="检查当前工作区有哪些未提交修改">检查工作区状态</button>
+              <button data-prompt="阅读 AGENTS.md，并总结最重要的项目规则">总结项目规则</button>
+            </div>
+          </div>
+        </section>
+
+        <section class="composer-zone">
+          <div class="activity-strip" id="activity-strip" hidden>
+            <span class="spinner"></span>
+            <span id="activity-text">思考中</span>
+            <time id="elapsed-time">0.0s</time>
+          </div>
+          <div class="composer">
+            <textarea id="prompt" rows="1" placeholder="给 Tsi 助手发送消息" maxlength="65536"></textarea>
+            <div class="composer-footer">
+              <span id="send-hint">Enter 发送 · Shift+Enter 换行</span>
+              <button class="send-button" id="send" aria-label="发送">↑</button>
+              <button class="stop-button" id="stop" aria-label="停止" hidden>■</button>
+            </div>
+          </div>
+          <div class="status-line">
+            <span id="usage-text">Token：—</span>
+            <span id="context-text">上下文 0%</span>
+          </div>
+        </section>
+      </main>
+
+      <aside class="inspector" id="inspector">
+        <div class="inspector-tabs" role="tablist">
+          <button class="active" data-tab="files">文件</button>
+          <button data-tab="activity">活动</button>
+        </div>
+        <section class="inspector-panel active" id="files-panel">
+          <div class="panel-toolbar">
+            <strong>工作区文件</strong>
+            <button class="icon-button" id="refresh-files" aria-label="刷新文件">↻</button>
+          </div>
+          <div class="file-list" id="file-list"></div>
+          <article class="file-preview" id="file-preview" hidden>
+            <header>
+              <strong id="preview-name"></strong>
+              <button class="icon-button" id="close-preview" aria-label="关闭预览">×</button>
+            </header>
+            <pre id="preview-content"></pre>
+          </article>
+        </section>
+        <section class="inspector-panel" id="activity-panel">
+          <div class="panel-toolbar"><strong>本轮活动</strong></div>
+          <div class="activity-list" id="activity-list">
+            <p class="empty-state">工具调用和请求状态会显示在这里。</p>
+          </div>
+        </section>
+      </aside>
+    </div>
+
+    <dialog class="settings-dialog" id="settings-dialog" aria-labelledby="settings-title">
+      <form method="dialog" class="settings-card">
+        <header class="settings-header">
+          <div>
+            <strong id="settings-title">设置</strong>
+            <span>界面与输入偏好保存在当前浏览器</span>
+          </div>
+          <button class="icon-button" value="cancel" aria-label="关闭设置">×</button>
+        </header>
+
+        <section class="settings-section">
+          <div class="setting-copy">
+            <strong>外观</strong>
+            <span>选择界面颜色与信息密度</span>
+          </div>
+          <label class="setting-control">
+            <span>主题</span>
+            <select id="theme-setting">
+              <option value="system">跟随系统</option>
+              <option value="light">浅色</option>
+              <option value="dark">深色</option>
+            </select>
+          </label>
+          <label class="setting-control">
+            <span>界面密度</span>
+            <select id="density-setting">
+              <option value="comfortable">舒适</option>
+              <option value="compact">紧凑</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="settings-section">
+          <div class="setting-copy">
+            <strong>输入</strong>
+            <span>选择文本框的发送快捷键</span>
+          </div>
+          <label class="setting-control">
+            <span>发送消息</span>
+            <select id="send-key-setting">
+              <option value="enter">Enter</option>
+              <option value="modifier-enter">⌘/Ctrl + Enter</option>
+            </select>
+          </label>
+        </section>
+
+        <section class="settings-section">
+          <div class="setting-copy">
+            <strong>模型</strong>
+            <span>与顶部模型选择器同步，切换后持久化到项目配置</span>
+          </div>
+          <label class="setting-control">
+            <span>当前模型</span>
+            <select id="settings-model-select" aria-label="设置当前模型"></select>
+          </label>
+        </section>
+
+        <footer class="settings-footer">
+          <button type="button" class="quiet-button" id="reset-settings">恢复默认</button>
+          <button class="primary-button" value="confirm">完成</button>
+        </footer>
+      </form>
+    </dialog>
+
+    <div class="toast" id="toast" role="status" hidden></div>
+    <script src="/ui/app.js" defer></script>
+  </body>
+</html>

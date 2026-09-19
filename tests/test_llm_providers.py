@@ -1881,7 +1881,7 @@ def test_post_json_logs_request_and_response_with_controllable_clock(
     assert request_event["url"] == DEEPSEEK_CHAT_COMPLETIONS_URL
     assert request_event["timeout"] == {
         "connect_seconds": 10.0,
-        "total_seconds": 60.0,
+        "total_seconds": 600.0,
     }
     assert request_event["headers"]["Authorization"] == "Bearer [REDACTED]"
 

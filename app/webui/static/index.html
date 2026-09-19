@@ -11,23 +11,25 @@
     <div class="app-shell">
       <aside class="sidebar" id="sidebar">
         <div class="brand-row">
-          <div class="brand-mark">T</div>
-          <div>
+          <div class="brand-lockup">
+            <div class="brand-mark">T</div>
             <strong>Tsi 助手</strong>
-            <span>本地 Agent 工作台</span>
           </div>
-          <button class="icon-button mobile-only" id="close-sidebar" aria-label="关闭侧栏">×</button>
+          <div class="brand-actions">
+            <button class="icon-button" id="new-chat" aria-label="新建会话" title="新建会话">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
+            </button>
+            <button class="icon-button mobile-only" id="close-sidebar" aria-label="关闭侧栏" title="关闭侧栏">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
+            </button>
+          </div>
         </div>
 
-        <button class="new-chat" id="new-chat">
-          <span>＋</span>
-          新对话
-        </button>
-
-        <section class="nav-section">
-          <p class="section-label">工作区</p>
-          <div class="workspace-card">
-            <span class="workspace-icon">⌘</span>
+        <section class="workspace-section">
+          <div class="workspace-card" title="当前工作区">
+            <span class="workspace-icon">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 7.5h7l2-2h9v13H3z" /></svg>
+            </span>
             <div>
               <strong id="workspace-name">加载中</strong>
               <span id="workspace-path"></span>
@@ -37,35 +39,36 @@
 
         <section class="nav-section conversation-section">
           <p class="section-label">会话</p>
-          <button class="conversation-item active">
-            <span class="status-dot"></span>
-            <span class="conversation-copy">
-              <strong>当前对话</strong>
-              <small id="conversation-preview">等待输入</small>
-            </span>
-          </button>
+          <div class="conversation-list" id="conversation-list"></div>
         </section>
 
         <div class="sidebar-footer">
-          <div class="capability-row"><span>AGENTS</span><strong id="agents-state">—</strong></div>
-          <div class="capability-row"><span>Workspace</span><strong>只读</strong></div>
-          <button class="quiet-button" id="open-settings">设置</button>
+          <div class="capability-row">
+            <span title="项目规则状态">AGENTS <strong id="agents-state">—</strong></span>
+            <span title="工作区权限" id="workspace-access">审批写入</span>
+          </div>
+          <button class="icon-button" id="open-settings" aria-label="打开设置" title="设置">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z" /><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.37a1.7 1.7 0 0 0-1 .63 1.7 1.7 0 0 0-.37 1.07V21h-4v-.08A1.7 1.7 0 0 0 8.6 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.23 15a1.7 1.7 0 0 0-.63-1 1.7 1.7 0 0 0-1.07-.37H2.5v-4h.08A1.7 1.7 0 0 0 4.1 8.6a1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 8.5 4.23a1.7 1.7 0 0 0 1-.63 1.7 1.7 0 0 0 .37-1.07V2.5h4v.08A1.7 1.7 0 0 0 14.9 4.1a1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06a1.7 1.7 0 0 0-.34 1.91 1.7 1.7 0 0 0 .63 1 1.7 1.7 0 0 0 1.07.37H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z" /></svg>
+          </button>
         </div>
       </aside>
 
       <main class="conversation-pane">
         <header class="topbar">
-          <button class="icon-button mobile-only" id="open-sidebar" aria-label="打开侧栏">☰</button>
+          <button class="icon-button mobile-only" id="open-sidebar" aria-label="打开侧栏" title="打开侧栏">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16" /></svg>
+          </button>
           <div class="session-heading">
-            <strong>当前对话</strong>
-            <span><i id="connection-dot"></i><span id="connection-text">正在连接</span></span>
+            <strong id="session-title">新对话</strong>
+            <span class="connection-status" title="正在连接"><i id="connection-dot"></i><span class="visually-hidden" id="connection-text">正在连接</span></span>
           </div>
           <div class="topbar-actions">
-            <label class="model-select-wrap">
-              <span>模型</span>
+            <label class="model-select-wrap" title="切换模型">
               <select id="model-select" aria-label="选择模型"></select>
             </label>
-            <button class="icon-button" id="toggle-inspector" aria-label="切换右侧面板">◫</button>
+            <button class="icon-button" id="toggle-inspector" aria-label="切换右侧面板" title="切换侧栏">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M15 4v16" /></svg>
+            </button>
           </div>
         </header>
 
@@ -73,7 +76,6 @@
           <div class="welcome" id="welcome">
             <div class="welcome-mark">T</div>
             <h1>今天想一起完成什么？</h1>
-            <p>我可以理解项目、读取文件、调用模型，并保持当前会话上下文。</p>
             <div class="suggestions">
               <button data-prompt="概括当前项目的架构和主要模块">概括项目架构</button>
               <button data-prompt="检查当前工作区有哪些未提交修改">检查工作区状态</button>
@@ -105,19 +107,27 @@
 
       <aside class="inspector" id="inspector">
         <div class="inspector-tabs" role="tablist">
-          <button class="active" data-tab="files">文件</button>
-          <button data-tab="activity">活动</button>
+          <button class="active" data-tab="files" aria-label="文件" title="文件">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M3 7.5h7l2-2h9v13H3z" /></svg>
+          </button>
+          <button data-tab="activity" aria-label="活动" title="活动">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 13h3l2-6 4 11 2-5h5" /></svg>
+          </button>
         </div>
         <section class="inspector-panel active" id="files-panel">
           <div class="panel-toolbar">
             <strong>工作区文件</strong>
-            <button class="icon-button" id="refresh-files" aria-label="刷新文件">↻</button>
+            <button class="icon-button" id="refresh-files" aria-label="刷新文件" title="刷新文件">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M20 6v5h-5M4 18v-5h5" /><path d="M18.5 9A7 7 0 0 0 6.2 6.2L4 8M5.5 15A7 7 0 0 0 17.8 17.8L20 16" /></svg>
+            </button>
           </div>
           <div class="file-list" id="file-list"></div>
           <article class="file-preview" id="file-preview" hidden>
             <header>
               <strong id="preview-name"></strong>
-              <button class="icon-button" id="close-preview" aria-label="关闭预览">×</button>
+              <button class="icon-button" id="close-preview" aria-label="关闭预览" title="关闭预览">
+                <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
+              </button>
             </header>
             <pre id="preview-content"></pre>
           </article>
@@ -125,7 +135,7 @@
         <section class="inspector-panel" id="activity-panel">
           <div class="panel-toolbar"><strong>本轮活动</strong></div>
           <div class="activity-list" id="activity-list">
-            <p class="empty-state">工具调用和请求状态会显示在这里。</p>
+            <p class="empty-state">暂无活动</p>
           </div>
         </section>
       </aside>
@@ -134,17 +144,15 @@
     <dialog class="settings-dialog" id="settings-dialog" aria-labelledby="settings-title">
       <form method="dialog" class="settings-card">
         <header class="settings-header">
-          <div>
-            <strong id="settings-title">设置</strong>
-            <span>界面与输入偏好保存在当前浏览器</span>
-          </div>
-          <button class="icon-button" value="cancel" aria-label="关闭设置">×</button>
+          <strong id="settings-title">设置</strong>
+          <button class="icon-button" value="cancel" aria-label="关闭设置" title="关闭">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
+          </button>
         </header>
 
         <section class="settings-section">
           <div class="setting-copy">
             <strong>外观</strong>
-            <span>选择界面颜色与信息密度</span>
           </div>
           <label class="setting-control">
             <span>主题</span>
@@ -166,7 +174,6 @@
         <section class="settings-section">
           <div class="setting-copy">
             <strong>输入</strong>
-            <span>选择文本框的发送快捷键</span>
           </div>
           <label class="setting-control">
             <span>发送消息</span>
@@ -180,7 +187,6 @@
         <section class="settings-section">
           <div class="setting-copy">
             <strong>模型</strong>
-            <span>与顶部模型选择器同步，切换后持久化到项目配置</span>
           </div>
           <label class="setting-control">
             <span>当前模型</span>
@@ -189,10 +195,34 @@
         </section>
 
         <footer class="settings-footer">
-          <button type="button" class="quiet-button" id="reset-settings">恢复默认</button>
-          <button class="primary-button" value="confirm">完成</button>
+          <button type="button" class="icon-button" id="reset-settings" aria-label="恢复默认设置" title="恢复默认">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4v6h6M5.5 15a7 7 0 1 0 .5-7.5L4 10" /></svg>
+          </button>
+          <button class="primary-button icon-button" value="confirm" aria-label="保存设置" title="完成">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg>
+          </button>
         </footer>
       </form>
+    </dialog>
+
+    <dialog class="approval-dialog" id="tool-approval-dialog" aria-labelledby="approval-title">
+      <section class="approval-card">
+        <header class="approval-header">
+          <div>
+            <strong id="approval-title">确认工作区修改</strong>
+            <span id="approval-tool"></span>
+          </div>
+        </header>
+        <div class="approval-targets">
+          <span>文件</span>
+          <p id="approval-paths"></p>
+        </div>
+        <pre id="approval-diff" tabindex="0"></pre>
+        <footer class="approval-actions">
+          <button type="button" class="secondary-button" id="reject-tool-change">拒绝</button>
+          <button type="button" class="primary-action-button" id="approve-tool-change">应用</button>
+        </footer>
+      </section>
     </dialog>
 
     <div class="toast" id="toast" role="status" hidden></div>

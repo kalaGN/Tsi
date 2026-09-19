@@ -38,9 +38,9 @@ ALIYUN_MODELS=qwen3-max,qwen-plus
 
 ## 工具调用
 
-HTTP、Web UI 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间工具；Web UI 可按需激活时间和 Workspace 只读工具；TUI 每轮首步只发送 `activate_tool_groups`，由模型按任务意图激活所需工具组，避免每个模型步骤重复携带完整工具 Schema。一次请求最多追加两次，可在一次激活中选择多个组；组状态不会跨请求保留。显式 `$技能名` 会预激活 `skills`，不消耗追加次数。创建、修改、撤销、安装或执行脚本的审批规则不因激活而改变。
+HTTP、Web UI 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间工具；Web UI 可按需激活时间和 Workspace 读写工具，但不包含 Git、Skill 或脚本；TUI 每轮首步只发送 `activate_tool_groups`，由模型按任务意图激活所需工具组，避免每个模型步骤重复携带完整工具 Schema。一次请求最多追加两次，可在一次激活中选择多个组；组状态不会跨请求保留。显式 `$技能名` 会预激活 `skills`，不消耗追加次数。创建、修改、撤销、安装或执行脚本的审批规则不因激活而改变。
 
-| TUI 工具组 | 包含能力 |
+| 工具组 | 包含能力 |
 |---|---|
 | `general` | 当前时间 |
 | `workspace_read` | 文件列举、搜索、读取及 Git 状态、Diff |
@@ -59,10 +59,10 @@ HTTP、Web UI 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只�
 | Web UI、TUI | `read_workspace_file` | 按行读取文本并返回 SHA-256 | 自动执行 |
 | Web UI、TUI | `get_workspace_git_status` | 查看 Git 状态 | 自动执行 |
 | Web UI、TUI | `get_workspace_git_diff` | 查看分页 Diff | 自动执行 |
-| 仅 TUI | `apply_workspace_edits` | 创建文件或执行带哈希前置条件的精确替换 | 本地审批后执行 |
-| 仅 TUI | `delete_workspace_file` | 删除一个带哈希前置条件的 UTF-8 文本文件 | 本地审批后执行，可在当前进程撤销 |
-| 仅 TUI | `run_project_check` | 运行 `compile`、`test_all`、`pip_check`、`diff_check` 四个固定检查 | 自动执行 |
-| 仅 TUI | `undo_workspace_change` | 撤销当前进程最近一次 Agent 修改 | 本地审批后执行 |
+| Web UI、TUI | `apply_workspace_edits` | 创建文件或执行带哈希前置条件的精确替换 | 本地审批后执行 |
+| Web UI、TUI | `delete_workspace_file` | 删除一个带哈希前置条件的 UTF-8 文本文件 | 本地审批后执行，可在当前请求撤销 |
+| Web UI、TUI | `run_project_check` | 运行 `compile`、`test_all`、`pip_check`、`diff_check` 四个固定检查 | 自动执行 |
+| Web UI、TUI | `undo_workspace_change` | 撤销当前请求最近一次 Agent 修改 | 本地审批后执行 |
 | 仅 TUI | `install_skill` | 从公开 GitHub Skill 目录或当前用户 `~/.codex/skills` 直属目录安装 Skill | 每次本地审批后安装，下一次请求生效 |
 | 仅 TUI | `load_skill` | 按名称读取完整 `SKILL.md` 和资源清单 | 自动执行 |
 | 仅 TUI | `read_skill_resource` | 读取 Skill 快照中的 UTF-8 文本资源 | 自动执行 |
@@ -71,16 +71,16 @@ HTTP、Web UI 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只�
 | 仅 TUI | `git_commit` | 以 `type: 中文描述` 提交当前暂存内容 | 每次本地审批后执行 |
 | 仅 TUI | `git_push` | 非强制推送当前分支到既有上游 | 每次本地审批后执行并访问网络 |
 
-典型流程为：模型先列举、搜索、读取和检查现有差异，再提出结构化修改或单文件删除；TUI 显示相对路径和完整有界 Diff，默认焦点为拒绝。确认后模型可运行检查并继续修正。每个写入、删除和撤销都独立审批；Journal 最多保存 10 个批次且只存在当前 TUI 进程，重启后不能撤销旧批次。
+典型流程为：模型先列举、搜索、读取和检查现有差异，再提出结构化修改或单文件删除；Web UI/TUI 显示相对路径和完整有界 Diff，默认焦点为拒绝。确认后模型可运行检查并继续修正。每个写入、删除和撤销都独立审批；Web Journal 只存在单次请求，TUI Journal 最多保存 10 个批次且只存在当前进程，重启后不能撤销旧批次。
 
 安全和成本边界：
 
 - 工具只能从根目录 `tools/` 显式注册；不提供模型自由拼接的 Shell/Python、动态 import、数据库或依赖安装。Git 只能通过三个固定结构化工具执行，不能传入任意命令或参数。
-- Workspace 固定为 TUI 启动目录；绝对路径、`..`、符号链接、二进制和保护路径会被拒绝。
+- Workspace 固定为 Web 服务或 TUI 的启动目录；绝对路径、`..`、符号链接、二进制和保护路径会被拒绝。
 - `.env*`、`.git/`、`.venv/`、`data/`、`logs/` 和缓存目录不可读写；`AGENTS.md`、Rules、依赖文件和 Workspace 安全实现额外禁止写入。
 - `apply_workspace_edits` 只支持创建已有目录下的 UTF-8 文件和精确替换，不支持删除、移动、重命名或创建目录。
 - `delete_workspace_file` 只接受一个现有 UTF-8 普通文本文件及 `read_workspace_file` 返回的当前 SHA-256；拒绝目录、链接、批量、保护路径、审批后变化和无审批删除，成功后可用 `change_id` 撤销。
-- HTTP 默认最多 5 个模型步骤、每步 4 次、总计 16 次工具调用；TUI 分别为 41、4、40，工具组激活也计入预算。
+- HTTP 默认最多 5 个模型步骤、每步 4 次、总计 16 次工具调用；Web UI/TUI 分别为 41、4、40，工具组激活也计入预算。
 - 普通参数最多 8 KiB，编辑参数最多 64 KiB，结果最多 32 KiB；多个调用串行执行。
 - Skill 脚本使用参数数组而非 Shell 拼接，`.py` 固定使用当前 Python，`.sh` 固定使用 `/bin/sh`；运行环境不继承 API Key 等宿主变量，30 秒超时，stdout/stderr 合计最多 32 KiB。
 - Skill 脚本没有文件系统或网络沙箱，能够读取工作区、修改文件及访问网络；审批界面会展示解释器、相对脚本、逐项转义参数和该风险，每次调用都重新确认。
@@ -155,7 +155,7 @@ TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统
 
 输入 `/` 会在输入框上方显示命令预览，继续输入 `/sk` 等前缀可过滤候选；在输入起点或空白后输入 `$` 会显示 Skill 候选。候选打开时，`↑/↓` 选择、`Tab` 或 `Enter` 补全，补全后再次 `Enter` 执行或发送；`Esc` 先关闭候选并保留输入。完整命令可直接回车执行，无匹配项时按普通输入处理。请求执行期间不显示候选。
 
-TUI 支持直接使用中文输入法。用户输入会用右对齐、按内容收缩的背景卡片区分，但仍逐字显示、不解析 Markdown；Assistant 生成中按纯文本增量显示，完成后按 Markdown 美化，系统提示和错误信息保持纯文本。最终消息、流式临时文本和审批 Diff 都可选择复制；对话记录额外支持双击复制单个渲染行。上下键通常用于输入历史，模型候选打开时改为移动候选，不承担多行输入的垂直光标移动；粘贴的多行文本仍可原样发送。`/help` 和 `/chat` 不是本地命令，会作为普通文本发送给模型。当前不支持 HTML、远程图片、Mermaid、HTTP SSE、多会话管理、历史搜索、向量记忆、任意命令工具或 HTTP 请求级模型切换。
+TUI 支持直接使用中文输入法。用户输入会用右对齐、按内容收缩的背景卡片区分，但仍逐字显示、不解析 Markdown；Assistant 生成中按纯文本增量显示，完成后按 Markdown 美化，系统提示和错误信息保持纯文本。最终消息、流式临时文本和审批 Diff 都可选择复制；对话记录额外支持双击复制单个渲染行。上下键通常用于输入历史，模型候选打开时改为移动候选，不承担多行输入的垂直光标移动；粘贴的多行文本仍可原样发送。`/help` 和 `/chat` 不是本地命令，会作为普通文本发送给模型。TUI 当前不支持 HTML、远程图片、Mermaid、多会话管理、历史搜索、向量记忆、任意命令工具或请求级模型切换。
 
 ## 启动 Web UI
 
@@ -165,9 +165,9 @@ Web UI 复用现有 FastAPI 服务。启动后访问 <http://127.0.0.1:8000/ui>�
 .venv/bin/python -m uvicorn main:app --reload --env-file .env
 ```
 
-页面采用 DSH 风格三栏布局，支持中文输入、流式回答、安全 Markdown、停止生成、模型切换、上下文/Token/耗时、浅色/深色主题，以及 Workspace 文件树和文本预览。当前只保存一个独立 Web 会话到 `data/web-session.json`，“新对话”会清空它；TUI 会话不受影响。
+页面采用精简的 DSH 风格三栏布局，功能性入口优先使用带悬停提示和无障碍名称的图标按钮；支持中文输入、流式回答、安全 Markdown、停止生成、模型切换、上下文/Token/耗时、浅色/深色主题，以及 Workspace 文件树和文本预览。窄屏默认收起左右面板，避免遮挡对话区。Web 会话独立保存在 `data/web-sessions/`，左栏可新建、切换、重命名、清空和删除会话；刷新或重启后恢复最后选择，旧 `data/web-session.json` 首次启动时迁移为“历史对话”。TUI 会话不受影响。
 
-Web UI 只允许本机 loopback 客户端访问。模型只能按需激活时间和 Workspace 只读工具，页面同样复用 Workspace Policy；当前不提供编辑、删除、Skill、Git 写或审批能力。左下角“设置”可调整主题、界面密度、发送快捷键和当前模型，其中界面偏好仅保存在当前浏览器，模型选择继续复用项目已有的持久化机制。静态页面不加载远程脚本、样式、图片或字体。
+Web UI 只允许本机 loopback 客户端访问。模型可按需激活时间及 Workspace 读写工具；读取和固定检查自动执行，创建、精确替换、单文件删除和撤销会展示完整有界 Diff，只有当前请求的逐次批准才能执行。取消、断流或请求结束会使待审批操作失效。Web 不提供 Skill、Git 写、脚本或任意命令能力。左下角“设置”可调整主题、界面密度、发送快捷键和当前模型，其中界面偏好仅保存在当前浏览器，模型选择继续复用项目已有的持久化机制。静态页面不加载远程脚本、样式、图片或字体。
 
 ## 启动 HTTP 服务
 
@@ -267,7 +267,7 @@ llm_request -> llm_http_request -> llm_http_response -> llm_token_usage -> llm_r
 如果上游没有返回 usage，则省略 `llm_token_usage`，其余成功事件不变。
 
 - `llm_request`：Runtime 视角的当前输入正文（仅最后一条 user 消息）。
-- `llm_http_request`：真实外部 HTTP 边界，记录实际 Provider URL、`POST`、脱敏 Header（`Authorization` 固定写为 `Bearer [REDACTED]`）、完整 JSON 请求体和 `connect_seconds=10 / total_seconds=60` 超时。完整请求体包含 DeepSeek 的 `messages` 或阿里云的 `input`，多轮历史以明文按上游顺序完整保留。
+- `llm_http_request`：真实外部 HTTP 边界，记录实际 Provider URL、`POST`、脱敏 Header（`Authorization` 固定写为 `Bearer [REDACTED]`）、完整 JSON 请求体和 `connect_seconds=10 / total_seconds=600` 超时。完整请求体包含 DeepSeek 的 `messages` 或阿里云的 `input`，多轮历史以明文按上游顺序完整保留。
 - `llm_http_response`：外部 HTTP 收到响应后立即记录，包含状态码（含非 2xx）、Content-Type 和单调时钟耗时 `duration_ms`，不记录原始响应体。
 - `llm_token_usage`：每个成功解析的模型步骤各记录一次，包含同一 request ID、从 1 开始的步骤编号，以及输入、输出和总 Token；工具循环会产生多条，日志不保存 Provider 私有 usage 对象。
 - `llm_response`：成功统一输出文本。

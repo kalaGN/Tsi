@@ -1,20 +1,24 @@
 import asyncio
+import json
 
 import httpx
+import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.runtime.chat import ChatRuntimeInfo
 from app.runtime.model_selection import ModelSelectionService
-from app.runtime.session import ChatSession
+from app.runtime.session import ChatExecutionSnapshot, ChatSession
 from app.runtime.session_store import SessionStore
 from app.services.llm.contracts import ModelStep, TokenUsage
 from app.webui.router import create_webui_router
-from app.webui.service import WebUiService
+from app.webui.approvals import WebApprovalConflict, WebApprovalNotFound
+from app.webui.service import WebUiBusyError, WebUiService
+from app.webui.sessions import WebSessionCatalog, WebSessionStoreError
 from tools.contracts import ToolCall
 from tools.workspace import (
     WorkspacePolicy,
-    create_readonly_intent_workspace_registry,
+    create_web_intent_workspace_registry,
 )
 
 
@@ -46,18 +50,88 @@ class WebTurn:
         )
 
 
-def create_service(tmp_path):
-    session = ChatSession(
-        SessionStore(tmp_path / "web-session.json"),
-        provider=WebProvider(),
-    )
+class WorkspaceWriteProvider:
+    name = "deepseek"
+    model = "test-model"
+    api_key_configured = True
+
+    def create_turn(self, messages, tools, *, request_id):
+        return WorkspaceWriteTurn()
+
+
+class WorkspaceWriteTurn:
+    def __init__(self):
+        self.step = 0
+        self.tools = ()
+
+    def replace_tools(self, tools):
+        self.tools = tuple(tools)
+
+    async def next(self, tool_results=(), *, on_text_delta=None):
+        self.step += 1
+        if self.step == 1:
+            return ModelStep(
+                200,
+                None,
+                (
+                    ToolCall(
+                        "activate-1",
+                        "activate_tool_groups",
+                        '{"groups":["workspace_write"]}',
+                    ),
+                ),
+                TokenUsage(4, 2, 6),
+            )
+        if self.step == 2:
+            return ModelStep(
+                200,
+                None,
+                (
+                    ToolCall(
+                        "edit-1",
+                        "apply_workspace_edits",
+                        json.dumps(
+                            {
+                                "edits": [
+                                    {
+                                        "mode": "create",
+                                        "path": "generated.txt",
+                                        "content": "由 Web 创建\n",
+                                    }
+                                ]
+                            },
+                            ensure_ascii=False,
+                        ),
+                    ),
+                ),
+                TokenUsage(4, 2, 6),
+            )
+        return ModelStep(200, "修改流程结束", (), TokenUsage(4, 2, 6))
+
+
+def create_service(tmp_path, provider=None):
+    catalog = WebSessionCatalog(tmp_path / "web-sessions")
+    active_provider = provider or WebProvider()
+    policy = WorkspacePolicy(tmp_path)
+
+    def session_factory(store):
+        return ChatSession.load(
+            store,
+            provider=active_provider,
+            execution_snapshot_provider=lambda _input: ChatExecutionSnapshot(
+                system_prompt=None,
+                registry=create_web_intent_workspace_registry(policy)
+            ),
+        )
+
     return WebUiService(
-        session,
+        catalog,
+        session_factory,
         ChatRuntimeInfo("deepseek", "test-model", True),
         (),
         ModelSelectionService(()),
         tmp_path,
-        WorkspacePolicy(tmp_path),
+        policy,
         context_window_tokens=1_000,
     )
 
@@ -73,7 +147,9 @@ def test_webui_bootstrap_is_provider_neutral_and_does_not_expose_secrets(tmp_pat
         "model": "test-model",
         "api_key_configured": True,
     }
-    assert payload["capabilities"]["workspace_write"] is False
+    assert payload["capabilities"]["workspace_write"] is True
+    assert len(payload["sessions"]) == 1
+    assert payload["current_session_id"] == payload["sessions"][0]["id"]
     assert "test-only-secret" not in str(payload)
     assert set(payload["runtime"]) == {
         "provider",
@@ -108,6 +184,60 @@ def test_webui_streams_deltas_and_commits_only_final_message(tmp_path):
     asyncio.run(scenario())
 
 
+def test_webui_sessions_keep_histories_isolated_and_restore_selection(tmp_path):
+    async def scenario():
+        service = create_service(tmp_path)
+        first_id = service.catalog.current.id
+        await _consume(service.stream_message("第一段对话"))
+
+        created = service.create_session()
+        second_id = created["current_session_id"]
+        await _consume(service.stream_message("第二段对话"))
+        first = service.select_session(first_id)
+
+        assert second_id != first_id
+        assert [item["content"] for item in first["messages"]] == [
+            "第一段对话",
+            "你好，Web UI",
+        ]
+        assert first["current_session"]["title"] == "第一段对话"
+        assert service.select_session(second_id)["messages"][0]["content"] == "第二段对话"
+
+    asyncio.run(scenario())
+
+
+def test_webui_can_rename_clear_and_delete_sessions(tmp_path):
+    service = create_service(tmp_path)
+    first_id = service.catalog.current.id
+    second_id = service.create_session()["current_session_id"]
+
+    renamed = service.rename_session(second_id, "  新标题  ")
+    cleared = service.clear()
+    deleted = service.delete_session(second_id)
+
+    assert renamed["current_session"]["title"] == "新标题"
+    assert cleared["messages"] == []
+    assert deleted["current_session_id"] == first_id
+    assert all(item["id"] != second_id for item in deleted["sessions"])
+
+
+def test_webui_rejects_session_changes_while_request_lock_is_held(tmp_path):
+    async def scenario():
+        service = create_service(tmp_path)
+        await service._request_lock.acquire()
+        try:
+            with pytest.raises(WebUiBusyError):
+                service.create_session()
+            with pytest.raises(WebUiBusyError):
+                service.select_session(service.catalog.current.id)
+            with pytest.raises(WebUiBusyError):
+                service.delete_session(service.catalog.current.id)
+        finally:
+            service._request_lock.release()
+
+    asyncio.run(scenario())
+
+
 def test_webui_file_browser_reuses_workspace_protection(tmp_path):
     async def scenario():
         (tmp_path / "README.md").write_text("项目说明\n", encoding="utf-8")
@@ -125,9 +255,9 @@ def test_webui_file_browser_reuses_workspace_protection(tmp_path):
     asyncio.run(scenario())
 
 
-def test_webui_registry_can_only_activate_readonly_tools(tmp_path):
+def test_webui_registry_can_activate_workspace_write_without_git(tmp_path):
     async def scenario():
-        registry = create_readonly_intent_workspace_registry(
+        registry = create_web_intent_workspace_registry(
             WorkspacePolicy(tmp_path)
         )
 
@@ -135,15 +265,72 @@ def test_webui_registry_can_only_activate_readonly_tools(tmp_path):
             "activate_tool_groups"
         ]
         result = await registry.execute(
-            ToolCall("call-1", "activate_tool_groups", '{"groups":["workspace_read"]}')
+            ToolCall("call-1", "activate_tool_groups", '{"groups":["workspace_write"]}')
         )
 
         assert result.is_error is False
         names = {item.name for item in registry.definitions}
         assert "read_workspace_file" in names
-        assert "apply_workspace_edits" not in names
-        assert "delete_workspace_file" not in names
+        assert "apply_workspace_edits" in names
+        assert "delete_workspace_file" in names
         assert "git_commit" not in names
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("approved, file_exists", ((True, True), (False, False)))
+def test_webui_workspace_write_waits_for_explicit_approval(
+    tmp_path,
+    approved,
+    file_exists,
+):
+    async def scenario():
+        service = create_service(tmp_path, WorkspaceWriteProvider())
+        stream = service.stream_message("创建 generated.txt")
+        events = []
+
+        async for event in stream:
+            events.append(event)
+            if event["type"] == "tool_approval_required":
+                assert not (tmp_path / "generated.txt").exists()
+                assert event["tool"] == "apply_workspace_edits"
+                assert event["paths"] == ["generated.txt"]
+                assert "由 Web 创建" in event["diff"]
+                service.resolve_tool_approval(
+                    event["approval_id"],
+                    event["request_id"],
+                    approved,
+                )
+
+        assert (tmp_path / "generated.txt").exists() is file_exists
+        assert events[-1]["type"] == "completed"
+        assert "fingerprint" not in str(events)
+
+    asyncio.run(scenario())
+
+
+def test_webui_cancel_invalidates_pending_workspace_approval(tmp_path):
+    async def scenario():
+        service = create_service(tmp_path, WorkspaceWriteProvider())
+        stream = service.stream_message("创建 generated.txt")
+        approval = None
+        events = []
+
+        async for event in stream:
+            events.append(event)
+            if event["type"] == "tool_approval_required":
+                approval = event
+                assert service.cancel_current() is True
+
+        assert approval is not None
+        assert events[-1]["type"] == "cancelled"
+        assert not (tmp_path / "generated.txt").exists()
+        with pytest.raises(WebApprovalNotFound):
+            service.resolve_tool_approval(
+                approval["approval_id"],
+                approval["request_id"],
+                True,
+            )
 
     asyncio.run(scenario())
 
@@ -165,6 +352,28 @@ def test_webui_router_serves_local_page_bootstrap_and_ndjson(tmp_path):
     assert '"type": "completed"' in response.text
 
 
+def test_webui_router_exposes_session_lifecycle(tmp_path):
+    application = FastAPI()
+    application.include_router(create_webui_router(create_service(tmp_path)))
+    client = TestClient(application)
+
+    created = client.post("/ui/api/sessions").json()
+    session_id = created["current_session_id"]
+    renamed = client.patch(
+        f"/ui/api/sessions/{session_id}",
+        json={"title": "会话名称"},
+    )
+    selected = client.post(f"/ui/api/sessions/{session_id}/select")
+    deleted = client.delete(f"/ui/api/sessions/{session_id}")
+    missing = client.post(f"/ui/api/sessions/{session_id}/select")
+
+    assert renamed.status_code == 200
+    assert renamed.json()["current_session"]["title"] == "会话名称"
+    assert selected.status_code == 200
+    assert deleted.status_code == 200
+    assert missing.status_code == 404
+
+
 def test_webui_static_assets_do_not_load_remote_scripts_or_styles(tmp_path):
     application = FastAPI()
     application.include_router(create_webui_router(create_service(tmp_path)))
@@ -179,7 +388,7 @@ def test_webui_static_assets_do_not_load_remote_scripts_or_styles(tmp_path):
     assert "eval(" not in javascript
 
 
-def test_webui_settings_are_local_and_do_not_add_a_write_api(tmp_path):
+def test_webui_settings_and_workspace_approval_contract_are_present(tmp_path):
     application = FastAPI()
     application.include_router(create_webui_router(create_service(tmp_path)))
     client = TestClient(application)
@@ -191,9 +400,75 @@ def test_webui_settings_are_local_and_do_not_add_a_write_api(tmp_path):
     assert 'id="theme-setting"' in html
     assert 'id="density-setting"' in html
     assert 'id="send-key-setting"' in html
+    assert 'id="conversation-list"' in html
+    assert 'id="tool-approval-dialog"' in html
+    assert 'id="approval-diff"' in html
+    assert 'id="session-title"' in html
+    assert 'aria-label="新建会话"' in html
+    assert 'aria-label="打开设置"' in html
+    assert 'data-tab="files" aria-label="文件"' in html
     assert "tsi-web-preferences" in javascript
+    assert "createIcon" in javascript
+    assert 'matchMedia("(max-width: 1040px)")' in javascript
+    assert 'api("/sessions"' in javascript
+    assert 'method: "DELETE"' in javascript
+    assert "tool_approval_required" in javascript
+    assert "/tool-approvals/" in javascript
     assert '/settings' not in javascript
     assert client.post("/ui/api/settings", json={}).status_code == 404
+
+
+def test_webui_tool_approval_route_maps_success_and_safe_failures(
+    tmp_path,
+    monkeypatch,
+):
+    service = create_service(tmp_path)
+    application = FastAPI()
+    application.include_router(create_webui_router(service))
+    client = TestClient(application)
+
+    monkeypatch.setattr(
+        service,
+        "resolve_tool_approval",
+        lambda approval_id, request_id, approved: {"accepted": approved},
+    )
+    accepted = client.post(
+        "/ui/api/tool-approvals/approval-1",
+        json={"request_id": "request-1", "approved": True},
+    )
+    invalid = client.post(
+        "/ui/api/tool-approvals/approval-1",
+        json={"request_id": "request-1", "approved": "true"},
+    )
+    blank = client.post(
+        "/ui/api/tool-approvals/approval-1",
+        json={"request_id": " ", "approved": True},
+    )
+
+    def missing(*args):
+        raise WebApprovalNotFound()
+
+    monkeypatch.setattr(service, "resolve_tool_approval", missing)
+    expired = client.post(
+        "/ui/api/tool-approvals/approval-1",
+        json={"request_id": "request-1", "approved": False},
+    )
+
+    def conflict(*args):
+        raise WebApprovalConflict()
+
+    monkeypatch.setattr(service, "resolve_tool_approval", conflict)
+    mismatched = client.post(
+        "/ui/api/tool-approvals/approval-1",
+        json={"request_id": "request-2", "approved": False},
+    )
+
+    assert accepted.status_code == 200
+    assert accepted.json() == {"accepted": True}
+    assert invalid.status_code == 422
+    assert blank.status_code == 422
+    assert expired.status_code == 404
+    assert mismatched.status_code == 409
 
 
 def test_webui_rejects_non_loopback_clients(tmp_path):
@@ -207,9 +482,14 @@ def test_webui_rejects_non_loopback_clients(tmp_path):
         ) as client:
             page = await client.get("/ui")
             bootstrap = await client.get("/ui/api/bootstrap")
+            approval = await client.post(
+                "/ui/api/tool-approvals/approval-1",
+                json={"request_id": "request-1", "approved": True},
+            )
 
         assert page.status_code == 403
         assert bootstrap.status_code == 403
+        assert approval.status_code == 403
 
     asyncio.run(scenario())
 
@@ -230,3 +510,28 @@ def test_webui_unknown_runtime_failure_ends_stream_safely(tmp_path, monkeypatch)
         assert "private failure" not in str(events)
 
     asyncio.run(scenario())
+
+
+def test_webui_metadata_failure_still_completes_stream(tmp_path, monkeypatch):
+    async def scenario():
+        service = create_service(tmp_path)
+
+        def fail_touch(*args, **kwargs):
+            raise WebSessionStoreError("private failure details")
+
+        monkeypatch.setattr(service.catalog, "touch", fail_touch)
+        events = [event async for event in service.stream_message("你好")]
+
+        assert events[-1]["type"] == "completed"
+        assert events[-1]["warning"] == "消息已保存，但会话列表更新失败。"
+        assert [message.content for message in service.session.messages] == [
+            "你好",
+            "你好，Web UI",
+        ]
+        assert "private failure" not in str(events)
+
+    asyncio.run(scenario())
+
+
+async def _consume(stream):
+    return [event async for event in stream]

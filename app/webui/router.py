@@ -8,11 +8,13 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel, StrictStr, validator
+from pydantic import BaseModel, StrictBool, StrictStr, validator
 
 from app.runtime.chat import ChatRuntimeError
 from app.runtime.model_selection import ModelSelectionError
+from app.webui.approvals import WebApprovalConflict, WebApprovalNotFound
 from app.webui.service import WebUiBusyError, WebUiService
+from app.webui.sessions import WebSessionNotFound, WebSessionStoreError
 from tools import ToolArgumentError
 
 
@@ -36,6 +38,28 @@ class ModelSelectionRequest(BaseModel):
     model: StrictStr
 
 
+class SessionRenameRequest(BaseModel):
+    title: StrictStr
+
+    @validator("title")
+    def title_must_be_valid(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized or len(normalized) > 80:
+            raise ValueError("title length is invalid")
+        return normalized
+
+
+class ToolApprovalDecisionRequest(BaseModel):
+    request_id: StrictStr
+    approved: StrictBool
+
+    @validator("request_id")
+    def request_id_must_be_valid(cls, value: str) -> str:
+        if not value.strip() or len(value) > 128:
+            raise ValueError("request id is invalid")
+        return value
+
+
 def create_webui_router(service: WebUiService | None = None) -> APIRouter:
     """创建 Web Router；生产 Service 延迟到首次 API 请求再装配。"""
 
@@ -47,7 +71,12 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
         if resolved_service is None:
             try:
                 resolved_service = WebUiService.production()
-            except (OSError, ValueError, ChatRuntimeError) as exc:
+            except (
+                OSError,
+                ValueError,
+                ChatRuntimeError,
+                WebSessionStoreError,
+            ) as exc:
                 raise HTTPException(
                     status_code=503,
                     detail="Web UI 启动配置不可用。",
@@ -103,14 +132,58 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
         _require_loopback(request)
         return {"cancelled": current_service().cancel_current()}
 
+    @router.post("/ui/api/tool-approvals/{approval_id}")
+    async def resolve_tool_approval(
+        request: Request,
+        approval_id: str,
+        payload: ToolApprovalDecisionRequest,
+    ):
+        _require_loopback(request)
+        if not approval_id.strip() or len(approval_id) > 128:
+            raise HTTPException(status_code=422, detail="审批参数无效。")
+        try:
+            return current_service().resolve_tool_approval(
+                approval_id,
+                payload.request_id,
+                payload.approved,
+            )
+        except WebApprovalNotFound as exc:
+            raise HTTPException(status_code=404, detail="审批已失效。") from exc
+        except WebApprovalConflict as exc:
+            raise HTTPException(status_code=409, detail="审批与当前请求不匹配。") from exc
+
     @router.post("/ui/api/clear")
     async def clear(request: Request):
         _require_loopback(request)
-        try:
-            current_service().clear()
-        except (WebUiBusyError, ChatRuntimeError) as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return {"cleared": True, "context_percent": 0.0}
+        return _run_session_action(current_service().clear)
+
+    @router.post("/ui/api/sessions")
+    async def create_session(request: Request):
+        _require_loopback(request)
+        return _run_session_action(current_service().create_session)
+
+    @router.post("/ui/api/sessions/{session_id}/select")
+    async def select_session(request: Request, session_id: str):
+        _require_loopback(request)
+        return _run_session_action(current_service().select_session, session_id)
+
+    @router.patch("/ui/api/sessions/{session_id}")
+    async def rename_session(
+        request: Request,
+        session_id: str,
+        payload: SessionRenameRequest,
+    ):
+        _require_loopback(request)
+        return _run_session_action(
+            current_service().rename_session,
+            session_id,
+            payload.title,
+        )
+
+    @router.delete("/ui/api/sessions/{session_id}")
+    async def delete_session(request: Request, session_id: str):
+        _require_loopback(request)
+        return _run_session_action(current_service().delete_session, session_id)
 
     @router.post("/ui/api/model")
     async def select_model(request: Request, payload: ModelSelectionRequest):
@@ -153,3 +226,18 @@ def _require_loopback(request: Request) -> None:
         is_loopback = False
     if not is_loopback:
         raise HTTPException(status_code=403, detail="Web UI 仅允许本机访问。")
+
+
+def _run_session_action(action, *args):
+    """把内部会话异常映射为稳定且不泄露路径的 HTTP 错误。"""
+
+    try:
+        return action(*args)
+    except WebUiBusyError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except WebSessionNotFound as exc:
+        raise HTTPException(status_code=404, detail="会话不存在。") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="会话参数无效。") from exc
+    except (WebSessionStoreError, ChatRuntimeError) as exc:
+        raise HTTPException(status_code=503, detail="会话存储不可用。") from exc

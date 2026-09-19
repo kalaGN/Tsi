@@ -127,6 +127,7 @@ def test_switch_replaces_session_before_saving_and_returns_runtime_info():
         ("save", "aliyun", "qwen3-max"),
     ]
     assert result.runtime_info == ChatRuntimeInfo("aliyun", "qwen3-max", True)
+    assert result.provider is provider
     assert result.warning is None
 
 

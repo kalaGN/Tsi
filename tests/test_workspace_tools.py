@@ -22,6 +22,7 @@ from tools.workspace import (
     WorkspaceChangeJournal,
     WorkspacePolicy,
     create_intent_workspace_registry,
+    create_web_intent_workspace_registry,
     create_workspace_registry,
 )
 from tools import project_checks
@@ -123,6 +124,37 @@ def test_intent_workspace_write_group_contains_read_and_write_tools(tmp_path):
         "run_project_check",
         "undo_workspace_change",
     )
+
+
+def test_web_workspace_registry_exposes_write_group_without_git_or_skills(tmp_path):
+    registry = create_web_intent_workspace_registry(WorkspacePolicy(tmp_path))
+
+    assert tuple(item.name for item in registry.definitions) == (
+        "activate_tool_groups",
+    )
+    assert [group.group.value for group in registry.group_definitions] == [
+        "general",
+        "workspace_read",
+        "workspace_write",
+    ]
+
+    result = asyncio.run(
+        registry.execute(
+            ToolCall(
+                "activate",
+                "activate_tool_groups",
+                '{"groups":["workspace_write"]}',
+            )
+        )
+    )
+
+    assert result.is_error is False
+    names = {item.name for item in registry.definitions}
+    assert "apply_workspace_edits" in names
+    assert "delete_workspace_file" in names
+    assert "git_commit" not in names
+    assert "load_skill" not in names
+    assert "install_skill" not in names
 
 
 def test_policy_rejects_escape_symlink_and_protected_paths(tmp_path):

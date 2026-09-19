@@ -39,6 +39,7 @@ class ModelSwitchResult:
     """成功切换后的安全运行快照与可选持久化提示。"""
 
     runtime_info: ChatRuntimeInfo
+    provider: LlmProvider
     warning: str | None = None
 
 
@@ -126,6 +127,7 @@ class ModelSelectionService:
                 model=provider.model,
                 api_key_configured=provider.api_key_configured,
             ),
+            provider,
             warning,
         )
 

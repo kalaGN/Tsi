@@ -1114,6 +1114,43 @@ def create_intent_workspace_registry(
 ):
     """创建 TUI 请求级工具组 Registry，首步仅披露激活元工具。"""
 
+    return _create_grouped_workspace_registry(
+        policy,
+        journal=journal,
+        skill_catalog=skill_catalog,
+        install_skill_tool=install_skill_tool,
+        include_git_write=True,
+        preactivated_groups=preactivated_groups,
+    )
+
+
+def create_web_intent_workspace_registry(
+    policy: WorkspacePolicy,
+    journal: WorkspaceChangeJournal | None = None,
+    *,
+    preactivated_groups=(),
+):
+    """创建只含工作区读写能力的 Web 请求级 Registry。"""
+
+    return _create_grouped_workspace_registry(
+        policy,
+        journal=journal,
+        include_git_write=False,
+        preactivated_groups=preactivated_groups,
+    )
+
+
+def _create_grouped_workspace_registry(
+    policy: WorkspacePolicy,
+    journal: WorkspaceChangeJournal | None = None,
+    skill_catalog: "SkillCatalog | None" = None,
+    install_skill_tool: "InstallSkillTool | None" = None,
+    *,
+    include_git_write: bool,
+    preactivated_groups=(),
+):
+    """按宿主允许的能力构造渐进披露 Registry。"""
+
     from tools.groups import GroupedToolRegistry, ToolGroup, ToolGroupDefinition
 
     tools = _create_workspace_tools(
@@ -1121,7 +1158,7 @@ def create_intent_workspace_registry(
         journal=journal,
         skill_catalog=skill_catalog,
         install_skill_tool=install_skill_tool,
-        include_git_write=True,
+        include_git_write=include_git_write,
     )
     names = {tool.definition.name for tool in tools}
     read_names = (
@@ -1170,13 +1207,14 @@ def create_intent_workspace_registry(
                 ("install_skill",),
             )
         )
-    groups.append(
-        ToolGroupDefinition(
-            ToolGroup.GIT_WRITE,
-            "经逐次审批暂存文件、创建中文提交并推送既有上游",
-            ("git_stage", "git_commit", "git_push"),
+    if include_git_write:
+        groups.append(
+            ToolGroupDefinition(
+                ToolGroup.GIT_WRITE,
+                "经逐次审批暂存文件、创建中文提交并推送既有上游",
+                ("git_stage", "git_commit", "git_push"),
+            )
         )
-    )
     return GroupedToolRegistry(
         tools,
         groups,

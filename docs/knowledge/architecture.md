@@ -2,7 +2,7 @@
 
 ## 概览
 
-Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供聚合 JSON 的无状态 FastAPI HTTP、DSH 风格本机 Web UI，以及支持流式展示、可恢复单会话及项目自修改的 Textual TUI。三个入口共享 Chat Runtime，但使用隔离的会话与 Registry：HTTP 仅有只读时间工具，Web UI 持有独立会话和 Workspace 只读工具，TUI 绑定启动目录并提供读取、审批编辑、受控单文件删除、固定检查和撤销工具。
+Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供聚合 JSON 的无状态 FastAPI HTTP、持久化多会话的 DSH 风格本机 Web UI，以及支持流式展示、可恢复单会话及项目自修改的 Textual TUI。三个入口共享 Chat Runtime，但使用隔离的会话与 Registry：HTTP 仅有只读时间工具；Web UI 持有独立会话、Workspace 读写工具和请求级审批；TUI 进一步提供 Skill、安装、脚本和 Git 写工具。
 
 ## 组件
 
@@ -14,7 +14,9 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `app/runtime/tool_loop.py`：默认/Workspace 循环预算、请求级审批上下文、串行工具编排、逐步骤 Token 聚合和结果观察回调。
 - `app/runtime/trace.py`：可选、Provider 中立的请求/模型步骤/工具/审批轨迹事件；无 Observer 时不改变 Runtime 行为。
 - `app/runtime/session.py`：串行化 TUI 发送，只提交 Provider 和持久化均成功的完整轮次。
-- `app/webui/service.py`：延迟装配 Web 独立 Session，把 Runtime 回调转换为有序 NDJSON 事件，并只注册只读 Workspace 工具。
+- `app/webui/sessions.py`：维护原子会话索引、独立 SessionStore、旧单会话迁移和安全 ID/标题边界。
+- `app/webui/service.py`：按 ID 延迟装配 Web Session，把 Runtime 与审批回调转换为有序 NDJSON 事件，并注册不含 Git/Skill/脚本的 Workspace 工具。
+- `app/webui/approvals.py`：把当前请求唯一的文件审批预览桥接为一次性异步决定，负责请求绑定与取消失效。
 - `app/webui/router.py`、`static/`：本机访问控制、Web API 和无远程资源的响应式三栏页面。
 - `app/runtime/skill_runtime.py`：持有当前 Skill Catalog、共享 Workspace Journal 和安装器，在每次发送开始时生成不可变执行快照。
 - `app/runtime/model_selection.py`：持有有界模型候选快照，封装最近选择恢复、Provider 创建、Session 替换和成功后持久化。
@@ -80,8 +82,9 @@ main.py -> app.application -> app.routers.chat --------+
 
 /ui -> app.webui.router -> WebUiService -> ChatSession -> app.runtime.chat
              |               |
-             |               +-> data/web-session.json
-             +-> static UI + loopback-only API + readonly Workspace Policy
+             |               +-> WebSessionCatalog -> data/web-sessions/{index,sessions}
+             +-> static UI + loopback-only API + request-bound approval
+                             +-> Workspace Policy + read/write Registry
 
 python -m app.tui -> AGENTS + SkillRuntime -> app.tui.application
                               |       |
@@ -101,7 +104,7 @@ python -m app.evaluation -> isolated workspace -> ChatSession -> Runtime Trace
 - 工厂只解析配置和创建 Provider，不编排用例。
 - Provider 为每个用户请求创建短生命周期 Turn，持有私有续接消息，构造请求并提取中立步骤；共享 HTTP 层处理网络和通用状态错误。
 - Provider 层不依赖 Runtime、Router、TUI 或 Application。
-- HTTP/TUI 启动入口幂等配置日志；Runtime 记录请求、成功响应或最终失败，每个具有 usage 的模型步骤记录 `llm_token_usage`，HTTP 边界和本地工具分别记录对应事件，全链路共用同一 request ID。
+- HTTP/Web/TUI 启动入口幂等配置日志；Runtime 记录请求、成功响应或最终失败，每个具有 usage 的模型步骤记录 `llm_token_usage`，HTTP 边界和本地工具分别记录对应事件，全链路共用同一 request ID。
 - Evaluation 单向依赖 Runtime；Runtime 只认识可选 Trace Observer，不导入评分、报告或 CLI，也不通过解析生产日志构造评测结果。
 
 ## Agent 评测流程
@@ -207,16 +210,16 @@ TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默�
 
 ## 设计决策
 
-- HTTP 与 TUI 都只接触统一文本，原始 Provider JSON 只存在于 Provider 调用栈。
+- HTTP、Web 与 TUI 都只接触统一文本，原始 Provider JSON 只存在于 Provider 调用栈。
 - 所有请求统一通过 Provider Turn，不保留旧 `generate()` 或原始 ProviderResult 路径。
-- HTTP 默认 Registry 仅注册 `get_current_time(timezone)`；TUI 在请求级分组 Registry 中保存固定宿主 Catalog，初始只披露激活元工具，按意图追加六类固定工具组（含 `git_write`）。工具名只能来自显式白名单，不支持反射、动态 import、任意命令或 MCP。
-- HTTP 循环最多 5 步、每步 4 次、总计 16 次；TUI 最多 41 步、每步 4 次、总计 40 次，激活调用计入相同预算。普通参数/结果上限为 8/32 KiB，编辑参数为 64 KiB。
-- 写 Tool 必须先生成完整有界 Diff；Registry 没有审批回调、用户拒绝或内容并发变化时均不会执行。
+- HTTP 默认 Registry 仅注册 `get_current_time(timezone)`；Web 的请求级 Registry 只有 `general`、`workspace_read`、`workspace_write`；TUI 再增加 Skill、安装和 `git_write`。三者均使用显式白名单，不支持反射、动态 import、任意命令或 MCP。
+- HTTP 循环最多 5 步、每步 4 次、总计 16 次；Web/TUI 最多 41 步、每步 4 次、总计 40 次，激活调用计入相同预算。普通参数/结果上限为 8/32 KiB，编辑参数为 64 KiB。
+- 写 Tool 必须先生成完整有界 Diff；Registry 没有审批回调、用户拒绝或内容并发变化时均不会执行。Web 决策只接受当前请求的随机审批 ID，取消、断流和结束都会使其失效。
 - Workspace 拒绝越界、符号链接、保护路径、二进制和超限文件；编辑只支持 create/replace。唯一删除入口 `delete_workspace_file` 仅处理一个经当前哈希确认、逐次审批且可撤销的文本文件；固定检查不接受额外 argv、cwd 或环境。
 - 第 5 步仍请求工具时不执行无法被后续步骤消费的调用，Runtime 返回安全 `tool_limit`，HTTP 映射为 502。
 - `/chat` 请求不包含 Provider 或模型；切换由部署环境控制。
 - 使用现有异步 HTTPX，不引入 Provider SDK。
-- 保持连接 10 秒、从请求开始到流消费结束总计 60 秒超时；不实现自动重试或故障转移。
+- 保持连接 10 秒、从请求开始到流消费结束总计 10 分钟超时；不实现自动重试或故障转移。
 - SSE 按字节切分边界并严格解码 UTF-8；取消沿调用栈传播并由 HTTPX 上下文关闭响应流。
 - 每次调用创建并关闭 HTTP Client；当前没有性能基线，不增加应用级连接生命周期。
 - 上游错误体、Authorization、密钥和内部堆栈不进入 HTTP/TUI。

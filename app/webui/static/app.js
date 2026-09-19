@@ -6,6 +6,9 @@ const state = {
   timer: null,
   streamNode: null,
   models: [],
+  sessions: [],
+  currentSessionId: null,
+  pendingApproval: null,
   preferences: {
     theme: "system",
     density: "comfortable",
@@ -14,12 +17,22 @@ const state = {
 };
 
 const PREFERENCES_KEY = "tsi-web-preferences";
+const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+const ICON_PATHS = {
+  edit: ["M4 20h4l11-11-4-4L4 16z", "m13.5 6.5 4 4"],
+  clear: ["M4 4v6h6", "M5.5 15a7 7 0 1 0 .5-7.5L4 10"],
+  delete: ["M4 7h16", "M9 7V4h6v3", "m7 7-.5 6M12 10v10M8 10l.5 10", "M6 7l1 14h10l1-14"],
+};
 
 const $ = (selector) => document.querySelector(selector);
 const messages = $("#messages");
 const prompt = $("#prompt");
 const sendButton = $("#send");
 const stopButton = $("#stop");
+
+if (window.matchMedia("(max-width: 1040px)").matches) {
+  $(".app-shell").classList.add("inspector-closed");
+}
 
 function showToast(message) {
   const toast = $("#toast");
@@ -46,6 +59,7 @@ function setConnected(ok, text) {
   const dot = $("#connection-dot");
   dot.className = ok ? "connected" : "error";
   $("#connection-text").textContent = text;
+  dot.closest(".connection-status").title = text;
 }
 
 function autoSizeInput() {
@@ -85,9 +99,185 @@ function savePreference(name, value) {
   applyPreferences();
 }
 
+function formatSessionTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  }).format(date);
+}
+
+function createIcon(name) {
+  const svg = document.createElementNS(SVG_NAMESPACE, "svg");
+  svg.setAttribute("viewBox", "0 0 24 24");
+  svg.setAttribute("aria-hidden", "true");
+  for (const pathData of ICON_PATHS[name]) {
+    const path = document.createElementNS(SVG_NAMESPACE, "path");
+    path.setAttribute("d", pathData);
+    svg.append(path);
+  }
+  return svg;
+}
+
+function sessionAction(label, icon, action, { danger = false } = {}) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = `conversation-action${danger ? " danger" : ""}`;
+  button.setAttribute("aria-label", label);
+  button.title = label;
+  button.append(createIcon(icon));
+  button.disabled = state.busy;
+  button.addEventListener("click", (event) => {
+    event.stopPropagation();
+    action();
+  });
+  return button;
+}
+
+function renderSessions() {
+  const list = $("#conversation-list");
+  list.replaceChildren();
+  for (const item of state.sessions) {
+    const row = document.createElement("div");
+    row.className = `conversation-item${item.id === state.currentSessionId ? " active" : ""}`;
+
+    const select = document.createElement("button");
+    select.type = "button";
+    select.className = "conversation-select";
+    select.disabled = state.busy;
+    select.addEventListener("click", () => selectSession(item.id));
+    const dot = document.createElement("span");
+    dot.className = "status-dot";
+    const copy = document.createElement("span");
+    copy.className = "conversation-copy";
+    const title = document.createElement("strong");
+    title.textContent = item.title;
+    const updated = document.createElement("small");
+    updated.textContent = formatSessionTime(item.updated_at);
+    copy.append(title, updated);
+    select.append(dot, copy);
+
+    const actions = document.createElement("span");
+    actions.className = "conversation-actions";
+    actions.append(
+      sessionAction(`重命名 ${item.title}`, "edit", () => renameSession(item)),
+      sessionAction(`清空 ${item.title}`, "clear", () => clearSession(item)),
+      sessionAction(`删除 ${item.title}`, "delete", () => deleteSession(item), { danger: true }),
+    );
+    row.append(select, actions);
+    list.append(row);
+  }
+}
+
+function renderWelcome() {
+  const welcome = document.createElement("div");
+  welcome.className = "welcome";
+  welcome.id = "welcome";
+  const mark = document.createElement("div");
+  mark.className = "welcome-mark";
+  mark.textContent = "T";
+  const heading = document.createElement("h1");
+  heading.textContent = "今天想一起完成什么？";
+  const suggestions = document.createElement("div");
+  suggestions.className = "suggestions";
+  for (const [label, value] of [
+    ["概括项目架构", "概括当前项目的架构和主要模块"],
+    ["检查工作区状态", "检查当前工作区有哪些未提交修改"],
+    ["总结项目规则", "阅读 AGENTS.md，并总结最重要的项目规则"],
+  ]) {
+    const button = document.createElement("button");
+    button.textContent = label;
+    button.addEventListener("click", () => {
+      prompt.value = value;
+      autoSizeInput();
+      prompt.focus();
+    });
+    suggestions.append(button);
+  }
+  welcome.append(mark, heading, suggestions);
+  messages.append(welcome);
+}
+
+function applyConversation(data, { closeSidebar = true } = {}) {
+  state.sessions = data.sessions;
+  state.currentSessionId = data.current_session_id;
+  renderSessions();
+  $("#session-title").textContent = data.current_session.title;
+  $("#context-text").textContent = `上下文 ${data.context_percent}%`;
+  $("#usage-text").textContent = "Token：—";
+  $("#activity-list").replaceChildren();
+  const emptyActivity = document.createElement("p");
+  emptyActivity.className = "empty-state";
+  emptyActivity.textContent = "暂无活动";
+  $("#activity-list").append(emptyActivity);
+  messages.replaceChildren();
+  if (data.messages.length) {
+    for (const message of data.messages) addMessage(message.role, message.content);
+  } else {
+    renderWelcome();
+  }
+  if (closeSidebar) $(".app-shell").classList.remove("sidebar-open");
+}
+
+async function createSession() {
+  if (state.busy) return;
+  try {
+    const response = await api("/sessions", { method: "POST", body: "{}" });
+    applyConversation(await response.json());
+    prompt.focus();
+  } catch (error) { showToast(error.message); }
+}
+
+async function selectSession(sessionId) {
+  if (state.busy || sessionId === state.currentSessionId) return;
+  try {
+    const response = await api(`/sessions/${encodeURIComponent(sessionId)}/select`, { method: "POST", body: "{}" });
+    applyConversation(await response.json());
+    prompt.focus();
+  } catch (error) { showToast(error.message); }
+}
+
+async function renameSession(item) {
+  if (state.busy) return;
+  const title = window.prompt("输入新的会话名称", item.title);
+  if (title === null || !title.trim() || title.trim() === item.title) return;
+  try {
+    const response = await api(`/sessions/${encodeURIComponent(item.id)}`, {
+      method: "PATCH",
+      body: JSON.stringify({ title }),
+    });
+    applyConversation(await response.json(), { closeSidebar: false });
+  } catch (error) { showToast(error.message); }
+}
+
+async function clearSession(item) {
+  if (state.busy) return;
+  if (!window.confirm(`清空“${item.title}”的消息？`)) return;
+  if (item.id !== state.currentSessionId) await selectSession(item.id);
+  if (item.id !== state.currentSessionId) return;
+  try {
+    const response = await api("/clear", { method: "POST", body: "{}" });
+    applyConversation(await response.json(), { closeSidebar: false });
+  } catch (error) { showToast(error.message); }
+}
+
+async function deleteSession(item) {
+  if (state.busy || !window.confirm(`删除会话“${item.title}”？此操作不可撤销。`)) return;
+  try {
+    const response = await api(`/sessions/${encodeURIComponent(item.id)}`, { method: "DELETE" });
+    applyConversation(await response.json(), { closeSidebar: false });
+  } catch (error) { showToast(error.message); }
+}
+
 function setBusy(busy) {
   state.busy = busy;
   prompt.disabled = busy;
+  $("#new-chat").disabled = busy;
+  $("#model-select").disabled = busy;
+  $("#settings-model-select").disabled = busy;
   sendButton.hidden = busy;
   stopButton.hidden = !busy;
   $("#activity-strip").hidden = !busy;
@@ -100,6 +290,7 @@ function setBusy(busy) {
     window.clearInterval(state.timer);
     state.timer = null;
   }
+  renderSessions();
 }
 
 function scrollToBottom() {
@@ -193,6 +384,53 @@ function addActivity(title, status, detail = "") {
   list.prepend(card);
 }
 
+function closeToolApproval() {
+  state.pendingApproval = null;
+  const dialog = $("#tool-approval-dialog");
+  if (dialog.open) dialog.close();
+  $("#approve-tool-change").disabled = false;
+  $("#reject-tool-change").disabled = false;
+}
+
+function showToolApproval(event) {
+  closeToolApproval();
+  state.pendingApproval = {
+    approvalId: event.approval_id,
+    requestId: event.request_id,
+    submitting: false,
+  };
+  $("#approval-title").textContent = event.title || "确认工作区修改";
+  $("#approval-tool").textContent = event.tool;
+  $("#approval-paths").textContent = event.paths.join("\n");
+  $("#approval-diff").textContent = event.diff;
+  $("#tool-approval-dialog").showModal();
+  $("#reject-tool-change").focus();
+}
+
+async function submitToolApproval(approved) {
+  const pending = state.pendingApproval;
+  if (!pending || pending.submitting) return;
+  pending.submitting = true;
+  $("#approve-tool-change").disabled = true;
+  $("#reject-tool-change").disabled = true;
+  try {
+    await api(`/tool-approvals/${encodeURIComponent(pending.approvalId)}`, {
+      method: "POST",
+      body: JSON.stringify({
+        request_id: pending.requestId,
+        approved,
+      }),
+    });
+    closeToolApproval();
+    $("#activity-text").textContent = approved ? "正在应用修改" : "已拒绝修改";
+  } catch (error) {
+    pending.submitting = false;
+    $("#approve-tool-change").disabled = false;
+    $("#reject-tool-change").disabled = false;
+    showToast(error.message);
+  }
+}
+
 function finishStreamAsMarkdown(finalText) {
   if (!state.streamNode) return;
   state.streamNode.classList.remove("stream-caret");
@@ -204,7 +442,6 @@ async function sendMessage() {
   const input = prompt.value;
   if (state.busy || !input.trim()) return;
   addMessage("user", input);
-  $("#conversation-preview").textContent = input.trim().slice(0, 45);
   prompt.value = "";
   autoSizeInput();
   state.streamNode = addMessage("assistant", "", { streaming: true });
@@ -234,6 +471,7 @@ async function sendMessage() {
     state.streamNode = null;
     addActivity("模型请求", "失败", error.message);
   } finally {
+    closeToolApproval();
     setBusy(false);
     prompt.disabled = false;
     prompt.focus();
@@ -247,10 +485,16 @@ function handleEvent(event) {
   } else if (event.type === "text_reset" && state.streamNode) {
     state.streamNode.textContent = "";
     $("#activity-text").textContent = "正在调用工具";
+  } else if (event.type === "tool_approval_required") {
+    showToolApproval(event);
+    addActivity(event.tool, "等待批准", event.paths.join("、"));
+    $("#activity-text").textContent = "等待批准";
   } else if (event.type === "tool_finished") {
     addActivity(event.tool, event.status === "success" ? "已完成" : "失败");
     $("#activity-text").textContent = `工具：${event.tool}`;
+    if (event.status === "success" && ["apply_workspace_edits", "delete_workspace_file", "undo_workspace_change"].includes(event.tool)) loadFiles();
   } else if (event.type === "completed") {
+    closeToolApproval();
     finishStreamAsMarkdown(event.output_text);
     $("#elapsed-time").textContent = `${(event.elapsed_ms / 1000).toFixed(1)}s`;
     $("#context-text").textContent = `上下文 ${event.context_percent}%`;
@@ -258,12 +502,18 @@ function handleEvent(event) {
       ? `Token：${event.token_usage.input} + ${event.token_usage.output} = ${event.token_usage.total}`
       : "Token：不可用";
     addActivity("模型请求", "已完成", `${(event.elapsed_ms / 1000).toFixed(1)}s`);
+    state.sessions = event.sessions;
+    $("#session-title").textContent = event.session.title;
+    renderSessions();
+    if (event.warning) showToast(event.warning);
   } else if (event.type === "failed") {
+    closeToolApproval();
     state.streamNode?.closest(".message")?.remove();
     state.streamNode = null;
     addMessage("assistant", event.message || "请求失败", { error: true });
     addActivity("模型请求", "失败", event.message || "请求失败");
   } else if (event.type === "cancelled") {
+    closeToolApproval();
     state.streamNode?.closest(".message")?.remove();
     state.streamNode = null;
     addActivity("模型请求", "已取消");
@@ -352,10 +602,11 @@ async function bootstrap() {
     const data = await response.json();
     $("#workspace-name").textContent = data.workspace_name;
     $("#workspace-path").textContent = data.workspace_path;
+    $("#workspace-access").textContent = data.capabilities.workspace_write ? "审批写入" : "只读";
     $("#agents-state").textContent = data.startup_warning ? "警告" : data.system_prompt_loaded ? "已加载" : "无";
     $("#context-text").textContent = `上下文 ${data.context_percent}%`;
     populateModels(data.models, data.runtime);
-    for (const message of data.messages) addMessage(message.role, message.content);
+    applyConversation(data, { closeSidebar: false });
     setConnected(data.runtime.api_key_configured, data.runtime.api_key_configured ? "本地服务已连接" : "API Key 未配置");
     sendButton.disabled = !data.runtime.api_key_configured;
     if (data.startup_warning) showToast(data.startup_warning);
@@ -378,16 +629,18 @@ prompt.addEventListener("keydown", (event) => {
 });
 sendButton.addEventListener("click", sendMessage);
 stopButton.addEventListener("click", async () => {
-  try { await api("/cancel", { method: "POST", body: "{}" }); } catch (error) { showToast(error.message); }
-});
-$("#new-chat").addEventListener("click", async () => {
-  if (state.busy || !window.confirm("清空当前 Web 会话并开始新对话？")) return;
   try {
-    await api("/clear", { method: "POST", body: "{}" });
-    messages.replaceChildren();
-    window.location.reload();
+    await api("/cancel", { method: "POST", body: "{}" });
+    closeToolApproval();
   } catch (error) { showToast(error.message); }
 });
+$("#approve-tool-change").addEventListener("click", () => submitToolApproval(true));
+$("#reject-tool-change").addEventListener("click", () => submitToolApproval(false));
+$("#tool-approval-dialog").addEventListener("cancel", (event) => {
+  event.preventDefault();
+  submitToolApproval(false);
+});
+$("#new-chat").addEventListener("click", createSession);
 $("#model-select").addEventListener("change", selectModel);
 $("#settings-model-select").addEventListener("change", selectModel);
 $("#toggle-inspector").addEventListener("click", () => $(".app-shell").classList.toggle("inspector-closed"));
@@ -398,11 +651,6 @@ $("#close-preview").addEventListener("click", () => { $("#file-preview").hidden 
 document.querySelectorAll(".inspector-tabs button").forEach((button) => button.addEventListener("click", () => {
   document.querySelectorAll(".inspector-tabs button").forEach((item) => item.classList.toggle("active", item === button));
   document.querySelectorAll(".inspector-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `${button.dataset.tab}-panel`));
-}));
-document.querySelectorAll("[data-prompt]").forEach((button) => button.addEventListener("click", () => {
-  prompt.value = button.dataset.prompt;
-  autoSizeInput();
-  prompt.focus();
 }));
 $("#open-settings").addEventListener("click", () => $("#settings-dialog").showModal());
 $("#theme-setting").addEventListener("change", (event) => savePreference("theme", event.target.value));

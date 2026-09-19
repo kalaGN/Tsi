@@ -1,6 +1,6 @@
 # Tsi 助手
 
-Tsi 助手是一个轻量大模型调用项目，同时提供无状态 FastAPI HTTP 接口、DSH 风格 Web UI 和可恢复上下文的 Textual TUI，支持阿里云 Responses API、DeepSeek Chat Completions API，以及受限的本地项目工具。
+Tsi 助手是一个轻量大模型调用项目，同时提供 DSH 风格 Web UI 和可恢复上下文的 Textual TUI，支持阿里云 Responses API、DeepSeek Chat Completions API，以及受限的本地项目工具。
 
 ## 安装依赖
 
@@ -34,9 +34,9 @@ ALIYUN_MODEL=qwen3-max
 ALIYUN_MODELS=qwen3-max,qwen-plus
 ```
 
-`ALIYUN_MODEL`、`DEEPSEEK_MODEL` 是尚未保存 TUI 选择时的初始模型，空白或未设置时使用示例中的默认值。`ALIYUN_MODELS`、`DEEPSEEK_MODELS` 是 TUI `/model` 的可选候选，使用英文逗号分隔；示例只说明配置格式，不承诺对应模型在上游可用。Provider 只能为 `aliyun` 或 `deepseek`；显式空白或其他值会返回配置错误。TUI 每次成功切换后会记住供应商和模型，下次启动优先恢复；HTTP 始终忽略该本地选择并继续使用环境配置。
+`ALIYUN_MODEL`、`DEEPSEEK_MODEL` 是尚未保存 TUI 选择时的初始模型，空白或未设置时使用示例中的默认值。`ALIYUN_MODELS`、`DEEPSEEK_MODELS` 是 TUI `/model` 的可选候选，使用英文逗号分隔；示例只说明配置格式，不承诺对应模型在上游可用。Provider 只能为 `aliyun` 或 `deepseek`；显式空白或其他值会返回配置错误。TUI 每次成功切换后会记住供应商和模型，下次启动优先恢复；Web UI 复用同一持久化机制。
 
-HTTP 与 Web UI 的网络搜索使用固定 Serper.dev Google Search API；需要在 `.env` 增加：
+Web UI 的网络搜索使用固定 Serper.dev Google Search API；需要在 `.env` 增加：
 
 ```dotenv
 SERPER_API_KEY=replace-with-real-api-key
@@ -44,7 +44,7 @@ SERPER_API_KEY=replace-with-real-api-key
 
 ## 工具调用
 
-HTTP、Web UI 与 TUI 使用不同的显式工具白名单。HTTP 提供只读时间和受限网络搜索；Web UI 可按需激活时间、网络搜索和 Workspace 读写工具，但不包含 Git、Skill 或脚本；TUI 每轮首步只发送 `activate_tool_groups`，由模型按任务意图激活所需工具组，避免每个模型步骤重复携带完整工具 Schema。一次请求最多追加两次，可在一次激活中选择多个组；组状态不会跨请求保留。显式 `$技能名` 会预激活 `skills`，不消耗追加次数。创建、修改、撤销、安装或执行脚本的审批规则不因激活而改变。
+Web UI 与 TUI 使用不同的显式工具白名单。Web UI 可按需激活时间、网络搜索和 Workspace 读写工具，但不包含 Git、Skill 或脚本；TUI 每轮首步只发送 `activate_tool_groups`，由模型按任务意图激活所需工具组，避免每个模型步骤重复携带完整工具 Schema。一次请求最多追加两次，可在一次激活中选择多个组；组状态不会跨请求保留。显式 `$技能名` 会预激活 `skills`，不消耗追加次数。创建、修改、撤销、安装或执行脚本的审批规则不因激活而改变。
 
 | 工具组 | 包含能力 |
 |---|---|
@@ -60,8 +60,8 @@ HTTP、Web UI 与 TUI 使用不同的显式工具白名单。HTTP 提供只读�
 
 | 使用入口 | 工具 | 作用 | 执行方式 |
 | --- | --- | --- | --- |
-| HTTP、Web UI、TUI | `get_current_time(timezone)` | 获取指定 IANA 时区（例如 `Asia/Shanghai`）的当前 ISO 8601 时间 | 自动执行 |
-| HTTP、Web UI | `web_search(query, limit)` | 搜索公开网络并返回有界标题、HTTP(S) 链接和摘要 | 自动执行；需要 `SERPER_API_KEY` |
+| Web UI、TUI | `get_current_time(timezone)` | 获取指定 IANA 时区（例如 `Asia/Shanghai`）的当前 ISO 8601 时间 | 自动执行 |
+| Web UI | `web_search(query, limit)` | 搜索公开网络并返回有界标题、HTTP(S) 链接和摘要 | 自动执行；需要 `SERPER_API_KEY` |
 | Web UI、TUI | `list_workspace_files` | 分页列举允许读取的文件和目录 | 自动执行 |
 | Web UI、TUI | `search_workspace_text` | 按字面量搜索 UTF-8 文本 | 自动执行 |
 | Web UI、TUI | `read_workspace_file` | 按行读取文本并返回 SHA-256 | 自动执行 |
@@ -89,13 +89,13 @@ HTTP、Web UI 与 TUI 使用不同的显式工具白名单。HTTP 提供只读�
 - `.env*`、`.git/`、`.venv/`、`data/`、`logs/` 和缓存目录不可读写；`AGENTS.md`、Rules、依赖文件和 Workspace 安全实现额外禁止写入。
 - `apply_workspace_edits` 只支持创建已有目录下的 UTF-8 文件和精确替换，不支持删除、移动、重命名或创建目录。
 - `delete_workspace_file` 只接受一个现有 UTF-8 普通文本文件及 `read_workspace_file` 返回的当前 SHA-256；拒绝目录、链接、批量、保护路径、审批后变化和无审批删除，成功后可用 `change_id` 撤销。
-- HTTP 默认最多 5 个模型步骤、每步 4 次、总计 16 次工具调用；Web UI/TUI 分别为 41、4、40，工具组激活也计入预算。
+- Runtime 默认最多 5 个模型步骤、每步 4 次、总计 16 次工具调用；Web UI/TUI 分别为 41、4、40，工具组激活也计入预算。
 - 普通参数最多 8 KiB，编辑参数最多 64 KiB，结果最多 32 KiB；多个调用串行执行。
 - Skill 脚本使用参数数组而非 Shell 拼接，`.py` 固定使用当前 Python，`.sh` 固定使用 `/bin/sh`；运行环境不继承 API Key 等宿主变量，30 秒超时，stdout/stderr 合计最多 32 KiB。
 - Skill 脚本没有文件系统或网络沙箱，能够读取工作区、修改文件及访问网络；审批界面会展示解释器、相对脚本、逐项转义参数和该风险，每次调用都重新确认。
 - `install_skill` 只接受公开 `github.com` HTTPS Skill 目录和 `~/.codex/skills` 直属目录；不读取私有仓库凭据，不覆盖同名目标，不执行安装包中的脚本或安装依赖。安装审批与脚本审批相互独立。
 - Git 写工具仅存在于 TUI：Stage 不接受目录、删除、glob 或全仓库参数；Commit 只使用当前 Index 并关闭 hooks/GPG；Push 只使用当前分支已有的 HTTPS/SSH 上游，不支持 force、Tag、删远端或设置上游。审批后状态变化会返回冲突。
-- 达到上限时 `/chat` 返回安全的 502；TUI 显示安全错误。已确认并完成的磁盘修改不会因后续模型失败自动回滚，界面会列出仍保留的相对路径。
+- 达到上限时 Web UI 以流内错误事件返回，TUI 显示安全错误。已确认并完成的磁盘修改不会因后续模型失败自动回滚，界面会列出仍保留的相对路径。
 
 ## 启动 TUI
 
@@ -146,7 +146,7 @@ expected_name 使用 demo-skill。
 
 Skill 包以 Codex 的 `.agents/skills/` 发现约定为准，`SKILL.md` 与 `scripts/`、`references/`、`assets/` 结构遵循开放 Agent Skills 格式。同一个包可复制到 Claude Code 对应目录使用，但 Tsi 不扫描 `.claude/skills/`，也不采信 `allowed-tools` 等字段扩大权限。项目不内置示例 Skill，测试使用临时夹具验证完整流程。
 
-TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统提示词不会显示在对话区或写入 Session。模型生成期间，输入框上方会持续显示临时纯文本；完整响应到达后，该区域会被一份最终 Markdown 消息替换并美化为标题、列表、表格和代码块等结构。流式展示不会执行代码，也不会把半截回答写入会话历史。请求期间还会显示动画、`思考中`、实时耗时和 Esc 取消提示；成功或失败后仍会在对话记录中显示最终耗时，取消请求不记录最终耗时。成功响应把耗时与上游实际报告的本轮 Token 输入、输出和合计放在同一行；任一模型步骤未返回 usage 时同一行显示 `Token：不可用`，不会用字符数估算或把部分统计伪装成完整合计。HTTP `/chat` 仍是无状态单轮聚合 JSON 接口，不读取 `AGENTS.md`，也不与 TUI 共享历史或返回 Token 字段。
+TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统提示词不会显示在对话区或写入 Session。模型生成期间，输入框上方会持续显示临时纯文本；完整响应到达后，该区域会被一份最终 Markdown 消息替换并美化为标题、列表、表格和代码块等结构。流式展示不会执行代码，也不会把半截回答写入会话历史。请求期间还会显示动画、`思考中`、实时耗时和 Esc 取消提示；成功或失败后仍会在对话记录中显示最终耗时，取消请求不记录最终耗时。成功响应把耗时与上游实际报告的本轮 Token 输入、输出和合计放在同一行；任一模型步骤未返回 usage 时同一行显示 `Token：不可用`，不会用字符数估算或把部分统计伪装成完整合计。
 
 - `Enter`：模型列表打开时确认选择，命令或 Skill 候选打开时先补全，否则发送输入。
 - `Tab`：补全当前命令或 Skill 候选。
@@ -178,7 +178,9 @@ Web UI 复用现有 FastAPI 服务。启动后访问 <http://127.0.0.1:8000/ui>�
 
 Web UI 只允许本机 loopback 客户端访问。模型可按需激活时间、受限网络搜索及 Workspace 读写工具；搜索和读取自动执行，创建、精确替换、单文件删除和撤销会展示完整有界 Diff，只有当前请求的逐次批准才能执行。取消、断流或请求结束会使待审批操作失效。Web 不提供 Skill、Git 写、脚本或任意命令能力。左下角“设置”可调整主题、界面密度、发送快捷键和当前模型，其中界面偏好仅保存在当前浏览器，模型选择继续复用项目已有的持久化机制。静态页面不加载远程脚本、样式、图片或字体。
 
-## 启动 HTTP 服务
+## 服务端点
+
+Web UI 与 FastAPI 由同一个 Uvicorn 进程提供：
 
 ```bash
 .venv/bin/python -m uvicorn main:app --reload --env-file .env
@@ -187,26 +189,11 @@ Web UI 只允许本机 loopback 客户端访问。模型可按需激活时间、
 启动后可访问：
 
 - 首页：http://127.0.0.1:8000/
+- Web UI：http://127.0.0.1:8000/ui
 - Swagger：http://127.0.0.1:8000/docs
 - ReDoc：http://127.0.0.1:8000/redoc
 
-调用统一模型接口：
-
-```bash
-curl --location 'http://127.0.0.1:8000/chat' \
-  --header 'Content-Type: application/json' \
-  --data '{"input":"你是谁？"}'
-```
-
-无论使用哪个 Provider，成功响应都是：
-
-```json
-{
-  "output_text": "模型生成的文本"
-}
-```
-
-接口不再返回阿里云或 DeepSeek 的原始响应字段。
+所有接口只接受 loopback 客户端。无状态聚合 JSON 的 `POST /chat` 接口已移除，对话只能通过 Web UI 或 TUI 发起。
 
 ## TUI 本地状态
 
@@ -233,11 +220,11 @@ data/model-selection.json
 
 ## 模型请求日志
 
-HTTP 每次模型调用会把同一 request ID 关联的事件写入 stderr 和本地文件；stderr 保持单行 JSON，本地文件使用适合直接阅读的中文分块格式。TUI 为避免日志覆盖全屏界面，只写本地文件：
+Web 服务每次模型调用会把同一 request ID 关联的事件写入 stderr 和本地文件；stderr 保持单行 JSON，本地文件使用适合直接阅读的中文分块格式。TUI 为避免日志覆盖全屏界面，只写本地文件：
 
 ```text
 logs/
-├── runtime/model-calls.log  # HTTP 与 TUI 真实使用日志
+├── runtime/model-calls.log  # Web 服务与 TUI 真实使用日志
 └── tests/model-calls.log    # Pytest 测试日志
 ```
 
@@ -295,7 +282,7 @@ llm_request -> llm_http_request -> llm_http_response -> llm_token_usage -> llm_r
 
 日志不记录环境 API Key、真实 `Authorization`、响应 Header、Cookie 或异常堆栈。失败事件会按上述边界记录上游原始响应体，其中可能包含模型生成内容或上游诊断信息。
 
-> 隐私警告：输入、输出、工具参数、工具结果、TUI 加载的 `AGENTS.md`、Skill Catalog/正文/文本资源、脚本参数及 stdout/stderr 和完整请求体都会以明文写入本地文件；HTTP 入口还会同步写入 stderr，且多轮历史会在每次调用时重复落盘。不要在这些位置放置密码、Token、个人隐私或其他不应发送和持久化的数据。具有本地文件读取权限的用户或进程可以读取日志内容。
+> 隐私警告：输入、输出、工具参数、工具结果、TUI 加载的 `AGENTS.md`、Skill Catalog/正文/文本资源、脚本参数及 stdout/stderr 和完整请求体都会以明文写入本地文件；Web 服务还会同步写入 stderr，且多轮历史会在每次调用时重复落盘。不要在这些位置放置密码、Token、个人隐私或其他不应发送和持久化的数据。具有本地文件读取权限的用户或进程可以读取日志内容。
 
 运行与测试日志独立轮转：单文件阈值为 10 MiB，各保留 5 个备份；`logs/` 已被 Git 忽略。由于正文不截断，单条超大记录可令当前文件暂时超过该阈值。日志失败不影响模型请求本身。
 

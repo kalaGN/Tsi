@@ -2,15 +2,14 @@
 
 ## 概览
 
-Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供聚合 JSON 的无状态 FastAPI HTTP、持久化多会话的 DSH 风格本机 Web UI，以及支持流式展示、可恢复单会话及项目自修改的 Textual TUI。三个入口共享 Chat Runtime，但使用隔离的会话与 Registry：HTTP 具有只读时间和受限网络搜索工具；Web UI 还持有独立会话、Workspace 读写工具和请求级审批；TUI 进一步提供 Skill、安装、脚本和 Git 写工具，但不启用网络搜索。
+Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，提供持久化多会话的 DSH 风格本机 Web UI，以及支持流式展示、可恢复单会话及项目自修改的 Textual TUI。两个入口共享 Chat Runtime，但使用隔离的会话与 Registry：Web UI 持有独立会话、受限网络搜索、Workspace 读写工具和请求级审批；TUI 进一步提供 Skill、安装、脚本和 Git 写工具，但不启用网络搜索。
 
 ## 组件
 
 - `main.py`：从 `app.application` 导出 FastAPI 应用。
-- `app/application.py`：创建 FastAPI、注册根路由和 Chat Router。
+- `app/application.py`：创建 FastAPI、注册根路由和 Web UI Router，不再注册对话 API。
 - `app/observability/model_logging.py`：配置模型/HTTP/工具 JSON 日志、可选终端输出、本地转储和事件白名单。
-- `app/routers/chat.py`：校验 `POST /chat`，返回统一 `ChatResponse` 并映射 HTTP 错误。
-- `app/runtime/chat.py`：无状态入口、有序消息调用、默认工具 Registry、统一文本与本轮 Token 结果和安全错误语义。
+- `app/runtime/chat.py`：有序消息调用、单轮入口、默认工具 Registry、统一文本与本轮 Token 结果和安全错误语义。
 - `app/runtime/tool_loop.py`：默认/Workspace 循环预算、请求级审批上下文、串行工具编排、逐步骤 Token 聚合和结果观察回调。
 - `app/runtime/trace.py`：可选、Provider 中立的请求/模型步骤/工具/审批轨迹事件；无 Observer 时不改变 Runtime 行为。
 - `app/runtime/session.py`：串行化 TUI 发送，只提交 Provider 和持久化均成功的完整轮次。
@@ -61,25 +60,15 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `tests/test_workspace_tools.py`：路径、文件、Git、编辑、检查和撤销测试。
 - `tests/test_skills.py`：Skill 发现、快照、渐进读取、审批执行及进程清理测试。
 - `tests/test_model_logging.py`：日志格式、幂等、转储和失败降级测试。
-- `tests/test_chat.py`：HTTP 契约与 Provider 接线测试。
+- `tests/test_application.py`：FastAPI 应用装配、根路由与已移除端点测试。
 - `tests/test_tui.py`：Textual 无头交互测试。
 
 ## 依赖方向
 
 ```text
-main.py -> app.application -> app.routers.chat --------+
-                    |                                  |
-                    +-> configure model logging        |
-                                                       v
-                                               app.runtime.chat
-                                              /          |          \
-                                             v           v           v
-                              app.observability   tool_loop    provider factory
-                                                      |          /          \
-                                                      v         v            v
-                                                  root tools  AliyunTurn  DeepSeekTurn
-                                                                 \          /
-                                                                  shared HTTP
+main.py -> app.application -> FastAPI app + root route + Web UI Router
+                    |
+                    +-> configure model logging
 
 /ui -> app.webui.router -> WebUiService -> ChatSession -> app.runtime.chat
              |               |
@@ -96,16 +85,26 @@ python -m app.tui -> AGENTS + SkillRuntime -> app.tui.application
 python -m app.evaluation -> isolated workspace -> ChatSession -> Runtime Trace
                               |                 -> real tools
                               +-> replay/live Provider -> grader -> report
+
+app.runtime.chat
+       |             |              \
+       v             v               v
+app.observability  tool_loop   provider factory
+                      |         /          \
+                      v        v            v
+                  root tools  AliyunTurn  DeepSeekTurn
+                                \          /
+                                 shared HTTP
 ```
 
-- Router、Web UI 和 TUI 只依赖 Runtime，不理解外部响应结构。
+- Web UI Router 和 TUI 只依赖 Runtime，不理解外部响应结构。
 - Runtime 只依赖 Provider 契约、工厂和根目录工具契约，不导入具体 Provider 模块。
 - Tool Loop 只理解 ModelStep、ToolCall、ToolResult 和 Registry，不理解两家上游 JSON。
-- 根目录 `tools/` 不依赖 Runtime、Router、TUI 或具体 Provider。
+- 根目录 `tools/` 不依赖 Runtime、FastAPI、Textual 或具体 Provider。
 - 工厂只解析配置和创建 Provider，不编排用例。
 - Provider 为每个用户请求创建短生命周期 Turn，持有私有续接消息，构造请求并提取中立步骤；共享 HTTP 层处理网络和通用状态错误。
-- Provider 层不依赖 Runtime、Router、TUI 或 Application。
-- HTTP/Web/TUI 启动入口幂等配置日志；Runtime 记录请求、成功响应或最终失败，每个具有 usage 的模型步骤记录 `llm_token_usage`，HTTP 边界和本地工具分别记录对应事件，全链路共用同一 request ID。
+- Provider 层不依赖 Runtime、FastAPI、Textual 或 Application。
+- Web/TUI 启动入口幂等配置日志；Runtime 记录请求、成功响应或最终失败，每个具有 usage 的模型步骤记录 `llm_token_usage`，HTTP 边界和本地工具分别记录对应事件，全链路共用同一 request ID。
 - Evaluation 单向依赖 Runtime；Runtime 只认识可选 Trace Observer，不导入评分、报告或 CLI，也不通过解析生产日志构造评测结果。
 
 ## Agent 评测流程
@@ -129,31 +128,30 @@ load JSONL Suite
 
 Harness 指纹包括 Git HEAD/dirty、AGENTS、项目 Skills、首步工具定义、MemoryPolicy 和 ToolLoopLimits。基线比较允许代码和 Harness 发生变化，但会明确提示指纹差异；运行模式以及真实 Provider/模型必须一致。
 
-## HTTP 对话流程
+## Runtime 对话流程
 
 ```text
-POST /chat
-  -> ChatRequest validates strict nonblank input
+ChatSession.send
   -> Runtime creates the environment-selected Provider and a request ID
   -> Runtime writes llm_request with complete input_text
-  -> Runtime creates the default read-only Registry and Provider Turn
+  -> Runtime creates the host-provided Registry and Provider Turn
   -> bounded loop calls Turn.next()
      -> Provider builds protocol-specific stream payload and calls shared SSE HTTPX
-     -> Provider accumulates bounded text/tool events; HTTP supplies no display callback
+     -> Provider accumulates bounded text/tool events; the entry supplies the display callback
      -> ModelStep contains final text or ToolCall list and optional TokenUsage
      -> Runtime logs known step usage and aggregates all model steps
      -> if tools: Registry validates and executes them serially
      -> Runtime passes ordered ToolResult list back to the same Turn
   -> loop stops when Provider returns final output_text
   -> Runtime writes llm_response with complete output_text
-  -> Router returns 200 {"output_text": "..."}
+  -> the entry renders or streams the text and commits the turn
 ```
 
 不需要工具时，上游提供 usage 会额外产生一条 `llm_token_usage`；缺失时仍保留原有四个成功事件。需要工具时，同一 request ID 下会出现多组 HTTP、Token 和工具事件；`llm_tool_call` 明文记录完整 JSON 参数，`llm_tool_result` 明文记录完整安全结果。共享 HTTP 层在真实 I/O 边界旁路记录，不修改状态码映射、重试或超时；`llm_http_request.request_body` 与实际 payload 一致，因此续接请求也会明文包含工具结果。
 
 DeepSeek Turn 请求 `stream_options.include_usage`，按 choice/tool index 拼接流式文本和工具参数，把 assistant `tool_calls` 和对应 `role=tool/tool_call_id` 结果加入 messages，并把结束 usage Chunk 转成中立 TokenUsage。阿里云 Turn 消费 `output_text.delta/done`、function call 与 `response.completed`，把每个 `function_call` 与对应 `function_call_output` 紧邻加入 input，并从完成响应映射 TokenUsage。两家私有字段都止于 Provider 边界。
 
-Tool Loop 对每个已知步骤立即记录 Token 日志，并分别累加输入、输出和总量；只有所有步骤都提供 usage 时，`ChatResult.token_usage` 才包含完整本轮合计。TUI 在成功回答后用一条系统消息把最终耗时和 Token 合计放在同一行，缺失时显示不可用；失败仍只显示耗时，取消和陈旧 Worker 不显示统计。统计系统消息不进入 Session。HTTP Router 忽略内部统计并继续严格返回 `{"output_text":"..."}`。
+Tool Loop 对每个已知步骤立即记录 Token 日志，并分别累加输入、输出和总量；只有所有步骤都提供 usage 时，`ChatResult.token_usage` 才包含完整本轮合计。TUI 在成功回答后用一条系统消息把最终耗时和 Token 合计放在同一行，缺失时显示不可用；失败仍只显示耗时，取消和陈旧 Worker 不显示统计。统计系统消息不进入 Session。Web UI 与 TUI 各自在界面上展示耗时与 Token，Runtime 结果本身不含任何界面字段。
 
 DeepSeek 必须收到合法终止原因和 `[DONE]`；阿里云必须收到成功的 `response.completed`。事件 JSON、UTF-8、终止标记、完成文本或工具结构不一致均属于无效上游响应并映射为 502。单 SSE 事件上限 96 KiB，单步文本上限 1 MiB，流解析层单工具参数上限 64 KiB；Registry 再按具体工具执行 8 KiB 或 64 KiB 上限。
 
@@ -190,7 +188,7 @@ python -m app.tui
   -> TUI stops the Timer, clears activity and records final monotonic elapsed time
 ```
 
-TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只读取 `Path.cwd()/AGENTS.md` 一次，并把同一启动目录固定为 Workspace；AGENTS 不热加载。bootstrap 是 Session、模型恢复和 Memory Policy 的唯一 TUI 装配边界，`ChatTuiApp` 构造本身不读环境或磁盘。SkillRuntime 启动时加载 Catalog，之后只在一次获批安装完整成功时发布下一版本，不监控手动目录变化。每次 `ChatSession.send()` 创建独立 `GroupedToolRegistry`：首步只披露 `activate_tool_groups`，模型可从 `general`、`workspace_read`、`workspace_write`、`skills`、`skill_install` 中按当前 Catalog 激活最多两次；一次可选择多个组，重复激活不消耗次数。Tool Loop 只在定义变化后调用当前 Provider Turn 的 `replace_tools`，新工具从下一模型步骤生效，同一步伪造调用仍返回 `unknown_tool`。完整且存在的 `$技能名` 会按首次出现去重，将最多 3 个 `SKILL.md` 作为不可信 JSON 数据追加到本轮 system 上下文，并免费预激活 `skills`；未知名称保持普通文本，资源正文仍按需读取。当前 Provider Turn 不会使用刚安装的 Skill，下一次发送才生效。系统提示词、Skill 内容和工具轨迹不进入 Session，Session 仍只提交最终 user/assistant。文件审批 Modal 显示相对路径和完整 Diff；安装审批显示安全来源、固定目标和联网风险；脚本审批显示 Skill、相对脚本、转义命令和无沙箱风险。安装只允许公开 GitHub Contents API 或当前用户 Codex 直属目录，候选经项目临时目录校验和原子 rename，刷新失败回滚。脚本每次都重新审批，使用固定解释器、最小环境、30 秒超时和 32 KiB 合计输出边界，并在超时、输出超限或取消时终止进程组。成功编辑或删除保留 `change_id`，三态 Journal 记录创建、替换或删除后的内容状态，最多保存 10 个批次且不跨重启；删除撤销只在同名路径仍不存在时原子恢复。Registry 快照复用同一 Journal。请求协调器内的变更追踪器同时记录编辑和删除，后续模型失败时仍提示受影响路径，撤销成功后移除。其请求代次会阻止取消后的陈旧 Delta、审批结果或最终结果写回。HTTP `/chat` 不加载 Workspace/Skill 安装模块、不读取 Home、宿主规则、TUI 会话或模型选择文件，只使用固定时间和 Serper 搜索工具并在 Runtime 汇总完成后返回 JSON。
+TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只读取 `Path.cwd()/AGENTS.md` 一次，并把同一启动目录固定为 Workspace；AGENTS 不热加载。bootstrap 是 Session、模型恢复和 Memory Policy 的唯一 TUI 装配边界，`ChatTuiApp` 构造本身不读环境或磁盘。SkillRuntime 启动时加载 Catalog，之后只在一次获批安装完整成功时发布下一版本，不监控手动目录变化。每次 `ChatSession.send()` 创建独立 `GroupedToolRegistry`：首步只披露 `activate_tool_groups`，模型可从 `general`、`workspace_read`、`workspace_write`、`skills`、`skill_install` 中按当前 Catalog 激活最多两次；一次可选择多个组，重复激活不消耗次数。Tool Loop 只在定义变化后调用当前 Provider Turn 的 `replace_tools`，新工具从下一模型步骤生效，同一步伪造调用仍返回 `unknown_tool`。完整且存在的 `$技能名` 会按首次出现去重，将最多 3 个 `SKILL.md` 作为不可信 JSON 数据追加到本轮 system 上下文，并免费预激活 `skills`；未知名称保持普通文本，资源正文仍按需读取。当前 Provider Turn 不会使用刚安装的 Skill，下一次发送才生效。系统提示词、Skill 内容和工具轨迹不进入 Session，Session 仍只提交最终 user/assistant。文件审批 Modal 显示相对路径和完整 Diff；安装审批显示安全来源、固定目标和联网风险；脚本审批显示 Skill、相对脚本、转义命令和无沙箱风险。安装只允许公开 GitHub Contents API 或当前用户 Codex 直属目录，候选经项目临时目录校验和原子 rename，刷新失败回滚。脚本每次都重新审批，使用固定解释器、最小环境、30 秒超时和 32 KiB 合计输出边界，并在超时、输出超限或取消时终止进程组。成功编辑或删除保留 `change_id`，三态 Journal 记录创建、替换或删除后的内容状态，最多保存 10 个批次且不跨重启；删除撤销只在同名路径仍不存在时原子恢复。Registry 快照复用同一 Journal。请求协调器内的变更追踪器同时记录编辑和删除，后续模型失败时仍提示受影响路径，撤销成功后移除。其请求代次会阻止取消后的陈旧 Delta、审批结果或最终结果写回。
 
 状态栏只接收应用汇总后的有限快照，不直接访问密钥、环境或模型正文。单次请求的工作区工具结果由独立追踪器解析；若后续模型步骤失败，请求协调器会让应用列出已经落盘且尚未撤销的相对路径，避免错误提示掩盖实际磁盘变化。
 
@@ -207,32 +205,31 @@ TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只�
 
 显式空白或未知 `LLM_PROVIDER` 是配置错误，不静默回退。模型变量空白时使用默认值。上游 URL 固定在相应适配器中，不能通过环境变量覆盖。
 
-网络搜索由可选 `SERPER_API_KEY` 启用，仅 HTTP 和 Web Registry 可见；URL 固定为 Google Serper Search，模型不能覆盖。缺少 Key 时工具返回稳定的不可用原因且不会联网。
+网络搜索由可选 `SERPER_API_KEY` 启用，仅 Web Registry 可见；URL 固定为 Google Serper Search，模型不能覆盖。缺少 Key 时工具返回稳定的不可用原因且不会联网。
 
-TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默认模型组成的安全候选快照。候选按 DeepSeek、Aliyun 及各自配置顺序展示，每家最多 50 项；缺少 Key 的候选可见但不可确认。切换先创建完整 Provider，再由 Session 在无活动请求时替换，保留消息和存储且不写回环境；成功后将安全的供应商和模型标识原子保存到 `data/model-selection.json`。下次启动只有在保存项仍位于候选且 Key 可用时才把同一 Provider 同时注入 Session 和状态栏，否则保留文件、显示非阻断提示并回退环境默认。HTTP 不读取该 Store，仍只使用部署环境选择。
+TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默认模型组成的安全候选快照。候选按 DeepSeek、Aliyun 及各自配置顺序展示，每家最多 50 项；缺少 Key 的候选可见但不可确认。切换先创建完整 Provider，再由 Session 在无活动请求时替换，保留消息和存储且不写回环境；成功后将安全的供应商和模型标识原子保存到 `data/model-selection.json`。下次启动只有在保存项仍位于候选且 Key 可用时才把同一 Provider 同时注入 Session 和状态栏，否则保留文件、显示非阻断提示并回退环境默认。
 
 ## 设计决策
 
-- HTTP、Web 与 TUI 都只接触统一文本，原始 Provider JSON 只存在于 Provider 调用栈。
+- Web 与 TUI 都只接触统一文本，原始 Provider JSON 只存在于 Provider 调用栈。
 - 所有请求统一通过 Provider Turn，不保留旧 `generate()` 或原始 ProviderResult 路径。
-- HTTP 默认 Registry 注册 `get_current_time(timezone)` 和 `web_search(query, limit)`；Web 的请求级 Registry 提供 `general`、`web_search`、`workspace_read`、`workspace_write`；TUI 再增加 Skill、安装和 `git_write`，但不包含搜索组。三者均使用显式白名单，不支持反射、动态 import、任意命令或 MCP。
-- HTTP 循环最多 5 步、每步 4 次、总计 16 次；Web/TUI 最多 41 步、每步 4 次、总计 40 次，激活调用计入相同预算。普通参数/结果上限为 8/32 KiB，编辑参数为 64 KiB。
+- `create_default_registry` 注册 `get_current_time(timezone)` 和 `web_search(query, limit)`，当前只作为 Runtime 与评测的默认值；Web 的请求级 Registry 提供 `general`、`web_search`、`workspace_read`、`workspace_write`；TUI 再增加 Skill、安装和 `git_write`，但不包含搜索组。两者均使用显式白名单，不支持反射、动态 import、任意命令或 MCP。
+- Runtime 默认循环预算为 5 步、每步 4 次、总计 16 次；Web/TUI 最多 41 步、每步 4 次、总计 40 次，激活调用计入相同预算。普通参数/结果上限为 8/32 KiB，编辑参数为 64 KiB。
 - 写 Tool 必须先生成完整有界 Diff；Registry 没有审批回调、用户拒绝或内容并发变化时均不会执行。Web 决策只接受当前请求的随机审批 ID，取消、断流和结束都会使其失效。
 - Workspace 拒绝越界、符号链接、保护路径、二进制和超限文件；编辑只支持 create/replace。唯一删除入口 `delete_workspace_file` 仅处理一个经当前哈希确认、逐次审批且可撤销的文本文件；固定检查不接受额外 argv、cwd 或环境。
-- 第 5 步仍请求工具时不执行无法被后续步骤消费的调用，Runtime 返回安全 `tool_limit`，HTTP 映射为 502。
-- `/chat` 请求不包含 Provider 或模型；切换由部署环境控制。
+- 第 5 步仍请求工具时不执行无法被后续步骤消费的调用，Runtime 返回安全 `tool_limit`。
 - 使用现有异步 HTTPX，不引入 Provider SDK。
 - 保持连接 10 秒、从请求开始到流消费结束总计 10 分钟超时；不实现自动重试或故障转移。
 - SSE 按字节切分边界并严格解码 UTF-8；取消沿调用栈传播并由 HTTPX 上下文关闭响应流。
 - 每次调用创建并关闭 HTTP Client；当前没有性能基线，不增加应用级连接生命周期。
-- 上游错误体、Authorization、密钥和内部堆栈不进入 HTTP/TUI。
-- 模型事件由固定字段白名单定义；HTTP stderr 渲染为单行 JSON，本地文件渲染为北京时间中文分块。Runtime、所有模型步骤和工具事件共用同一 request ID，工具事件另用上游 call ID 关联。
+- 上游错误体、Authorization、密钥和内部堆栈不进入 Web UI 或 TUI 输出。
+- 模型事件由固定字段白名单定义；Web 服务进程 stderr 渲染为单行 JSON，本地文件渲染为北京时间中文分块。Runtime、所有模型步骤和工具事件共用同一 request ID，工具事件另用上游 call ID 关联。
 - Runtime 生成 request ID 并显式经 Provider 传给共享 HTTP 层，不使用 ContextVar 或全局当前 ID。
-- 输入、输出和完整请求体以明文进入本地文件，HTTP 入口还会写入 stderr，多轮历史在每次调用时重复落盘；仍不记录环境 API Key、真实 `Authorization`、Provider 原始响应体、Cookie 或异常原文。
+- 输入、输出和完整请求体以明文进入本地文件，Web 服务进程还会写入 stderr，多轮历史在每次调用时重复落盘；仍不记录环境 API Key、真实 `Authorization`、Provider 原始响应体、Cookie 或异常原文。
 - TUI 系统提示词随完整 Provider 请求体明文进入模型日志；状态栏和 Runtime 摘要日志不回显正文。
 - HTTP 边界脱敏 Header 由日志层用固定值重建（`Authorization` 写为 `Bearer [REDACTED]`），从数据流上阻止密钥进入 Logger。
 - HTTP 耗时用 `time.monotonic()` 计算并保留两位毫秒；超时/连接失败只记录有限分类和耗时，不记录异常类名或堆栈。
-- HTTP 日志双写单行 JSON stderr 和 UTF-8 中文分块 `logs/runtime/model-calls.log`；TUI 只写该运行文件，Pytest 在收集模块前预配置 `logs/tests/model-calls.log`，且进程内只保留一个文件 Handler。文件不可用时 HTTP 降级为 stderr，TUI 静默放弃日志，避免覆盖全屏终端。两类文件均使用北京时间和两空格 JSON 缩进的结构化正文，并各自按单文件 10 MiB、5 个备份独立轮转。旧 `logs/model-calls.log*` 仅作历史保留。
+- Web 服务日志双写单行 JSON stderr 和 UTF-8 中文分块 `logs/runtime/model-calls.log`；TUI 只写该运行文件，Pytest 在收集模块前预配置 `logs/tests/model-calls.log`，且进程内只保留一个文件 Handler。文件不可用时 Web 服务降级为 stderr，TUI 静默放弃日志，避免覆盖全屏终端。两类文件均使用北京时间和两空格 JSON 缩进的结构化正文，并各自按单文件 10 MiB、5 个备份独立轮转。旧 `logs/model-calls.log*` 仅作历史保留。
 - TUI 同时最多一个请求；Esc 优先清空非空输入且不启动退出计时，输入为空时第一次 Esc 取消请求，1.5 秒内第二次 Esc 退出，并用请求代次阻止陈旧结果写回。
 - TUI 每个活动请求最多创建一个 100 ms Timer，空闲时没有周期任务；Timer 回调同样校验捕获的请求代次。
 - TUI 上下键固定用于输入历史，历史不去重、不循环且没有独立持久化文件；`/clear` 同步清空。
@@ -247,7 +244,7 @@ TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默�
 - `git_stage`、`git_commit`、`git_push` 每次独立审批；只接受宿主定义的业务参数，关闭 hooks、签名和外部 Diff。Push 在审批前只读取本地上游状态，审批后才访问安全的 HTTPS/SSH 远端。
 - Runtime 最终失败写 `llm_error`；已收到的上游原始响应体以 256 KiB 前缀附加并标记截断，便于区分 HTTP 成功与协议/语义失败。
 - Skill 脚本仅支持快照内 `.py`/`.sh`，每次审批，不使用 `shell=True`，不继承宿主密钥环境；当前无文件系统或网络沙箱，该风险必须由审批界面和文档明确展示。
-- TUI 只对 Assistant 原文做 Rich Markdown 展示，不执行代码、加载远程内容或改变 Session/HTTP 文本契约。
+- TUI 只对 Assistant 原文做 Rich Markdown 展示，不执行代码、加载远程内容或改变 Session 文本契约。
 - TUI 临时流只展示当前请求的纯文本；成功、错误、取消、工具 reset 和退出都会清理，部分文本不持久化。
 - TUI transcript 与临时流支持选择和复制当前可见文本；仅 transcript 启用双击复制命中的当前渲染行，并以内容坐标加纵向滚动偏移定位。复制通道使用 Textual 内置剪贴板与终端 OSC 52，不调用系统命令。
 - TUI 输入框以局部 TextArea 子类提供 `Cmd+A` / `Ctrl+A` 全选，兼容关闭 Kitty 扩展键盘协议后的终端按键降级。

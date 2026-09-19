@@ -3,7 +3,6 @@
 from fastapi import FastAPI
 
 from app.observability.model_logging import configure_model_logging
-from app.routers.chat import router as chat_router
 from app.webui import create_webui_router
 
 
@@ -12,7 +11,6 @@ def create_app() -> FastAPI:
 
     configure_model_logging()
     application = FastAPI(title="Tsi 助手")
-    application.include_router(chat_router)
     application.include_router(create_webui_router())
 
     @application.get("/")

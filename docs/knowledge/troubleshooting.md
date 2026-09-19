@@ -77,7 +77,7 @@ Stage、Commit、Push 必须分别审批。工具不会自动暂存整个仓库�
 
 ## TUI 输入区域出现 JSON 日志
 
-当前 TUI 启动入口只把模型、HTTP 和工具事件以中文分块写入 `logs/runtime/model-calls.log`，不会向 stderr 输出。如果输入框附近仍出现 `llm_http_request`、`llm_tool_call` 等单行 JSON，先确认使用的是最新代码并完全退出后重新启动 TUI；不要同时通过会额外转发旧 stderr 的包装脚本启动。HTTP 服务仍会按设计向 stderr 和本地文件双写日志，其中只有 stderr 保持单行 JSON。Pytest 日志独立写入 `logs/tests/model-calls.log`；旧 `logs/model-calls.log*` 仅作历史记录保留。
+当前 TUI 启动入口只把模型、HTTP 和工具事件以中文分块写入 `logs/runtime/model-calls.log`，不会向 stderr 输出。如果输入框附近仍出现 `llm_http_request`、`llm_tool_call` 等单行 JSON，先确认使用的是最新代码并完全退出后重新启动 TUI；不要同时通过会额外转发旧 stderr 的包装脚本启动。Web 服务仍会按设计向 stderr 和本地文件双写日志，其中只有 stderr 保持单行 JSON。Pytest 日志独立写入 `logs/tests/model-calls.log`；旧 `logs/model-calls.log*` 仅作历史记录保留。
 
 ## TUI 显示 `Token：不可用`
 
@@ -117,7 +117,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 
 ## 启动时未读取 `.env`
 
-应用使用 `os.getenv` 读取配置。HTTP 服务由 Uvicorn 显式加载环境文件：
+应用使用 `os.getenv` 读取配置。Web 服务由 Uvicorn 显式加载环境文件：
 
 ```bash
 .venv/bin/python -m uvicorn main:app --reload --env-file .env
@@ -142,14 +142,14 @@ TUI 入口会自动加载项目根目录 `.env`，且不会覆盖 Shell 中已�
 .venv/bin/python -m app.tui
 ```
 
-## `/chat` 返回 503
+## Web UI 对话返回 503
 
 先确认 `LLM_PROVIDER` 是 `aliyun`、`deepseek` 或未设置；未设置时按 DeepSeek 处理。然后检查所选 Provider 的密钥：
 
 - 阿里云：`DASHSCOPE_API_KEY`。
 - DeepSeek：`DEEPSEEK_API_KEY`。
 
-显式空白或未知 `LLM_PROVIDER` 也会返回 503。使用 `.env` 启动 HTTP 时必须包含 `--env-file .env`。
+显式空白或未知 `LLM_PROVIDER` 也会返回 503。使用 `.env` 启动 Web 服务时必须包含 `--env-file .env`。
 
 ## Web 网络搜索返回 `api_key_missing`
 

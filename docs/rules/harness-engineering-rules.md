@@ -2,7 +2,7 @@
 
 ## 1. 范围与事实
 
-本规则适用于当前 Tsi 助手项目。项目是单仓库 Python 应用，提供 FastAPI HTTP 与本地 Textual TUI，使用 Application、Router、Runtime、Service、Tool 和 TUI 职责；不存在数据库、缓存、消息队列、后台 Worker、认证授权、CI 或部署配置。
+本规则适用于当前 Tsi 助手项目。项目是单仓库 Python 应用，提供本机 FastAPI Web UI 与本地 Textual TUI，使用 Application、Router、Runtime、Service、Tool 和 TUI 职责；不存在数据库、缓存、消息队列、后台 Worker、认证授权、CI 或部署配置。
 
 事实来源优先级：
 
@@ -40,22 +40,21 @@ Bug 修复遵循：复现 → 失败测试 → 根因分析 → 最小修复 →
 真实依赖方向：
 
 ```text
-main.py -> app.application -> app.routers.chat --+
-                                                v
-                                      app.runtime.chat
-                                       /                \
-                                      v                  v
-                         app.runtime.tool_loop       root tools/
-                                      |
-                                      v
-                                  app.services.llm.factory
-                                      /                 \
-                                     v                   v
-                         AliyunResponsesProvider  DeepSeekChatProvider
-                                      \                 /
-                                       +-> shared HTTP -+
-                                                ^
-python3 -m app.tui -> app.tui.application ------+
+main.py -> app.application -> Web UI Router -> app.webui --+
+                                                           |
+python3 -m app.tui -> app.tui.application -----------------+--> app.runtime.chat
+                                                                    |
+                                                          /---------+---------\
+                                                          v                   v
+                                             app.runtime.tool_loop       root tools/
+                                                          |
+                                                          v
+                                              app.services.llm.factory
+                                                  /                 \
+                                                 v                   v
+                                     AliyunResponsesProvider  DeepSeekChatProvider
+                                                  \                 /
+                                                   +-> shared HTTP -+
 ```
 
 - `main.py` 只保留兼容启动入口。
@@ -63,30 +62,32 @@ python3 -m app.tui -> app.tui.application ------+
 - Router 负责 HTTP 请求校验、调用用例和响应转换，不实现上游协议细节。
 - Runtime 负责共享模型调用、TUI 单会话与中立错误，不依赖 FastAPI 或 Textual。
 - Runtime 通过有界循环编排 Provider Turn 与根目录工具 Registry，不导入具体 Provider 实现。
-- 根目录 `tools/` 只提供显式注册的工具、项目 Skill 快照和受限安装用例，不依赖 Runtime、FastAPI、Textual 或具体 Provider；HTTP 仅注册默认只读工具，TUI 可注册受 Workspace Policy、本地审批和执行边界保护的 Workspace/Skill 工具。
+- 根目录 `tools/` 只提供显式注册的工具、项目 Skill 快照和受限安装用例，不依赖 Runtime、FastAPI、Textual 或具体 Provider；默认 Registry 只注册只读工具，TUI 可注册受 Workspace Policy、本地审批和执行边界保护的 Workspace/Skill 工具。
 - `services.llm` 负责配置解析、共享网络错误、阿里云/DeepSeek 请求和文本提取，不依赖 Runtime、Router、TUI 或 Application。
 - TUI 负责输入、统一文本展示、状态和取消，不读取 Provider 专属密钥或解析上游 JSON，不依赖 Router 或 Application。
 - 业务逻辑增长前不创建空壳 Repository、Manager、Provider 或依赖注入层。
 - 新抽象必须解决已出现的重复、边界或替换需求，不得为单次调用预设计。
-- 当前仅有 `data/chat-session.json` 的本地会话持久化，无数据库或事务边界；扩展持久化前必须另建 Spec。
+- 本地持久化目前包括 `data/chat-session.json`、`data/model-selection.json` 和 Web 多会话目录 `data/web-sessions/`，无数据库或事务边界；扩展持久化前必须另建 Spec。
 - 网络 I/O 使用异步接口；同步根路由不承担阻塞工作。
-- HTTP 工具自动执行且必须无副作用；TUI 只自动执行只读工具，编辑、单文件删除和撤销必须先展示完整 Diff，Skill 脚本必须逐次展示命令与无沙箱风险并获得本地确认。增加 MCP、动态插件或扩大执行范围前另建 Spec。
+- Web 与 TUI 的只读工具自动执行且必须无副作用；编辑、单文件删除和撤销必须先展示完整 Diff，Skill 脚本必须逐次展示命令与无沙箱风险并获得本地确认。增加 MCP、动态插件或扩大执行范围前另建 Spec。
 
 ## 5. HTTP 契约
 
 当前已确认接口：
 
 - `GET /` 返回 `{"Hello": "World"}`；其是否作为正式健康检查待确认。
-- `POST /chat` 接收 JSON `{"input": "非空字符串"}`。
+- 无状态聚合 JSON 的 `POST /chat` 已移除，不再对外提供该接口。
+- 本机 Web UI 提供 `/ui` 页面与 `/ui/api/` 接口，仅接受 loopback 客户端。
 - FastAPI 自动暴露 `/docs` 和 `/redoc`。
 
 契约规则：
 
-- 请求模型由 Pydantic 校验；`input` 必须是严格字符串且不能全为空白。
-- `/chat` 成功时固定返回 `200` 和 `{"output_text": "..."}`，不得暴露 Provider 原始字段。
+- 请求模型由 Pydantic 校验，用户输入必须是严格字符串且不能全为空白。
+- 非 loopback 客户端返回 403；缺少密钥或存储不可用返回 503；参数非法返回 422；请求或审批冲突返回 409；资源不存在返回 404。
+- `/ui/api/chat` 以 `application/x-ndjson` 流式返回有序事件，不得暴露 Provider 原始字段。
 - Provider 和模型只允许通过部署环境选择，未经新 Spec 不向请求体增加选择字段。
+- 上游失败不映射为 HTTP 状态码，而是作为流内 `failed` 事件返回。
 - 错误使用 FastAPI `{"detail": "..."}` 结构；项目没有额外业务码规范。
-- 缺少密钥返回 503，连接失败返回 502，超时返回 504，上游 401/403 保留状态码，其他非成功状态保留状态码并隐藏上游错误体。
 - 项目没有分页、排序、幂等键、API 版本或废弃机制；需要时先定义契约。
 
 ## 6. Python 编码

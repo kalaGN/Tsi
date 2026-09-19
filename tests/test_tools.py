@@ -442,9 +442,10 @@ def test_get_current_time_rejects_invalid_arguments(arguments_json):
     assert json.loads(result.output)["error"]["code"] == "invalid_arguments"
 
 
-def test_default_registry_only_exposes_get_current_time():
+def test_default_registry_exposes_safe_read_tools():
     registry = create_default_registry()
 
     assert [definition.name for definition in registry.definitions] == [
-        "get_current_time"
+        "get_current_time",
+        "web_search",
     ]

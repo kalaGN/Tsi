@@ -9,7 +9,7 @@
 - 新项目或公开契约、依赖、架构、安全、性能策略的显著变更，在需求尚未确认时先写简短 Spec 并一次性确认；确认后持续实现至验收。
 - 必要注释只解释非显而易见的意图与边界；行为变更补测试，公开行为、架构、配置或运维方式变化时同步中文文档。
 - `/chat` 成功响应固定为 `{"output_text":"..."}`；Router 和 TUI 不得暴露 Provider 原始响应。
-- 工具仅从 `tools/` 显式注册；HTTP 只自动执行无副作用工具，Web/TUI 写操作和 Skill 脚本不得绕过审批。
+- 工具仅从 `tools/` 显式注册；HTTP 只自动执行无本地副作用的时间与固定域名搜索工具，Web/TUI 写操作和 Skill 脚本不得绕过审批。
 - 密钥只读环境变量且不得进入代码、文档、日志、测试或 Git；测试禁止调用真实付费或生产服务。
 - Commit 使用 `type: 中文描述`；未经用户明确要求不得提交，不得通过删除或弱化测试制造通过。
 - 详细规则与架构入口：[Rules](docs/rules/README.md)、[Spec](docs/spec/README.md)、[Knowledge](docs/knowledge/README.md)。

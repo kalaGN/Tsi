@@ -1128,14 +1128,17 @@ def create_web_intent_workspace_registry(
     policy: WorkspacePolicy,
     journal: WorkspaceChangeJournal | None = None,
     *,
+    web_search_environ: Mapping[str, str] | None = None,
     preactivated_groups=(),
 ):
-    """创建只含工作区读写能力的 Web 请求级 Registry。"""
+    """创建含网络搜索和工作区读写能力的 Web 请求级 Registry。"""
 
     return _create_grouped_workspace_registry(
         policy,
         journal=journal,
         include_git_write=False,
+        include_web_search=True,
+        web_search_environ=web_search_environ,
         preactivated_groups=preactivated_groups,
     )
 
@@ -1147,6 +1150,8 @@ def _create_grouped_workspace_registry(
     install_skill_tool: "InstallSkillTool | None" = None,
     *,
     include_git_write: bool,
+    include_web_search: bool = False,
+    web_search_environ: Mapping[str, str] | None = None,
     preactivated_groups=(),
 ):
     """按宿主允许的能力构造渐进披露 Registry。"""
@@ -1159,6 +1164,8 @@ def _create_grouped_workspace_registry(
         skill_catalog=skill_catalog,
         install_skill_tool=install_skill_tool,
         include_git_write=include_git_write,
+        include_web_search=include_web_search,
+        web_search_environ=web_search_environ,
     )
     names = {tool.definition.name for tool in tools}
     read_names = (
@@ -1191,6 +1198,15 @@ def _create_grouped_workspace_registry(
             ),
         ),
     ]
+    if "web_search" in names:
+        groups.insert(
+            1,
+            ToolGroupDefinition(
+                ToolGroup.WEB_SEARCH,
+                "搜索需要实时或项目外部信息的公开网络内容",
+                ("web_search",),
+            ),
+        )
     if "load_skill" in names:
         groups.append(
             ToolGroupDefinition(
@@ -1266,6 +1282,8 @@ def _create_workspace_tools(
     install_skill_tool: "InstallSkillTool | None" = None,
     *,
     include_git_write: bool = False,
+    include_web_search: bool = False,
+    web_search_environ: Mapping[str, str] | None = None,
 ):
     """构造静态与分组 Registry 共用的同一套工具对象。"""
 
@@ -1275,17 +1293,21 @@ def _create_workspace_tools(
 
     active_journal = WorkspaceChangeJournal() if journal is None else journal
     tools = [
-            GetCurrentTimeTool(),
-            ListWorkspaceFilesTool(policy),
-            SearchWorkspaceTextTool(policy),
-            ReadWorkspaceFileTool(policy),
-            GetWorkspaceGitStatusTool(policy),
-            GetWorkspaceGitDiffTool(policy),
-            ApplyWorkspaceEditsTool(policy, active_journal),
-            DeleteWorkspaceFileTool(policy, active_journal),
-            RunProjectCheckTool(policy),
-            UndoWorkspaceChangeTool(policy, active_journal),
+        GetCurrentTimeTool(),
+        ListWorkspaceFilesTool(policy),
+        SearchWorkspaceTextTool(policy),
+        ReadWorkspaceFileTool(policy),
+        GetWorkspaceGitStatusTool(policy),
+        GetWorkspaceGitDiffTool(policy),
+        ApplyWorkspaceEditsTool(policy, active_journal),
+        DeleteWorkspaceFileTool(policy, active_journal),
+        RunProjectCheckTool(policy),
+        UndoWorkspaceChangeTool(policy, active_journal),
     ]
+    if include_web_search:
+        from tools.web_search import WebSearchTool
+
+        tools.append(WebSearchTool(environ=web_search_environ))
     if include_git_write:
         from tools.git import GitCommitTool, GitPushTool, GitStageTool
 

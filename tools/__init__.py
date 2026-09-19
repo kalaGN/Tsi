@@ -1,6 +1,7 @@
 """默认工具、Workspace 工具契约与项目 Skill 的稳定公共入口。"""
 
 from tools.builtin import GetCurrentTimeTool
+from tools.web_search import WebSearchTool
 from tools.contracts import (
     AnyToolApprovalRequest,
     GIT_APPROVAL_WARNING_TEXT,
@@ -43,11 +44,12 @@ from tools.skills import (
 def create_default_registry() -> ToolRegistry:
     """创建只包含项目默认只读工具的独立 Registry。"""
 
-    return ToolRegistry((GetCurrentTimeTool(),))
+    return ToolRegistry((GetCurrentTimeTool(), WebSearchTool()))
 
 
 __all__ = [
     "GetCurrentTimeTool",
+    "WebSearchTool",
     "AnyToolApprovalRequest",
     "GIT_APPROVAL_WARNING_TEXT",
     "GitApprovalRequest",

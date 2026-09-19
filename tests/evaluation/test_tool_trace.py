@@ -37,7 +37,7 @@ def test_tool_loop_trace_captures_visible_tools_calls_and_usage():
 
     steps = [event for event in recorder.events if isinstance(event, ModelStepCompletedTraceEvent)]
     assert len(steps) == 2
-    assert steps[0].visible_tools == ("get_current_time",)
+    assert steps[0].visible_tools == ("get_current_time", "web_search")
     assert steps[0].token_usage == TokenUsage(4, 1, 5)
     assert any(isinstance(event, ToolCallStartedTraceEvent) for event in recorder.events)
     assert any(isinstance(event, ToolCallCompletedTraceEvent) and event.status == "success" for event in recorder.events)

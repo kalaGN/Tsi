@@ -14,11 +14,11 @@ DeepSeek 提供的对话接口。本项目调用固定地址 `https://api.deepse
 
 ## Provider
 
-外部模型协议适配器。当前支持 `aliyun` 和 `deepseek`，由 `LLM_PROVIDER` 在部署级选择；未设置时默认 DeepSeek，HTTP 请求不能动态切换。
+外部模型协议适配器。当前支持 `aliyun` 和 `deepseek`，由 `LLM_PROVIDER` 在部署级选择；未设置时默认 DeepSeek。
 
 ## qwen3-max
 
-阿里云 Provider 的默认模型。可以通过 `ALIYUN_MODEL` 在部署环境覆盖，公开 `/chat` 接口不能动态选择。
+阿里云 Provider 的默认模型。可以通过 `ALIYUN_MODEL` 在部署环境覆盖。
 
 ## deepseek-v4-flash
 
@@ -38,4 +38,4 @@ DeepSeek Provider 的 Bearer Token 环境变量，安全规则与 `DASHSCOPE_API
 
 ## Normalized Text Response
 
-指项目从不同 Provider 的 SSE 事件中增量提取并汇总文本，统一向 HTTP 返回 `{"output_text": "..."}`，向 TUI 实时展示后提交同一完整文本。原始上游结构不会暴露给交互边界。
+指项目从不同 Provider 的 SSE 事件中增量提取并汇总文本，向 Web UI 以 NDJSON 事件推送，向 TUI 实时展示后提交同一完整文本。原始上游结构不会暴露给交互边界。

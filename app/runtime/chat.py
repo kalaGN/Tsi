@@ -1,4 +1,4 @@
-"""HTTP 与 TUI 共享的模型调用和界面无关错误语义。"""
+"""Web UI 与 TUI 共享的模型调用和界面无关错误语义。"""
 
 from dataclasses import dataclass
 from enum import Enum
@@ -81,7 +81,7 @@ class ChatErrorCode(str, Enum):
 
 
 class ChatRuntimeError(Exception):
-    """可安全传递到 HTTP 或 TUI 边界的用例错误。"""
+    """可安全传递到 Web UI 或 TUI 边界的用例错误。"""
 
     def __init__(
         self,

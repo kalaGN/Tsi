@@ -2,12 +2,12 @@
 
 ## 目标
 
-Tsi 助手用于学习和验证 FastAPI、浏览器 UI、Textual、外部模型流式接口与受控 Function Calling。HTTP 提供聚合 JSON 的无状态文本调用；本机 Web UI 提供 DSH 风格三栏交互和逐次审批的 Workspace 修改；TUI 进一步提供 Codex 兼容 Skill 与 Git 交付能力。
+Tsi 助手用于学习和验证 FastAPI、浏览器 UI、Textual、外部模型流式接口与受控 Function Calling。本机 Web UI 提供 DSH 风格三栏交互、受限网络搜索和逐次审批的 Workspace 修改；TUI 进一步提供 Codex 兼容 Skill 与 Git 交付能力。
 
 ## 项目形态
 
-- 单 Git 仓库、单 Python 应用；HTTP、Web UI 与 TUI 是三个独立交互入口。
-- HTTP 对外提供统一 JSON；Web UI 仅允许本机访问；TUI 只在本地终端运行。
+- 单 Git 仓库、单 Python 应用；Web UI 与 TUI 是两个独立交互入口。
+- Web UI 由本机 Uvicorn 服务提供且仅允许 loopback 访问；TUI 只在本地终端运行。
 - Textual Worker 只防止单次异步请求阻塞界面，不是后台任务系统。
 - 没有数据库、缓存、站内搜索、消息队列、微服务或定时任务；可选网络搜索使用固定 Serper.dev API，Web UI 使用本地多会话目录，TUI 使用独立单会话 JSON。
 
@@ -32,10 +32,9 @@ Tsi 助手用于学习和验证 FastAPI、浏览器 UI、Textual、外部模型�
 ## 入口与模块
 
 - `main.py`：Uvicorn 兼容入口。
-- `app/application.py`：FastAPI 应用组装。
-- `app/routers/chat.py`：`POST /chat` 请求与统一响应。
+- `app/application.py`：FastAPI 应用组装，注册根路由与 Web UI Router。
 - `app/webui/`：仅限本机的响应式页面、流式 NDJSON 接口、独立会话和请求级 Workspace 写入审批。
-- `app/runtime/chat.py`：HTTP/TUI 共享用例、结果和错误语义。
+- `app/runtime/chat.py`：Web UI/TUI 共享用例、结果和错误语义。
 - `app/runtime/tool_loop.py`：有界模型步骤和串行工具执行编排。
 - `app/runtime/trace.py`：供本地评测使用的可选结构化执行轨迹。
 - `app/runtime/skill_runtime.py`：TUI Skill Catalog 版本、安装器和请求级执行快照。
@@ -43,7 +42,7 @@ Tsi 助手用于学习和验证 FastAPI、浏览器 UI、Textual、外部模型�
 - `tools/`：Provider 中立契约、静态/请求级分组 Registry、当前时间、受限网络搜索、Workspace 策略、文件/Git 工具、固定项目检查以及 Skill 快照、安装和执行工具。
 - `app/tui/`：Textual 应用、状态和模块启动入口。
 - `tests/test_llm_providers.py`：Provider 协议与错误测试。
-- `tests/test_chat.py`、`tests/test_chat_runtime.py`、`tests/test_tui.py`：对应交互边界测试。
+- `tests/test_application.py`、`tests/test_chat_runtime.py`、`tests/test_tui.py`：对应交互边界测试。
 - `app/evaluation/`、`evals/`、`tests/evaluation/`：本地 Agent 评测实现、版本化用例/基线和无网络自动化测试。
 
 ## 已确认命令
@@ -66,9 +65,9 @@ git diff --check
 明确支持：
 
 - 严格非空的单轮文本输入。
-- HTTP 部署级选择 `aliyun` 或 `deepseek`；TUI 可通过 `/model` 在有界环境候选中切换 Provider 和模型，并在下次启动恢复最近一次成功选择。
+- 部署环境通过 `LLM_PROVIDER` 选择 `aliyun` 或 `deepseek`；TUI 可通过 `/model` 在有界环境候选中切换 Provider 和模型，并在下次启动恢复最近一次成功选择。
 - Web UI 可在相同安全候选中切换模型，复用模型选择文件；多会话索引和内容独立保存到 `data/web-sessions/`，旧单会话自动迁移。
-- 两家上游均使用 SSE；HTTP 聚合后固定返回 `{"output_text": "..."}`，TUI 增量展示纯文本并在完成后用同一原文渲染 Assistant Markdown。
+- 两家上游均使用 SSE；Web UI 以 NDJSON 流式推送并在页面上增量展示，TUI 增量展示纯文本并在完成后用同一原文渲染 Assistant Markdown。
 - 中文输入、`Cmd+A` / `Ctrl+A` 全选输入、Esc 清空输入、耗时与 Token 单行统计、请求中动画与实时耗时、请求取消、`/clear`、`/memory`、`/model`、`/skills`、`/quit`、Enter 和双击 Esc。
 - TUI 启动目录直属 `AGENTS.md` 的 32 KiB UTF-8 有界读取，以及不持久化的 Provider 标准 system 消息。
 - TUI 启动目录 `.agents/skills/*/SKILL.md` 的安全 YAML Catalog、渐进读取，以及每次审批的 `.py`/`.sh` 脚本执行。
@@ -80,17 +79,17 @@ git diff --check
 - 用户消息以不解析 Markdown 的右对齐、自适应宽度背景卡片展示；Assistant 支持标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；系统和错误保持纯文本。
 - 最终消息和流式临时文本支持鼠标选择，并通过 `Cmd+C` / `Ctrl+C` 复制渲染后的可见文字；对话记录还可双击立即复制当前渲染行。
 - 环境变量密钥、固定上游 URL、显式超时和脱敏错误分类。
-- HTTP 自动执行只读当前时间和固定 Serper 搜索；Web UI 先按模型意图激活网络搜索或 Workspace 工具组，TUI 只激活本地固定工具组；写入和撤销仍逐次审批。
+- Web UI 先按模型意图激活网络搜索或 Workspace 工具组，TUI 只激活本地固定工具组；只读工具自动执行，写入和撤销仍逐次审批。
 - Web UI 不注册 Skill、脚本或 Git 写工具；审批只绑定当前请求，取消或断流立即失效。
 - TUI 支持结构化 create/replace、哈希冲突保护、原子批次、固定项目检查和进程内 LIFO 撤销。
 - TUI 支持逐次审批的指定文件 Stage、中文 Commit 和当前分支既有上游 Push。
 - request ID 关联的结构化模型、HTTP 和工具日志。
-- 完整上游请求日志包含实际 system 消息；HTTP `/chat` 不加载本地项目规则。
+- 完整上游请求日志包含实际 system 消息；Web UI 与 TUI 都会加载启动目录的 `AGENTS.md`。
 - 默认无网络的 Agent 回放评测、显式真实模型评测、结构化轨迹、确定性评分、中文/JSON 报告、基线回归检测和可选独立 Judge。
 
 明确不支持：
 
-- HTML、远程图片、Mermaid、Markdown 代码执行、HTTP SSE、HTTP 请求级 Provider/模型选择、模型目录联网发现、TUI 多会话、Web 会话搜索/归档/云同步、向量记忆、任意 Shell、MCP、动态插件、多 Agent 和多模态。
+- HTML、远程图片、Mermaid、Markdown 代码执行、模型目录联网发现、TUI 多会话、Web 会话搜索/归档/云同步、向量记忆、任意 Shell、MCP、动态插件、多 Agent 和多模态。
 - 目录或批量文件删除、文件移动或重命名、自动依赖安装、Git Tag/force push/设置上游/任意命令、Skill 覆盖/升级/卸载、手动目录监控和跨重启撤销。
 - 自动重试、降级、负载均衡、熔断、限流、用户认证授权和任务队列。
 - 容器、反向代理、进程管理、CI/CD、分布式 Trace、指标、告警、远程日志采集和正式健康检查。

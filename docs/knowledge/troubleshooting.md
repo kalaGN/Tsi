@@ -151,6 +151,13 @@ TUI 入口会自动加载项目根目录 `.env`，且不会覆盖 Shell 中已�
 
 显式空白或未知 `LLM_PROVIDER` 也会返回 503。使用 `.env` 启动 HTTP 时必须包含 `--env-file .env`。
 
+## Web 网络搜索返回 `api_key_missing`
+
+- 在项目根目录 `.env` 设置非空 `SERPER_API_KEY`，并使用 `--env-file .env` 启动 Web 服务。
+- 搜索只使用固定 Google Serper Search API；不要配置自定义 URL、Header 或引擎变量。
+- 修改 `.env` 后重启 Uvicorn。工具不会把 Key 返回给模型或写入项目日志。
+- `upstream_unavailable` 表示 Serper 网络请求失败或返回非 2xx；`invalid_response` 和 `response_too_large` 表示上游响应不符合安全边界。
+
 ## TUI 显示 `Key: missing`
 
 - 确认项目根目录存在 `.env`，而不是放在 `app/` 或 `app/tui/`。

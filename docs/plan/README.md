@@ -4,6 +4,7 @@
 
 ## Documents
 
+- [Web 网络搜索设计](20260919-Web网络搜索-设计.md)：固定 Serper 请求边界、Web 独立工具组和无真实网络测试；已完成。
 - [Web 工作区写入设计](20260919-Web工作区写入-设计.md)：Web 专用写工具集合、请求级异步审批协议和页面安全交互；已完成。
 - [Web 多会话设计](20260918-Web多会话-设计.md)：为 Web UI 增加原子会话索引、独立 SessionStore、迁移和多会话页面编排；已完成。
 - [Web UI 与 macOS 桌面应用设计](20260918-mac桌面应用-设计.md)：第一阶段以 FastAPI、本机 Web UI、独立 Session 和只读工具复用 Runtime；Web 阶段已完成，WKWebView 壳待确认。

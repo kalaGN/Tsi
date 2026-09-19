@@ -9,7 +9,7 @@ Tsi 助手用于学习和验证 FastAPI、浏览器 UI、Textual、外部模型�
 - 单 Git 仓库、单 Python 应用；HTTP、Web UI 与 TUI 是三个独立交互入口。
 - HTTP 对外提供统一 JSON；Web UI 仅允许本机访问；TUI 只在本地终端运行。
 - Textual Worker 只防止单次异步请求阻塞界面，不是后台任务系统。
-- 没有数据库、缓存、搜索、消息队列、微服务或定时任务；Web UI 使用本地多会话目录，TUI 使用独立单会话 JSON。
+- 没有数据库、缓存、站内搜索、消息队列、微服务或定时任务；可选网络搜索使用固定 Serper.dev API，Web UI 使用本地多会话目录，TUI 使用独立单会话 JSON。
 
 ## 技术栈
 
@@ -40,7 +40,7 @@ Tsi 助手用于学习和验证 FastAPI、浏览器 UI、Textual、外部模型�
 - `app/runtime/trace.py`：供本地评测使用的可选结构化执行轨迹。
 - `app/runtime/skill_runtime.py`：TUI Skill Catalog 版本、安装器和请求级执行快照。
 - `app/services/llm/`：配置工厂、共享网络边界、阿里云与 DeepSeek Provider。
-- `tools/`：Provider 中立契约、静态/请求级分组 Registry、`get_current_time`、Workspace 策略、文件/Git 工具、固定项目检查以及 Skill 快照、安装和执行工具。
+- `tools/`：Provider 中立契约、静态/请求级分组 Registry、当前时间、受限网络搜索、Workspace 策略、文件/Git 工具、固定项目检查以及 Skill 快照、安装和执行工具。
 - `app/tui/`：Textual 应用、状态和模块启动入口。
 - `tests/test_llm_providers.py`：Provider 协议与错误测试。
 - `tests/test_chat.py`、`tests/test_chat_runtime.py`、`tests/test_tui.py`：对应交互边界测试。
@@ -80,7 +80,7 @@ git diff --check
 - 用户消息以不解析 Markdown 的右对齐、自适应宽度背景卡片展示；Assistant 支持标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；系统和错误保持纯文本。
 - 最终消息和流式临时文本支持鼠标选择，并通过 `Cmd+C` / `Ctrl+C` 复制渲染后的可见文字；对话记录还可双击立即复制当前渲染行。
 - 环境变量密钥、固定上游 URL、显式超时和脱敏错误分类。
-- HTTP 自动执行只读当前时间工具；Web UI/TUI 先按模型意图激活固定工具组，再自动执行允许的只读工具，审批每次 Workspace 写入和撤销。
+- HTTP 自动执行只读当前时间和固定 Serper 搜索；Web UI 先按模型意图激活网络搜索或 Workspace 工具组，TUI 只激活本地固定工具组；写入和撤销仍逐次审批。
 - Web UI 不注册 Skill、脚本或 Git 写工具；审批只绑定当前请求，取消或断流立即失效。
 - TUI 支持结构化 create/replace、哈希冲突保护、原子批次、固定项目检查和进程内 LIFO 撤销。
 - TUI 支持逐次审批的指定文件 Stage、中文 Commit 和当前分支既有上游 Push。

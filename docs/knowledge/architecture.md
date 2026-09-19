@@ -2,7 +2,7 @@
 
 ## 概览
 
-Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供聚合 JSON 的无状态 FastAPI HTTP、持久化多会话的 DSH 风格本机 Web UI，以及支持流式展示、可恢复单会话及项目自修改的 Textual TUI。三个入口共享 Chat Runtime，但使用隔离的会话与 Registry：HTTP 仅有只读时间工具；Web UI 持有独立会话、Workspace 读写工具和请求级审批；TUI 进一步提供 Skill、安装、脚本和 Git 写工具。
+Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供聚合 JSON 的无状态 FastAPI HTTP、持久化多会话的 DSH 风格本机 Web UI，以及支持流式展示、可恢复单会话及项目自修改的 Textual TUI。三个入口共享 Chat Runtime，但使用隔离的会话与 Registry：HTTP 具有只读时间和受限网络搜索工具；Web UI 还持有独立会话、Workspace 读写工具和请求级审批；TUI 进一步提供 Skill、安装、脚本和 Git 写工具，但不启用网络搜索。
 
 ## 组件
 
@@ -29,6 +29,7 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，同时提供
 - `tools/contracts.py`：Provider 中立的风险等级、Tool、审批请求、调用、结果和回调契约。
 - `tools/registry.py`：显式白名单注册、参数解析、两阶段审批、串行执行、安全错误和载荷边界。
 - `tools/builtin.py`：只读 `get_current_time(timezone)` 实现。
+- `tools/web_search.py`：固定 Serper.dev URL、参数/响应上限和稳定错误的只读网络搜索。
 - `tools/workspace.py`：Workspace 路径策略、文件/Git 工具、结构化编辑、单文件删除、三态 Journal 和撤销。
 - `tools/project_checks.py`：无 Shell 的四个固定项目检查。
 - `tools/skills.py`：安全 YAML Skill Catalog、每项单行的精简 system prompt、不可变资源快照、渐进读取工具及需审批的有界脚本执行器。
@@ -84,7 +85,7 @@ main.py -> app.application -> app.routers.chat --------+
              |               |
              |               +-> WebSessionCatalog -> data/web-sessions/{index,sessions}
              +-> static UI + loopback-only API + request-bound approval
-                             +-> Workspace Policy + read/write Registry
+                             +-> Web search + Workspace Policy + read/write Registry
 
 python -m app.tui -> AGENTS + SkillRuntime -> app.tui.application
                               |       |
@@ -189,7 +190,7 @@ python -m app.tui
   -> TUI stops the Timer, clears activity and records final monotonic elapsed time
 ```
 
-TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只读取 `Path.cwd()/AGENTS.md` 一次，并把同一启动目录固定为 Workspace；AGENTS 不热加载。bootstrap 是 Session、模型恢复和 Memory Policy 的唯一 TUI 装配边界，`ChatTuiApp` 构造本身不读环境或磁盘。SkillRuntime 启动时加载 Catalog，之后只在一次获批安装完整成功时发布下一版本，不监控手动目录变化。每次 `ChatSession.send()` 创建独立 `GroupedToolRegistry`：首步只披露 `activate_tool_groups`，模型可从 `general`、`workspace_read`、`workspace_write`、`skills`、`skill_install` 中按当前 Catalog 激活最多两次；一次可选择多个组，重复激活不消耗次数。Tool Loop 只在定义变化后调用当前 Provider Turn 的 `replace_tools`，新工具从下一模型步骤生效，同一步伪造调用仍返回 `unknown_tool`。完整且存在的 `$技能名` 会按首次出现去重，将最多 3 个 `SKILL.md` 作为不可信 JSON 数据追加到本轮 system 上下文，并免费预激活 `skills`；未知名称保持普通文本，资源正文仍按需读取。当前 Provider Turn 不会使用刚安装的 Skill，下一次发送才生效。系统提示词、Skill 内容和工具轨迹不进入 Session，Session 仍只提交最终 user/assistant。文件审批 Modal 显示相对路径和完整 Diff；安装审批显示安全来源、固定目标和联网风险；脚本审批显示 Skill、相对脚本、转义命令和无沙箱风险。安装只允许公开 GitHub Contents API 或当前用户 Codex 直属目录，候选经项目临时目录校验和原子 rename，刷新失败回滚。脚本每次都重新审批，使用固定解释器、最小环境、30 秒超时和 32 KiB 合计输出边界，并在超时、输出超限或取消时终止进程组。成功编辑或删除保留 `change_id`，三态 Journal 记录创建、替换或删除后的内容状态，最多保存 10 个批次且不跨重启；删除撤销只在同名路径仍不存在时原子恢复。Registry 快照复用同一 Journal。请求协调器内的变更追踪器同时记录编辑和删除，后续模型失败时仍提示受影响路径，撤销成功后移除。其请求代次会阻止取消后的陈旧 Delta、审批结果或最终结果写回。HTTP `/chat` 不加载 Workspace/Skill 安装模块、不读取 Home、宿主规则、TUI 会话或模型选择文件，仍使用固定时间工具并在 Runtime 汇总完成后返回 JSON。
+TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只读取 `Path.cwd()/AGENTS.md` 一次，并把同一启动目录固定为 Workspace；AGENTS 不热加载。bootstrap 是 Session、模型恢复和 Memory Policy 的唯一 TUI 装配边界，`ChatTuiApp` 构造本身不读环境或磁盘。SkillRuntime 启动时加载 Catalog，之后只在一次获批安装完整成功时发布下一版本，不监控手动目录变化。每次 `ChatSession.send()` 创建独立 `GroupedToolRegistry`：首步只披露 `activate_tool_groups`，模型可从 `general`、`workspace_read`、`workspace_write`、`skills`、`skill_install` 中按当前 Catalog 激活最多两次；一次可选择多个组，重复激活不消耗次数。Tool Loop 只在定义变化后调用当前 Provider Turn 的 `replace_tools`，新工具从下一模型步骤生效，同一步伪造调用仍返回 `unknown_tool`。完整且存在的 `$技能名` 会按首次出现去重，将最多 3 个 `SKILL.md` 作为不可信 JSON 数据追加到本轮 system 上下文，并免费预激活 `skills`；未知名称保持普通文本，资源正文仍按需读取。当前 Provider Turn 不会使用刚安装的 Skill，下一次发送才生效。系统提示词、Skill 内容和工具轨迹不进入 Session，Session 仍只提交最终 user/assistant。文件审批 Modal 显示相对路径和完整 Diff；安装审批显示安全来源、固定目标和联网风险；脚本审批显示 Skill、相对脚本、转义命令和无沙箱风险。安装只允许公开 GitHub Contents API 或当前用户 Codex 直属目录，候选经项目临时目录校验和原子 rename，刷新失败回滚。脚本每次都重新审批，使用固定解释器、最小环境、30 秒超时和 32 KiB 合计输出边界，并在超时、输出超限或取消时终止进程组。成功编辑或删除保留 `change_id`，三态 Journal 记录创建、替换或删除后的内容状态，最多保存 10 个批次且不跨重启；删除撤销只在同名路径仍不存在时原子恢复。Registry 快照复用同一 Journal。请求协调器内的变更追踪器同时记录编辑和删除，后续模型失败时仍提示受影响路径，撤销成功后移除。其请求代次会阻止取消后的陈旧 Delta、审批结果或最终结果写回。HTTP `/chat` 不加载 Workspace/Skill 安装模块、不读取 Home、宿主规则、TUI 会话或模型选择文件，只使用固定时间和 Serper 搜索工具并在 Runtime 汇总完成后返回 JSON。
 
 状态栏只接收应用汇总后的有限快照，不直接访问密钥、环境或模型正文。单次请求的工作区工具结果由独立追踪器解析；若后续模型步骤失败，请求协调器会让应用列出已经落盘且尚未撤销的相对路径，避免错误提示掩盖实际磁盘变化。
 
@@ -206,13 +207,15 @@ TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只�
 
 显式空白或未知 `LLM_PROVIDER` 是配置错误，不静默回退。模型变量空白时使用默认值。上游 URL 固定在相应适配器中，不能通过环境变量覆盖。
 
+网络搜索由可选 `SERPER_API_KEY` 启用，仅 HTTP 和 Web Registry 可见；URL 固定为 Google Serper Search，模型不能覆盖。缺少 Key 时工具返回稳定的不可用原因且不会联网。
+
 TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默认模型组成的安全候选快照。候选按 DeepSeek、Aliyun 及各自配置顺序展示，每家最多 50 项；缺少 Key 的候选可见但不可确认。切换先创建完整 Provider，再由 Session 在无活动请求时替换，保留消息和存储且不写回环境；成功后将安全的供应商和模型标识原子保存到 `data/model-selection.json`。下次启动只有在保存项仍位于候选且 Key 可用时才把同一 Provider 同时注入 Session 和状态栏，否则保留文件、显示非阻断提示并回退环境默认。HTTP 不读取该 Store，仍只使用部署环境选择。
 
 ## 设计决策
 
 - HTTP、Web 与 TUI 都只接触统一文本，原始 Provider JSON 只存在于 Provider 调用栈。
 - 所有请求统一通过 Provider Turn，不保留旧 `generate()` 或原始 ProviderResult 路径。
-- HTTP 默认 Registry 仅注册 `get_current_time(timezone)`；Web 的请求级 Registry 只有 `general`、`workspace_read`、`workspace_write`；TUI 再增加 Skill、安装和 `git_write`。三者均使用显式白名单，不支持反射、动态 import、任意命令或 MCP。
+- HTTP 默认 Registry 注册 `get_current_time(timezone)` 和 `web_search(query, limit)`；Web 的请求级 Registry 提供 `general`、`web_search`、`workspace_read`、`workspace_write`；TUI 再增加 Skill、安装和 `git_write`，但不包含搜索组。三者均使用显式白名单，不支持反射、动态 import、任意命令或 MCP。
 - HTTP 循环最多 5 步、每步 4 次、总计 16 次；Web/TUI 最多 41 步、每步 4 次、总计 40 次，激活调用计入相同预算。普通参数/结果上限为 8/32 KiB，编辑参数为 64 KiB。
 - 写 Tool 必须先生成完整有界 Diff；Registry 没有审批回调、用户拒绝或内容并发变化时均不会执行。Web 决策只接受当前请求的随机审批 ID，取消、断流和结束都会使其失效。
 - Workspace 拒绝越界、符号链接、保护路径、二进制和超限文件；编辑只支持 create/replace。唯一删除入口 `delete_workspace_file` 仅处理一个经当前哈希确认、逐次审批且可撤销的文本文件；固定检查不接受额外 argv、cwd 或环境。

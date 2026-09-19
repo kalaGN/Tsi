@@ -36,13 +36,20 @@ ALIYUN_MODELS=qwen3-max,qwen-plus
 
 `ALIYUN_MODEL`、`DEEPSEEK_MODEL` 是尚未保存 TUI 选择时的初始模型，空白或未设置时使用示例中的默认值。`ALIYUN_MODELS`、`DEEPSEEK_MODELS` 是 TUI `/model` 的可选候选，使用英文逗号分隔；示例只说明配置格式，不承诺对应模型在上游可用。Provider 只能为 `aliyun` 或 `deepseek`；显式空白或其他值会返回配置错误。TUI 每次成功切换后会记住供应商和模型，下次启动优先恢复；HTTP 始终忽略该本地选择并继续使用环境配置。
 
+HTTP 与 Web UI 的网络搜索使用固定 Serper.dev Google Search API；需要在 `.env` 增加：
+
+```dotenv
+SERPER_API_KEY=replace-with-real-api-key
+```
+
 ## 工具调用
 
-HTTP、Web UI 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只读时间工具；Web UI 可按需激活时间和 Workspace 读写工具，但不包含 Git、Skill 或脚本；TUI 每轮首步只发送 `activate_tool_groups`，由模型按任务意图激活所需工具组，避免每个模型步骤重复携带完整工具 Schema。一次请求最多追加两次，可在一次激活中选择多个组；组状态不会跨请求保留。显式 `$技能名` 会预激活 `skills`，不消耗追加次数。创建、修改、撤销、安装或执行脚本的审批规则不因激活而改变。
+HTTP、Web UI 与 TUI 使用不同的显式工具白名单。HTTP 提供只读时间和受限网络搜索；Web UI 可按需激活时间、网络搜索和 Workspace 读写工具，但不包含 Git、Skill 或脚本；TUI 每轮首步只发送 `activate_tool_groups`，由模型按任务意图激活所需工具组，避免每个模型步骤重复携带完整工具 Schema。一次请求最多追加两次，可在一次激活中选择多个组；组状态不会跨请求保留。显式 `$技能名` 会预激活 `skills`，不消耗追加次数。创建、修改、撤销、安装或执行脚本的审批规则不因激活而改变。
 
 | 工具组 | 包含能力 |
 |---|---|
 | `general` | 当前时间 |
+| `web_search` | 固定 Serper.dev 上游的公开网络搜索 |
 | `workspace_read` | 文件列举、搜索、读取及 Git 状态、Diff |
 | `workspace_write` | `workspace_read` 全部能力，加结构化修改、单文件删除、固定检查和撤销 |
 | `skills` | 加载 Skill、读取资源、执行脚本 |
@@ -54,6 +61,7 @@ HTTP、Web UI 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只�
 | 使用入口 | 工具 | 作用 | 执行方式 |
 | --- | --- | --- | --- |
 | HTTP、Web UI、TUI | `get_current_time(timezone)` | 获取指定 IANA 时区（例如 `Asia/Shanghai`）的当前 ISO 8601 时间 | 自动执行 |
+| HTTP、Web UI | `web_search(query, limit)` | 搜索公开网络并返回有界标题、HTTP(S) 链接和摘要 | 自动执行；需要 `SERPER_API_KEY` |
 | Web UI、TUI | `list_workspace_files` | 分页列举允许读取的文件和目录 | 自动执行 |
 | Web UI、TUI | `search_workspace_text` | 按字面量搜索 UTF-8 文本 | 自动执行 |
 | Web UI、TUI | `read_workspace_file` | 按行读取文本并返回 SHA-256 | 自动执行 |
@@ -76,6 +84,7 @@ HTTP、Web UI 与 TUI 使用不同的显式工具白名单。HTTP 仅提供只�
 安全和成本边界：
 
 - 工具只能从根目录 `tools/` 显式注册；不提供模型自由拼接的 Shell/Python、动态 import、数据库或依赖安装。Git 只能通过三个固定结构化工具执行，不能传入任意命令或参数。
+- `web_search` 只向固定的 `https://google.serper.dev/search` 发送查询，模型不能指定 URL、Header、请求方法或搜索供应商；查询内容会发送给 Serper.dev，响应体限制为 1 MiB。
 - Workspace 固定为 Web 服务或 TUI 的启动目录；绝对路径、`..`、符号链接、二进制和保护路径会被拒绝。
 - `.env*`、`.git/`、`.venv/`、`data/`、`logs/` 和缓存目录不可读写；`AGENTS.md`、Rules、依赖文件和 Workspace 安全实现额外禁止写入。
 - `apply_workspace_edits` 只支持创建已有目录下的 UTF-8 文件和精确替换，不支持删除、移动、重命名或创建目录。
@@ -167,7 +176,7 @@ Web UI 复用现有 FastAPI 服务。启动后访问 <http://127.0.0.1:8000/ui>�
 
 页面采用精简的 DSH 风格三栏布局，功能性入口优先使用带悬停提示和无障碍名称的图标按钮；支持中文输入、流式回答、安全 Markdown、停止生成、模型切换、上下文/Token/耗时、浅色/深色主题，以及 Workspace 文件树和文本预览。窄屏默认收起左右面板，避免遮挡对话区。Web 会话独立保存在 `data/web-sessions/`，左栏可新建、切换、重命名、清空和删除会话；刷新或重启后恢复最后选择，旧 `data/web-session.json` 首次启动时迁移为“历史对话”。TUI 会话不受影响。
 
-Web UI 只允许本机 loopback 客户端访问。模型可按需激活时间及 Workspace 读写工具；读取和固定检查自动执行，创建、精确替换、单文件删除和撤销会展示完整有界 Diff，只有当前请求的逐次批准才能执行。取消、断流或请求结束会使待审批操作失效。Web 不提供 Skill、Git 写、脚本或任意命令能力。左下角“设置”可调整主题、界面密度、发送快捷键和当前模型，其中界面偏好仅保存在当前浏览器，模型选择继续复用项目已有的持久化机制。静态页面不加载远程脚本、样式、图片或字体。
+Web UI 只允许本机 loopback 客户端访问。模型可按需激活时间、受限网络搜索及 Workspace 读写工具；搜索和读取自动执行，创建、精确替换、单文件删除和撤销会展示完整有界 Diff，只有当前请求的逐次批准才能执行。取消、断流或请求结束会使待审批操作失效。Web 不提供 Skill、Git 写、脚本或任意命令能力。左下角“设置”可调整主题、界面密度、发送快捷键和当前模型，其中界面偏好仅保存在当前浏览器，模型选择继续复用项目已有的持久化机制。静态页面不加载远程脚本、样式、图片或字体。
 
 ## 启动 HTTP 服务
 

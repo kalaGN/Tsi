@@ -128,7 +128,10 @@ class WebUiService:
         def execution_snapshot(_input_text: str) -> ChatExecutionSnapshot:
             return ChatExecutionSnapshot(
                 system_prompt=system_prompt,
-                registry=create_web_intent_workspace_registry(policy),
+                registry=create_web_intent_workspace_registry(
+                    policy,
+                    web_search_environ=values,
+                ),
             )
 
         def session_factory(store: SessionStore) -> ChatSession:
@@ -171,6 +174,7 @@ class WebUiService:
             "system_prompt_loaded": self.system_prompt_loaded,
             "capabilities": {
                 "streaming": True,
+                "web_search": True,
                 "workspace_read": True,
                 "workspace_write": True,
                 "skills": False,

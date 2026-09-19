@@ -134,9 +134,20 @@ def test_web_workspace_registry_exposes_write_group_without_git_or_skills(tmp_pa
     )
     assert [group.group.value for group in registry.group_definitions] == [
         "general",
+        "web_search",
         "workspace_read",
         "workspace_write",
     ]
+
+    search_result = asyncio.run(
+        registry.execute(
+            ToolCall(
+                "activate-search",
+                "activate_tool_groups",
+                '{"groups":["web_search"]}',
+            )
+        )
+    )
 
     result = asyncio.run(
         registry.execute(
@@ -148,8 +159,10 @@ def test_web_workspace_registry_exposes_write_group_without_git_or_skills(tmp_pa
         )
     )
 
+    assert search_result.is_error is False
     assert result.is_error is False
     names = {item.name for item in registry.definitions}
+    assert "web_search" in names
     assert "apply_workspace_edits" in names
     assert "delete_workspace_file" in names
     assert "git_commit" not in names

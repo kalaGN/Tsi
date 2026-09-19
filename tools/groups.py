@@ -23,6 +23,7 @@ class ToolGroup(str, Enum):
     """宿主允许模型请求的固定能力组。"""
 
     GENERAL = "general"
+    WEB_SEARCH = "web_search"
     WORKSPACE_READ = "workspace_read"
     WORKSPACE_WRITE = "workspace_write"
     SKILLS = "skills"

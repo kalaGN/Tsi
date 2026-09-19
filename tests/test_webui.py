@@ -148,6 +148,7 @@ def test_webui_bootstrap_is_provider_neutral_and_does_not_expose_secrets(tmp_pat
         "api_key_configured": True,
     }
     assert payload["capabilities"]["workspace_write"] is True
+    assert payload["capabilities"]["web_search"] is True
     assert len(payload["sessions"]) == 1
     assert payload["current_session_id"] == payload["sessions"][0]["id"]
     assert "test-only-secret" not in str(payload)

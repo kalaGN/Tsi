@@ -37,6 +37,7 @@ MAX_DIFF_BYTES = 64 * 1024
 MAX_JOURNAL_BYTES = 512 * 1024
 MAX_RELATIVE_PATH_CHARS = 1024
 MAX_TOOL_TEXT_CHARS = 24 * 1024
+MAX_BATCH_READ_FILES = 4
 PROTECTED_COMPONENTS = {".git", ".venv", "data", "logs", "__pycache__", ".pytest_cache"}
 PROTECTED_WRITE_PATHS = {
     "AGENTS.md",
@@ -380,40 +381,110 @@ class ReadWorkspaceFileTool:
         self.policy = policy
 
     async def invoke(self, arguments: Mapping[str, object]) -> object:
-        _arguments(arguments, {"path", "start_line", "max_lines"})
-        try:
-            path = self.policy.resolve_read_file(arguments.get("path"))
-        except WorkspacePathError as exc:
-            raise _path_error(exc) from exc
-        data, text = _read_text(path)
-        start = _integer(arguments.get("start_line"), 1, 1, 10_000_000)
-        maximum = _integer(arguments.get("max_lines"), 400, 1, 400)
-        lines = text.splitlines(keepends=True)
-        selected: list[str] = []
-        selected_bytes = 0
-        content_truncated = False
-        for line in lines[start - 1 : start - 1 + maximum]:
-            remaining = MAX_TOOL_TEXT_CHARS - selected_bytes
-            if remaining <= 0:
-                break
-            selected_line, was_truncated = _truncate_utf8(line, remaining)
-            selected.append(selected_line)
-            selected_bytes += len(selected_line.encode("utf-8"))
-            if was_truncated:
-                content_truncated = True
-                break
-        end = start + len(selected) - 1 if selected else 0
-        next_line = end + 1 if end and end < len(lines) else None
+        return _read_workspace_file_payload(
+            self.policy,
+            arguments,
+            maximum_content_bytes=MAX_TOOL_TEXT_CHARS,
+        )
+
+
+class ReadWorkspaceFilesTool:
+    definition = ToolDefinition(
+        "read_workspace_files",
+        "一次读取 1 至 4 个工作区 UTF-8 文本片段，适合批量检查独立文件",
+        {
+            "type": "object",
+            "properties": {
+                "files": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": MAX_BATCH_READ_FILES,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {"type": "string"},
+                            "start_line": {"type": "integer"},
+                            "max_lines": {"type": "integer"},
+                        },
+                        "required": ["path"],
+                        "additionalProperties": False,
+                    },
+                }
+            },
+            "required": ["files"],
+            "additionalProperties": False,
+        },
+    )
+
+    def __init__(self, policy: WorkspacePolicy) -> None:
+        self.policy = policy
+
+    async def invoke(self, arguments: Mapping[str, object]) -> object:
+        _arguments(arguments, {"files"})
+        files = arguments.get("files")
+        if (
+            not isinstance(files, list)
+            or not 1 <= len(files) <= MAX_BATCH_READ_FILES
+            or any(not isinstance(item, Mapping) for item in files)
+        ):
+            raise ToolArgumentError()
+
+        # 为每个片段预留相同正文预算，避免首个大文件挤占整批输出。
+        per_file_bytes = MAX_TOOL_TEXT_CHARS // len(files)
         return {
-            "path": self.policy.relative(path),
-            "sha256": hashlib.sha256(data).hexdigest(),
-            "total_lines": len(lines),
-            "start_line": start,
-            "end_line": end,
-            "next_line": next_line,
-            "content_truncated": content_truncated,
-            "content": "".join(selected),
+            "files": [
+                _read_workspace_file_payload(
+                    self.policy,
+                    item,
+                    maximum_content_bytes=per_file_bytes,
+                )
+                for item in files
+            ]
         }
+
+
+def _read_workspace_file_payload(
+    policy: WorkspacePolicy,
+    arguments: Mapping[str, object],
+    *,
+    maximum_content_bytes: int,
+) -> dict[str, object]:
+    """复用单文件边界，并允许批量读取进一步收紧每项正文预算。"""
+
+    _arguments(arguments, {"path", "start_line", "max_lines"})
+    try:
+        path = policy.resolve_read_file(arguments.get("path"))
+    except WorkspacePathError as exc:
+        raise _path_error(exc) from exc
+    data, text = _read_text(path)
+    start = _integer(arguments.get("start_line"), 1, 1, 10_000_000)
+    maximum = _integer(arguments.get("max_lines"), 400, 1, 400)
+    lines = text.splitlines(keepends=True)
+    selected: list[str] = []
+    selected_bytes = 0
+    content_truncated = False
+    for line in lines[start - 1 : start - 1 + maximum]:
+        remaining = maximum_content_bytes - selected_bytes
+        if remaining <= 0:
+            break
+        selected_line, was_truncated = _truncate_utf8(line, remaining)
+        selected.append(selected_line)
+        selected_bytes += len(selected_line.encode("utf-8"))
+        if was_truncated:
+            content_truncated = True
+            break
+    end = start + len(selected) - 1 if selected else 0
+    next_line = end + 1 if end and end < len(lines) else None
+    return {
+        "path": policy.relative(path),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "total_lines": len(lines),
+        "start_line": start,
+        "end_line": end,
+        "next_line": next_line,
+        "content_truncated": content_truncated,
+        "content": "".join(selected),
+    }
 
 
 def _truncate_utf8(text: str, maximum_bytes: int) -> tuple[str, bool]:
@@ -1172,6 +1243,7 @@ def _create_grouped_workspace_registry(
         "list_workspace_files",
         "search_workspace_text",
         "read_workspace_file",
+        "read_workspace_files",
         "get_workspace_git_status",
         "get_workspace_git_diff",
     )
@@ -1183,7 +1255,7 @@ def _create_grouped_workspace_registry(
         ),
         ToolGroupDefinition(
             ToolGroup.WORKSPACE_READ,
-            "浏览、搜索、读取工作区并查看 Git 状态或差异",
+            "浏览、搜索、优先批量读取工作区并查看 Git 状态或差异",
             read_names,
         ),
         ToolGroupDefinition(
@@ -1249,6 +1321,7 @@ def create_readonly_intent_workspace_registry(policy: WorkspacePolicy):
         ListWorkspaceFilesTool(policy),
         SearchWorkspaceTextTool(policy),
         ReadWorkspaceFileTool(policy),
+        ReadWorkspaceFilesTool(policy),
         GetWorkspaceGitStatusTool(policy),
         GetWorkspaceGitDiffTool(policy),
     )
@@ -1262,11 +1335,12 @@ def create_readonly_intent_workspace_registry(policy: WorkspacePolicy):
             ),
             ToolGroupDefinition(
                 ToolGroup.WORKSPACE_READ,
-                "浏览、搜索、读取工作区并查看 Git 状态或差异",
+                "浏览、搜索、优先批量读取工作区并查看 Git 状态或差异",
                 (
                     "list_workspace_files",
                     "search_workspace_text",
                     "read_workspace_file",
+                    "read_workspace_files",
                     "get_workspace_git_status",
                     "get_workspace_git_diff",
                 ),
@@ -1297,6 +1371,7 @@ def _create_workspace_tools(
         ListWorkspaceFilesTool(policy),
         SearchWorkspaceTextTool(policy),
         ReadWorkspaceFileTool(policy),
+        ReadWorkspaceFilesTool(policy),
         GetWorkspaceGitStatusTool(policy),
         GetWorkspaceGitDiffTool(policy),
         ApplyWorkspaceEditsTool(policy, active_journal),

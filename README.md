@@ -65,6 +65,7 @@ Web UI 与 TUI 使用不同的显式工具白名单。Web UI 可按需激活时�
 | Web UI、TUI | `list_workspace_files` | 分页列举允许读取的文件和目录 | 自动执行 |
 | Web UI、TUI | `search_workspace_text` | 按字面量搜索 UTF-8 文本 | 自动执行 |
 | Web UI、TUI | `read_workspace_file` | 按行读取文本并返回 SHA-256 | 自动执行 |
+| Web UI、TUI | `read_workspace_files` | 一次读取最多 4 个独立文本片段，减少模型往返 | 自动执行 |
 | Web UI、TUI | `get_workspace_git_status` | 查看 Git 状态 | 自动执行 |
 | Web UI、TUI | `get_workspace_git_diff` | 查看分页 Diff | 自动执行 |
 | Web UI、TUI | `apply_workspace_edits` | 创建文件或执行带哈希前置条件的精确替换 | 本地审批后执行 |
@@ -91,6 +92,7 @@ Web UI 与 TUI 使用不同的显式工具白名单。Web UI 可按需激活时�
 - `delete_workspace_file` 只接受一个现有 UTF-8 普通文本文件及 `read_workspace_file` 返回的当前 SHA-256；拒绝目录、链接、批量、保护路径、审批后变化和无审批删除，成功后可用 `change_id` 撤销。
 - Runtime 默认最多 5 个模型步骤、每步 4 次、总计 16 次工具调用；Web UI/TUI 分别为 41、4、40，工具组激活也计入预算。
 - 普通参数最多 8 KiB，编辑参数最多 64 KiB，结果最多 32 KiB；多个调用串行执行。
+- 同一用户请求内的模型步骤复用一个短生命周期 HTTP 连接池；请求成功、失败或取消后关闭。正式日志分别记录响应头、首个 SSE 事件、首个可展示文本和完整流耗时，未发生的阶段显示 `-`。
 - Skill 脚本使用参数数组而非 Shell 拼接，`.py` 固定使用当前 Python，`.sh` 固定使用 `/bin/sh`；运行环境不继承 API Key 等宿主变量，30 秒超时，stdout/stderr 合计最多 32 KiB。
 - Skill 脚本没有文件系统或网络沙箱，能够读取工作区、修改文件及访问网络；审批界面会展示解释器、相对脚本、逐项转义参数和该风险，每次调用都重新确认。
 - `install_skill` 只接受公开 `github.com` HTTPS Skill 目录和 `~/.codex/skills` 直属目录；不读取私有仓库凭据，不覆盖同名目标，不执行安装包中的脚本或安装依赖。安装审批与脚本审批相互独立。
@@ -224,11 +226,11 @@ Web 服务每次模型调用会把同一 request ID 关联的事件写入 stderr
 
 ```text
 logs/
-├── runtime/model-calls.log  # Web 服务与 TUI 真实使用日志
-└── tests/model-calls.log    # Pytest 测试日志
+├── runtime/YYYYMMDD-model-calls.log  # Web 服务与 TUI 真实使用日志
+└── tests/YYYYMMDD-model-calls.log    # Pytest 测试日志
 ```
 
-旧的 `logs/model-calls.log*` 不会自动迁移或删除，仅作历史记录保留。
+文件名使用进程启动时的北京日期，例如 `20260920-model-calls.log`。旧的 `logs/model-calls.log*` 不会自动迁移或删除，仅作历史记录保留。
 
 本地文件示例：
 
@@ -293,7 +295,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 ```
 
 所有外部模型测试均使用 HTTPX MockTransport，不会调用真实接口或消耗额度。
-Pytest 在收集测试模块前把文件 Handler 固定到 `logs/tests/model-calls.log`，不会追加 `logs/runtime/model-calls.log`。
+Pytest 在收集测试模块前把文件 Handler 固定到当日 `logs/tests/YYYYMMDD-model-calls.log`，不会追加 `logs/runtime/` 下的真实运行日志。
 
 ## Agent 评测
 

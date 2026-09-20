@@ -519,10 +519,17 @@ def test_run_chat_emits_correlated_events_for_complete_tool_loop(
 
     real_async_client = httpx.AsyncClient
     transport = httpx.MockTransport(handler)
+    clients = []
+
+    def create_client(**kwargs):
+        client = real_async_client(transport=transport, **kwargs)
+        clients.append(client)
+        return client
+
     monkeypatch.setattr(
         http_client.httpx,
         "AsyncClient",
-        lambda **kwargs: real_async_client(transport=transport, **kwargs),
+        create_client,
     )
 
     stream = io.StringIO()
@@ -555,6 +562,8 @@ def test_run_chat_emits_correlated_events_for_complete_tool_loop(
 
     events = [json.loads(line) for line in stream.getvalue().splitlines()]
     assert result.output_text == "final"
+    assert len(clients) == 1
+    assert clients[0].is_closed is True
     assert [event["event"] for event in events] == [
         "llm_request",
         "llm_http_request",
@@ -566,4 +575,7 @@ def test_run_chat_emits_correlated_events_for_complete_tool_loop(
         "llm_response",
     ]
     assert {event["request_id"] for event in events} == {events[0]["request_id"]}
+    assert events[2]["first_event_ms"] is not None
+    assert events[2]["first_text_ms"] is None
+    assert events[6]["first_text_ms"] is not None
     assert events[3]["call_id"] == events[4]["call_id"] == "time-call"

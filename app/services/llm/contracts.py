@@ -115,6 +115,10 @@ class LlmTurn(Protocol):
         """替换当前 Turn 下一模型步骤可见的工具定义。"""
         ...
 
+    async def aclose(self) -> None:
+        """释放当前用户请求持有的 Provider 资源。"""
+        ...
+
 
 class LlmProvider(Protocol):
     """Runtime 所依赖的有序消息和短生命周期 Turn 能力。"""

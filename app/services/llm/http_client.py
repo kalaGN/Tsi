@@ -3,7 +3,8 @@
 import asyncio
 import re
 import time
-from typing import Any, Callable, Mapping
+from contextlib import asynccontextmanager
+from typing import Any, AsyncIterator, Callable, Mapping
 
 import httpx
 
@@ -40,6 +41,34 @@ def _elapsed_ms(started_at: float, clock: Callable[[], float]) -> float:
     """把单调时钟增量统一转换为保留两位小数的毫秒值。"""
 
     return round((clock() - started_at) * 1000, 2)
+
+
+class _StreamTimings:
+    """保存一次 SSE 请求已经真实发生的有界性能里程碑。"""
+
+    def __init__(self) -> None:
+        self.response_headers_ms: float | None = None
+        self.first_event_ms: float | None = None
+        self.first_text_ms: float | None = None
+
+
+def create_http_client() -> httpx.AsyncClient:
+    """创建可由单个 Provider Turn 复用并负责关闭的连接池。"""
+
+    return httpx.AsyncClient(timeout=PROVIDER_TIMEOUT)
+
+
+@asynccontextmanager
+async def _client_scope(
+    client: httpx.AsyncClient | None,
+) -> AsyncIterator[httpx.AsyncClient]:
+    """兼容独立 HTTP 调用，并避免关闭调用方提供的复用客户端。"""
+
+    if client is not None:
+        yield client
+        return
+    async with create_http_client() as owned_client:
+        yield owned_client
 
 
 class _SseDecoder:
@@ -136,8 +165,9 @@ async def post_sse(
     request_id: str,
     provider: str,
     model: str,
-    on_data: Callable[[str], None],
+    on_data: Callable[[str], bool | None],
     on_raw_response: Callable[[str, bool], None] | None = None,
+    client: httpx.AsyncClient | None = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> int:
     """完整消费认证 SSE 响应，交付有界 data 事件并统一网络错误。"""
@@ -158,16 +188,26 @@ async def post_sse(
     )
 
     started_at = clock()
+    timings = _StreamTimings()
     raw_response = _RawResponseCapture()
+
+    def dispatch(data: str) -> None:
+        if timings.first_event_ms is None:
+            timings.first_event_ms = _elapsed_ms(started_at, clock)
+        published_text = on_data(data)
+        if published_text and timings.first_text_ms is None:
+            timings.first_text_ms = _elapsed_ms(started_at, clock)
+
     try:
         async with asyncio.timeout(TOTAL_TIMEOUT_SECONDS):
-            async with httpx.AsyncClient(timeout=PROVIDER_TIMEOUT) as client:
-                async with client.stream(
+            async with _client_scope(client) as active_client:
+                async with active_client.stream(
                     "POST",
                     url,
                     headers=headers,
                     json=payload,
                 ) as response:
+                    timings.response_headers_ms = _elapsed_ms(started_at, clock)
                     if response.status_code in (401, 403):
                         await _capture_stream_body(response, raw_response)
                         _log_stream_response(
@@ -177,6 +217,7 @@ async def post_sse(
                             provider,
                             model,
                             request_id,
+                            timings,
                         )
                         raise ProviderAuthenticationError(response.status_code)
                     if not response.is_success:
@@ -188,6 +229,7 @@ async def post_sse(
                             provider,
                             model,
                             request_id,
+                            timings,
                         )
                         raise ProviderResponseError(response.status_code)
                     content_type = response.headers.get("content-type", "")
@@ -201,9 +243,9 @@ async def post_sse(
                     async for chunk in response.aiter_bytes():
                         raw_response.feed(chunk)
                         for data in decoder.feed(chunk):
-                            on_data(data)
+                            dispatch(data)
                     for data in decoder.finish():
-                        on_data(data)
+                        dispatch(data)
                     _log_stream_response(
                         response,
                         started_at,
@@ -211,6 +253,7 @@ async def post_sse(
                         provider,
                         model,
                         request_id,
+                        timings,
                     )
                     if on_raw_response is not None:
                         on_raw_response(raw_response.text, raw_response.truncated)
@@ -228,6 +271,9 @@ async def post_sse(
             model=model,
             error_type="timeout",
             duration_ms=_elapsed_ms(started_at, clock),
+            response_headers_ms=timings.response_headers_ms,
+            first_event_ms=timings.first_event_ms,
+            first_text_ms=timings.first_text_ms,
         )
         error = ProviderTimeoutError()
         if raw_response.text:
@@ -243,6 +289,9 @@ async def post_sse(
             model=model,
             error_type="connection",
             duration_ms=_elapsed_ms(started_at, clock),
+            response_headers_ms=timings.response_headers_ms,
+            first_event_ms=timings.first_event_ms,
+            first_text_ms=timings.first_text_ms,
         )
         error = ProviderConnectionError()
         if raw_response.text:
@@ -272,6 +321,7 @@ def _log_stream_response(
     provider: str,
     model: str,
     request_id: str,
+    timings: _StreamTimings,
 ) -> None:
     """为一次已收到的 SSE 响应记录单条状态与完整生命周期耗时。"""
 
@@ -281,6 +331,9 @@ def _log_stream_response(
         model=model,
         status_code=response.status_code,
         duration_ms=_elapsed_ms(started_at, clock),
+        response_headers_ms=timings.response_headers_ms,
+        first_event_ms=timings.first_event_ms,
+        first_text_ms=timings.first_text_ms,
         response_content_type=response.headers.get("content-type"),
     )
 

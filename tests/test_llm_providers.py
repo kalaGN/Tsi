@@ -531,7 +531,7 @@ def test_both_providers_send_all_workspace_schemas_without_host_metadata(
     assert {item["name"] for item in declared} == {
         definition.name for definition in definitions
     }
-    assert len(declared) == 10
+    assert len(declared) == 11
     assert all(
         set(item) == {"name", "description", "parameters"}
         or set(item) == {"type", "name", "description", "parameters"}
@@ -1910,7 +1910,11 @@ def test_post_sse_decodes_utf8_across_chunks_and_multiline_events(
 
     install_transport(monkeypatch, handler)
     received = []
-    ticks = iter([1.0, 1.25])
+    ticks = iter([1.0, 1.05, 1.10, 1.15, 1.25])
+
+    def accept(data):
+        received.append(data)
+        return data == "first\nsecond"
 
     status = asyncio.run(
         post_sse(
@@ -1920,7 +1924,7 @@ def test_post_sse_decodes_utf8_across_chunks_and_multiline_events(
             request_id=REQUEST_ID,
             provider="deepseek",
             model="m",
-            on_data=received.append,
+            on_data=accept,
             clock=lambda: next(ticks),
         )
     )
@@ -1933,6 +1937,9 @@ def test_post_sse_decodes_utf8_across_chunks_and_multiline_events(
         "llm_http_response",
     ]
     assert events[1]["duration_ms"] == 250.0
+    assert events[1]["response_headers_ms"] == 50.0
+    assert events[1]["first_event_ms"] == 100.0
+    assert events[1]["first_text_ms"] == 150.0
 
 
 def test_post_sse_dispatches_valid_final_event_without_blank_line(monkeypatch):
@@ -2033,7 +2040,7 @@ def test_post_sse_applies_overall_timeout_and_closes_stream(
 
     install_transport(monkeypatch, handler, adapt_streaming_json=False)
     monkeypatch.setattr(http_client, "TOTAL_TIMEOUT_SECONDS", 0.01)
-    ticks = iter([3.0, 3.02])
+    ticks = iter([3.0, 3.005, 3.02])
 
     with pytest.raises(ProviderTimeoutError):
         asyncio.run(

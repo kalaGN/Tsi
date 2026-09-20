@@ -46,6 +46,9 @@ class ReplayTurn:
     def replace_tools(self, tools: tuple[ToolDefinition, ...]) -> None:
         self.tool_replacements.append(tuple(tools))
 
+    async def aclose(self) -> None:
+        """回放 Turn 不持有外部资源，保留统一关闭接口。"""
+
     @property
     def exhausted(self) -> bool:
         return self._index == len(self._steps)

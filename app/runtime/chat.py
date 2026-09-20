@@ -189,17 +189,22 @@ async def run_chat_messages(
             active_registry.definitions,
             request_id=request_id,
         )
-        loop_result = await run_tool_loop(
-            turn,
-            active_registry,
-            request_id=request_id,
-            on_text_delta=on_text_delta,
-            on_text_reset=on_text_reset,
-            on_tool_approval=on_tool_approval,
-            on_tool_result=on_tool_result,
-            limits=tool_loop_limits,
-            trace_observer=trace_observer,
-        )
+        try:
+            loop_result = await run_tool_loop(
+                turn,
+                active_registry,
+                request_id=request_id,
+                on_text_delta=on_text_delta,
+                on_text_reset=on_text_reset,
+                on_tool_approval=on_tool_approval,
+                on_tool_result=on_tool_result,
+                limits=tool_loop_limits,
+                trace_observer=trace_observer,
+            )
+        finally:
+            close_turn = getattr(turn, "aclose", None)
+            if close_turn is not None:
+                await close_turn()
         output_text = loop_result.output_text
         log_model_response(
             request_id=request_id,

@@ -18,6 +18,7 @@ from app.services.llm.http_client import (
     MAX_STREAM_OUTPUT_BYTES,
     MAX_STREAM_TOOL_ARGUMENT_BYTES,
     MAX_STREAM_TOOL_CALLS,
+    create_http_client,
     post_sse,
 )
 from tools.contracts import ToolCall, ToolDefinition, ToolResult
@@ -80,6 +81,19 @@ class DeepSeekTurn:
         self._request_id = request_id
         self._pending_calls: tuple[ToolCall, ...] = ()
         self._completed = False
+        self._client = None
+
+    async def aclose(self) -> None:
+        """幂等关闭当前 Turn 的短生命周期连接池。"""
+
+        client, self._client = self._client, None
+        if client is not None:
+            await client.aclose()
+
+    def _http_client(self):
+        if self._client is None:
+            self._client = create_http_client()
+        return self._client
 
     def replace_tools(self, tools: tuple[ToolDefinition, ...]) -> None:
         """替换后续请求的工具定义，同时保留当前消息续接状态。"""
@@ -98,7 +112,11 @@ class DeepSeekTurn:
     ) -> ModelStep:
         if self._completed:
             raise ProviderInvalidRequestError()
-        self._append_tool_results(tuple(tool_results))
+        try:
+            self._append_tool_results(tuple(tool_results))
+        except BaseException:
+            await self.aclose()
+            raise
 
         payload: dict[str, Any] = {
             "model": self._model,
@@ -117,17 +135,18 @@ class DeepSeekTurn:
             nonlocal raw_response
             raw_response = (content, truncated)
 
-        status_code = await post_sse(
-            DEEPSEEK_CHAT_COMPLETIONS_URL,
-            self._api_key,
-            payload,
-            request_id=self._request_id,
-            provider=DeepSeekChatProvider.name,
-            model=self._model,
-            on_data=stream_state.accept,
-            on_raw_response=capture_raw_response,
-        )
         try:
+            status_code = await post_sse(
+                DEEPSEEK_CHAT_COMPLETIONS_URL,
+                self._api_key,
+                payload,
+                request_id=self._request_id,
+                provider=DeepSeekChatProvider.name,
+                model=self._model,
+                on_data=stream_state.accept,
+                on_raw_response=capture_raw_response,
+                client=self._http_client(),
+            )
             message, calls, token_usage = stream_state.finish()
         except ProviderInvalidResponseError as exc:
             if raw_response is not None:
@@ -135,6 +154,10 @@ class DeepSeekTurn:
                     raw_response[0],
                     truncated=raw_response[1],
                 )
+            await self.aclose()
+            raise
+        except BaseException:
+            await self.aclose()
             raise
         if calls:
             self._messages.append(_assistant_tool_message(message, calls))
@@ -146,6 +169,7 @@ class DeepSeekTurn:
 
         output_text = _extract_message_text(message)
         self._completed = True
+        await self.aclose()
         return ModelStep(status_code, output_text, (), token_usage)
 
     def _append_tool_results(self, results: tuple[ToolResult, ...]) -> None:
@@ -191,14 +215,14 @@ class _DeepSeekStreamState:
         self._finish_reason: str | None = None
         self._done = False
 
-    def accept(self, data: str) -> None:
+    def accept(self, data: str) -> bool:
         """校验一个 data 事件并累积文本、reasoning 与工具参数增量。"""
 
         if self._done:
             raise _invalid_structure()
         if data == "[DONE]":
             self._done = True
-            return
+            return False
         try:
             body = json.loads(data)
         except (TypeError, ValueError) as exc:
@@ -215,7 +239,7 @@ class _DeepSeekStreamState:
             # include_usage 的最后一个 Chunk 没有 choices，但必须携带有效计量。
             if not has_token_usage:
                 raise _invalid_structure()
-            return
+            return False
         if len(choices) != 1 or not isinstance(choices[0], dict):
             raise _invalid_structure()
         choice = choices[0]
@@ -224,7 +248,12 @@ class _DeepSeekStreamState:
         delta = choice.get("delta")
         if not isinstance(delta, dict):
             raise _invalid_structure()
-        self._append_optional_text(delta, "content", self._content, publish=True)
+        published_text = self._append_optional_text(
+            delta,
+            "content",
+            self._content,
+            publish=True,
+        )
         self._append_optional_text(
             delta,
             "reasoning_content",
@@ -242,6 +271,7 @@ class _DeepSeekStreamState:
             ):
                 raise _invalid_structure()
             self._finish_reason = finish_reason
+        return published_text
 
     def finish(
         self,
@@ -288,12 +318,12 @@ class _DeepSeekStreamState:
         *,
         publish: bool = False,
         limit_reasoning: bool = False,
-    ) -> None:
+    ) -> bool:
         """追加允许为 null/空串的文本字段，并限制最终输出字节数。"""
 
         value = delta.get(field_name)
         if value is None or value == "":
-            return
+            return False
         if not isinstance(value, str):
             raise _invalid_structure()
         if publish:
@@ -307,6 +337,7 @@ class _DeepSeekStreamState:
         target.append(value)
         if publish and self._on_text_delta is not None:
             self._on_text_delta(value)
+        return publish
 
     def _append_tool_call_deltas(self, raw_calls: Any) -> None:
         """按官方 index 合并可能跨多个 SSE Chunk 的工具调用字段。"""

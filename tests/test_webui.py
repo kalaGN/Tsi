@@ -272,6 +272,7 @@ def test_webui_registry_can_activate_workspace_write_without_git(tmp_path):
         assert result.is_error is False
         names = {item.name for item in registry.definitions}
         assert "read_workspace_file" in names
+        assert "read_workspace_files" in names
         assert "apply_workspace_edits" in names
         assert "delete_workspace_file" in names
         assert "git_commit" not in names

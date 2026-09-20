@@ -229,7 +229,7 @@ TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默�
 - TUI 系统提示词随完整 Provider 请求体明文进入模型日志；状态栏和 Runtime 摘要日志不回显正文。
 - HTTP 边界脱敏 Header 由日志层用固定值重建（`Authorization` 写为 `Bearer [REDACTED]`），从数据流上阻止密钥进入 Logger。
 - HTTP 耗时用 `time.monotonic()` 计算并保留两位毫秒；超时/连接失败只记录有限分类和耗时，不记录异常类名或堆栈。
-- Web 服务日志双写单行 JSON stderr 和 UTF-8 中文分块 `logs/runtime/model-calls.log`；TUI 只写该运行文件，Pytest 在收集模块前预配置 `logs/tests/model-calls.log`，且进程内只保留一个文件 Handler。文件不可用时 Web 服务降级为 stderr，TUI 静默放弃日志，避免覆盖全屏终端。两类文件均使用北京时间和两空格 JSON 缩进的结构化正文，并各自按单文件 10 MiB、5 个备份独立轮转。旧 `logs/model-calls.log*` 仅作历史保留。
+- Web 服务日志双写单行 JSON stderr 和 UTF-8 中文分块 `logs/runtime/YYYYMMDD-model-calls.log`；TUI 只写该运行文件，Pytest 在收集模块前预配置 `logs/tests/YYYYMMDD-model-calls.log`，且进程内只保留一个文件 Handler。`YYYYMMDD` 取进程启动时的北京日期。文件不可用时 Web 服务降级为 stderr，TUI 静默放弃日志，避免覆盖全屏终端。两类文件均使用北京时间和两空格 JSON 缩进的结构化正文，并各自按单文件 10 MiB、5 个备份独立轮转。旧 `logs/model-calls.log*` 仅作历史保留。
 - TUI 同时最多一个请求；Esc 优先清空非空输入且不启动退出计时，输入为空时第一次 Esc 取消请求，1.5 秒内第二次 Esc 退出，并用请求代次阻止陈旧结果写回。
 - TUI 每个活动请求最多创建一个 100 ms Timer，空闲时没有周期任务；Timer 回调同样校验捕获的请求代次。
 - TUI 上下键固定用于输入历史，历史不去重、不循环且没有独立持久化文件；`/clear` 同步清空。

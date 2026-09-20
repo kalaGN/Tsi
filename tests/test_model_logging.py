@@ -2,8 +2,10 @@ import io
 import json
 import logging
 import re
+from datetime import datetime
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -34,14 +36,23 @@ def reset_model_logger():
 
 def test_default_log_paths_separate_runtime_and_tests():
     project_root = Path(model_logging.__file__).resolve().parents[2]
+    date_prefix = datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%Y%m%d")
 
     assert model_logging.RUNTIME_LOG_PATH == (
-        project_root / "logs" / "runtime" / "model-calls.log"
+        project_root / "logs" / "runtime" / f"{date_prefix}-model-calls.log"
     )
     assert model_logging.TEST_LOG_PATH == (
-        project_root / "logs" / "tests" / "model-calls.log"
+        project_root / "logs" / "tests" / f"{date_prefix}-model-calls.log"
     )
     assert model_logging.DEFAULT_LOG_PATH == model_logging.RUNTIME_LOG_PATH
+
+
+def test_dated_log_path_uses_beijing_calendar_date():
+    instant = datetime.fromisoformat("2026-09-19T16:30:00+00:00")
+
+    assert model_logging._dated_log_path("runtime", instant).name == (
+        "20260920-model-calls.log"
+    )
 
 
 def test_default_configuration_uses_runtime_path(tmp_path, monkeypatch):
@@ -264,6 +275,9 @@ def test_http_log_events_use_exact_whitelist_and_single_line_json(tmp_path):
         model="deepseek-v4-flash",
         status_code=200,
         duration_ms=12.34,
+        response_headers_ms=1.2,
+        first_event_ms=2.3,
+        first_text_ms=3.4,
         response_content_type="application/json",
     )
     model_logging.log_model_http_error(
@@ -272,6 +286,9 @@ def test_http_log_events_use_exact_whitelist_and_single_line_json(tmp_path):
         model="qwen3-max",
         error_type="timeout",
         duration_ms=9999.5,
+        response_headers_ms=10.0,
+        first_event_ms=20.0,
+        first_text_ms=None,
     )
 
     stream_lines = stream.getvalue().splitlines()
@@ -314,11 +331,17 @@ def test_http_log_events_use_exact_whitelist_and_single_line_json(tmp_path):
         "model",
         "status_code",
         "duration_ms",
+        "response_headers_ms",
+        "first_event_ms",
+        "first_text_ms",
         "response_content_type",
     }
     assert response_event["event"] == "llm_http_response"
     assert response_event["status_code"] == 200
     assert response_event["duration_ms"] == 12.34
+    assert response_event["response_headers_ms"] == 1.2
+    assert response_event["first_event_ms"] == 2.3
+    assert response_event["first_text_ms"] == 3.4
     assert response_event["response_content_type"] == "application/json"
     assert response_event["request_id"] == request_event["request_id"]
 
@@ -332,10 +355,14 @@ def test_http_log_events_use_exact_whitelist_and_single_line_json(tmp_path):
         "model",
         "error_type",
         "duration_ms",
+        "response_headers_ms",
+        "first_event_ms",
+        "first_text_ms",
     }
     assert error_event["event"] == "llm_http_error"
     assert error_event["error_type"] == "timeout"
     assert error_event["duration_ms"] == 9999.5
+    assert error_event["first_text_ms"] is None
 
     assert "事件：HTTP 请求" in file_text
     assert "方法：POST" in file_text
@@ -348,6 +375,9 @@ def test_http_log_events_use_exact_whitelist_and_single_line_json(tmp_path):
     assert '      "content": "你好"' in file_text
     assert "事件：HTTP 响应" in file_text
     assert "HTTP 状态：200" in file_text
+    assert "响应头耗时：1.2 ms" in file_text
+    assert "首事件耗时：2.3 ms" in file_text
+    assert "首文本耗时：3.4 ms" in file_text
     assert "响应类型：application/json" in file_text
     assert "事件：HTTP 错误" in file_text
     assert "错误类型：超时" in file_text
@@ -456,6 +486,9 @@ def test_http_log_events_never_leak_api_key_or_raw_details(tmp_path):
         model="deepseek-v4-flash",
         status_code=500,
         duration_ms=1.0,
+        response_headers_ms=None,
+        first_event_ms=None,
+        first_text_ms=None,
         response_content_type="application/json",
     )
     model_logging.log_model_http_error(
@@ -464,6 +497,9 @@ def test_http_log_events_never_leak_api_key_or_raw_details(tmp_path):
         model="deepseek-v4-flash",
         error_type="connection",
         duration_ms=2.0,
+        response_headers_ms=None,
+        first_event_ms=None,
+        first_text_ms=None,
     )
 
     text = stream.getvalue()

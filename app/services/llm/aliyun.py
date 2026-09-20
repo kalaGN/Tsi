@@ -18,6 +18,7 @@ from app.services.llm.http_client import (
     MAX_STREAM_OUTPUT_BYTES,
     MAX_STREAM_TOOL_ARGUMENT_BYTES,
     MAX_STREAM_TOOL_CALLS,
+    create_http_client,
     post_sse,
 )
 from tools.contracts import ToolCall, ToolDefinition, ToolResult
@@ -83,6 +84,19 @@ class AliyunTurn:
         self._request_id = request_id
         self._pending_calls: tuple[ToolCall, ...] = ()
         self._completed = False
+        self._client = None
+
+    async def aclose(self) -> None:
+        """幂等关闭当前 Turn 的短生命周期连接池。"""
+
+        client, self._client = self._client, None
+        if client is not None:
+            await client.aclose()
+
+    def _http_client(self):
+        if self._client is None:
+            self._client = create_http_client()
+        return self._client
 
     def replace_tools(self, tools: tuple[ToolDefinition, ...]) -> None:
         """替换后续请求的工具定义，同时保留当前 input 续接状态。"""
@@ -101,7 +115,11 @@ class AliyunTurn:
     ) -> ModelStep:
         if self._completed:
             raise ProviderInvalidRequestError()
-        self._append_call_result_pairs(tuple(tool_results))
+        try:
+            self._append_call_result_pairs(tuple(tool_results))
+        except BaseException:
+            await self.aclose()
+            raise
 
         payload: dict[str, Any] = {
             "model": self._model,
@@ -119,17 +137,18 @@ class AliyunTurn:
             nonlocal raw_response
             raw_response = (content, truncated)
 
-        status_code = await post_sse(
-            ALIYUN_RESPONSES_URL,
-            self._api_key,
-            payload,
-            request_id=self._request_id,
-            provider=AliyunResponsesProvider.name,
-            model=self._model,
-            on_data=stream_state.accept,
-            on_raw_response=capture_raw_response,
-        )
         try:
+            status_code = await post_sse(
+                ALIYUN_RESPONSES_URL,
+                self._api_key,
+                payload,
+                request_id=self._request_id,
+                provider=AliyunResponsesProvider.name,
+                model=self._model,
+                on_data=stream_state.accept,
+                on_raw_response=capture_raw_response,
+                client=self._http_client(),
+            )
             calls, output_text, token_usage = stream_state.finish()
         except ProviderInvalidResponseError as exc:
             if raw_response is not None:
@@ -137,12 +156,17 @@ class AliyunTurn:
                     raw_response[0],
                     truncated=raw_response[1],
                 )
+            await self.aclose()
+            raise
+        except BaseException:
+            await self.aclose()
             raise
         if calls:
             self._pending_calls = calls
             return ModelStep(status_code, output_text, calls, token_usage)
 
         self._completed = True
+        await self.aclose()
         return ModelStep(status_code, output_text, (), token_usage)
 
     def _append_call_result_pairs(
@@ -192,7 +216,7 @@ class _AliyunStreamState:
         self._argument_bytes: dict[str, int] = {}
         self._saw_done_marker = False
 
-    def accept(self, data: str) -> None:
+    def accept(self, data: str) -> bool:
         """处理一个 Responses data 事件，并只发布最终回答文本 Delta。"""
 
         if self._completed_response is not None and data != "[DONE]":
@@ -201,7 +225,7 @@ class _AliyunStreamState:
             if self._saw_done_marker:
                 raise _invalid_structure()
             self._saw_done_marker = True
-            return
+            return False
         try:
             event = json.loads(data)
         except (TypeError, ValueError) as exc:
@@ -211,7 +235,7 @@ class _AliyunStreamState:
 
         event_type = event["type"]
         if event_type == "response.output_text.delta":
-            self._append_text_delta(event.get("delta"))
+            return self._append_text_delta(event.get("delta"))
         elif event_type == "response.output_text.done":
             text = event.get("text")
             if not isinstance(text, str) or not text or self._done_text is not None:
@@ -236,6 +260,7 @@ class _AliyunStreamState:
             self._completed_response = response
         elif event_type in {"response.failed", "response.incomplete"}:
             raise _invalid_structure()
+        return False
 
     def finish(
         self,
@@ -265,20 +290,21 @@ class _AliyunStreamState:
             raise _invalid_structure()
         return (), streamed_text or complete_text, token_usage
 
-    def _append_text_delta(self, delta: Any) -> None:
+    def _append_text_delta(self, delta: Any) -> bool:
         """追加文本并限制 UTF-8 累计大小。"""
 
         if not isinstance(delta, str):
             raise _invalid_structure()
         # 阿里云可能发送空文本 delta；它不携带内容，也不代表协议失败。
         if not delta:
-            return
+            return False
         self._text_bytes += len(delta.encode("utf-8"))
         if self._text_bytes > MAX_STREAM_OUTPUT_BYTES:
             raise _invalid_structure()
         self._text_fragments.append(delta)
         if self._on_text_delta is not None:
             self._on_text_delta(delta)
+        return True
 
     def _accept_output_item(self, item: Any) -> None:
         """保存完整 function_call item，供 completed 对象交叉校验。"""

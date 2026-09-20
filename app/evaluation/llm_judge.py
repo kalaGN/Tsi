@@ -45,6 +45,7 @@ async def judge_report(payload: Mapping[str, object], provider: LlmProvider) -> 
                 "output": trial.get("trace", {}).get("output_text") if isinstance(trial.get("trace"), dict) else None,
                 "tool_trace": _tool_trace_summary(trial.get("trace")),
             }
+            turn = None
             try:
                 turn = provider.create_turn(
                     (
@@ -66,6 +67,9 @@ async def judge_report(payload: Mapping[str, object], provider: LlmProvider) -> 
             except (LlmProviderError, EvaluationConfigError, json.JSONDecodeError, TypeError, ValueError) as exc:
                 failures += 1
                 trial["judge_error"] = f"{type(exc).__name__}: {exc}"[:1000]
+            finally:
+                if turn is not None:
+                    await turn.aclose()
     if successes == 0:
         raise JudgeUnavailableError("all judge calls failed")
     judged["judge"] = {

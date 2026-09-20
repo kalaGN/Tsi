@@ -16,6 +16,7 @@ from tools.workspace import (
     GetWorkspaceGitDiffTool,
     GetWorkspaceGitStatusTool,
     ListWorkspaceFilesTool,
+    ReadWorkspaceFilesTool,
     ReadWorkspaceFileTool,
     SearchWorkspaceTextTool,
     UndoWorkspaceChangeTool,
@@ -52,7 +53,7 @@ def test_static_and_intent_workspace_factories_keep_distinct_visibility(tmp_path
     static = create_workspace_registry(policy)
     intent = create_intent_workspace_registry(policy)
 
-    assert len(static.definitions) == 10
+    assert len(static.definitions) == 11
     assert tuple(item.name for item in intent.definitions) == (
         "activate_tool_groups",
     )
@@ -117,6 +118,7 @@ def test_intent_workspace_write_group_contains_read_and_write_tools(tmp_path):
         "list_workspace_files",
         "search_workspace_text",
         "read_workspace_file",
+        "read_workspace_files",
         "get_workspace_git_status",
         "get_workspace_git_diff",
         "apply_workspace_edits",
@@ -223,6 +225,56 @@ def test_list_search_and_read_support_chinese_and_hash(tmp_path):
     assert searched["data"]["matches"][0]["path"] == "docs/说明.md"
     assert read["data"]["content"] == "包含中文关键字\n"
     assert read["data"]["sha256"] == hashlib.sha256(content.encode()).hexdigest()
+
+
+def test_batch_read_returns_up_to_four_bounded_file_slices(tmp_path):
+    (tmp_path / "a.txt").write_text("a1\na2\na3\n", encoding="utf-8")
+    (tmp_path / "中文.txt").write_text("中1\n中2\n", encoding="utf-8")
+
+    output, result = execute(
+        ReadWorkspaceFilesTool(WorkspacePolicy(tmp_path)),
+        {
+            "files": [
+                {"path": "a.txt", "start_line": 2, "max_lines": 2},
+                {"path": "中文.txt", "max_lines": 1},
+            ]
+        },
+    )
+
+    assert result.is_error is False
+    assert [item["path"] for item in output["data"]["files"]] == [
+        "a.txt",
+        "中文.txt",
+    ]
+    assert output["data"]["files"][0]["content"] == "a2\na3\n"
+    assert output["data"]["files"][1]["content"] == "中1\n"
+    assert len(json.dumps(output, ensure_ascii=False).encode("utf-8")) < 32 * 1024
+
+
+@pytest.mark.parametrize(
+    "files, error_code",
+    (
+        ([], "invalid_arguments"),
+        ([{"path": "a.txt"}] * 5, "invalid_arguments"),
+        ([{"path": ".env"}], "protected_path"),
+        ([{"path": "a.txt", "extra": True}], "invalid_arguments"),
+    ),
+)
+def test_batch_read_rejects_invalid_or_protected_requests(
+    tmp_path,
+    files,
+    error_code,
+):
+    (tmp_path / "a.txt").write_text("safe", encoding="utf-8")
+    (tmp_path / ".env").write_text("secret", encoding="utf-8")
+
+    output, result = execute(
+        ReadWorkspaceFilesTool(WorkspacePolicy(tmp_path)),
+        {"files": files},
+    )
+
+    assert result.is_error is True
+    assert output["error"]["code"] == error_code
 
 
 def test_read_rejects_binary_and_list_prunes_protected_directory(tmp_path):

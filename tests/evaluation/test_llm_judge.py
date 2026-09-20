@@ -36,6 +36,29 @@ def test_judge_adds_strict_scores_and_separate_usage():
     assert "result" not in judge_message
 
 
+def test_judge_closes_turn_when_response_is_invalid():
+    provider = ReplayProvider(((ReplayStep("not-json"),),))
+    closed = False
+
+    async def track_close():
+        nonlocal closed
+        closed = True
+
+    original_create_turn = provider.create_turn
+
+    def create_turn(*args, **kwargs):
+        turn = original_create_turn(*args, **kwargs)
+        turn.aclose = track_close
+        return turn
+
+    provider.create_turn = create_turn
+
+    with pytest.raises(EvaluationConfigError, match="all judge calls failed"):
+        asyncio.run(judge_report(_payload(), provider))
+
+    assert closed is True
+
+
 def test_judge_rejects_all_invalid_responses():
     provider = ReplayProvider(((ReplayStep("not-json"),),))
 

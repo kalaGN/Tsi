@@ -19,13 +19,23 @@ logging.getLogger(LOGGER_NAME).addHandler(logging.NullHandler())
 MAX_LOG_BYTES = 10 * 1024 * 1024
 BACKUP_COUNT = 5
 LOG_ROOT = Path(__file__).resolve().parents[2] / "logs"
-RUNTIME_LOG_PATH = LOG_ROOT / "runtime" / "model-calls.log"
-TEST_LOG_PATH = LOG_ROOT / "tests" / "model-calls.log"
+_LOCAL_LOG_TIMEZONE = ZoneInfo("Asia/Shanghai")
+
+
+def _dated_log_path(category: str, instant: datetime | None = None) -> Path:
+    """按北京时间生成可排序的每日模型日志路径。"""
+
+    current = instant or datetime.now(_LOCAL_LOG_TIMEZONE)
+    local_date = current.astimezone(_LOCAL_LOG_TIMEZONE).strftime("%Y%m%d")
+    return LOG_ROOT / category / f"{local_date}-model-calls.log"
+
+
+RUNTIME_LOG_PATH = _dated_log_path("runtime")
+TEST_LOG_PATH = _dated_log_path("tests")
 DEFAULT_LOG_PATH = RUNTIME_LOG_PATH
 
 _HANDLER_MARKER = "_model_log_handler_kind"
 _CONFIGURATION_LOCK = Lock()
-_LOCAL_LOG_TIMEZONE = ZoneInfo("Asia/Shanghai")
 _READABLE_SEPARATOR = "=" * 80
 # 日志层用固定脱敏值重建请求 Header，从数据流上阻止真实 API Key 进入 Logger。
 _REDACTED_REQUEST_HEADERS = {
@@ -64,6 +74,9 @@ _EVENT_FIELDS = {
         "model",
         "status_code",
         "duration_ms",
+        "response_headers_ms",
+        "first_event_ms",
+        "first_text_ms",
         "response_content_type",
     ),
     "llm_http_error": (
@@ -72,6 +85,9 @@ _EVENT_FIELDS = {
         "model",
         "error_type",
         "duration_ms",
+        "response_headers_ms",
+        "first_event_ms",
+        "first_text_ms",
     ),
     "llm_error": (
         "request_id",
@@ -204,6 +220,9 @@ class _ModelEventReadableFormatter(logging.Formatter):
                 (
                     f"HTTP 状态：{record.status_code}",
                     f"耗时：{record.duration_ms} ms",
+                    f"响应头耗时：{_display_duration(record.response_headers_ms)}",
+                    f"首事件耗时：{_display_duration(record.first_event_ms)}",
+                    f"首文本耗时：{_display_duration(record.first_text_ms)}",
                     f"响应类型：{record.response_content_type or '-'}",
                 )
             )
@@ -212,6 +231,9 @@ class _ModelEventReadableFormatter(logging.Formatter):
                 (
                     f"错误类型：{self._ERROR_NAMES.get(record.error_type, record.error_type)}",
                     f"耗时：{record.duration_ms} ms",
+                    f"响应头耗时：{_display_duration(record.response_headers_ms)}",
+                    f"首事件耗时：{_display_duration(record.first_event_ms)}",
+                    f"首文本耗时：{_display_duration(record.first_text_ms)}",
                 )
             )
         elif event_name == "llm_error":
@@ -297,6 +319,12 @@ def _render_log_content(value: object, parse_json: bool) -> str:
         except (TypeError, ValueError):
             return str(value)
     return str(rendered_value)
+
+
+def _display_duration(value: float | None) -> str:
+    """统一显示可选流式里程碑，未发生的阶段不伪造为零。"""
+
+    return "-" if value is None else f"{value} ms"
 
 
 class _SafeRotatingFileHandler(RotatingFileHandler):
@@ -445,6 +473,9 @@ def log_model_http_response(
     status_code: int,
     duration_ms: float,
     response_content_type: str | None,
+    response_headers_ms: float | None = None,
+    first_event_ms: float | None = None,
+    first_text_ms: float | None = None,
 ) -> None:
     """记录外部 HTTP 响应状态、Content-Type 和耗时，不记录原始响应体。"""
 
@@ -457,6 +488,9 @@ def log_model_http_response(
             "model": model,
             "status_code": status_code,
             "duration_ms": duration_ms,
+            "response_headers_ms": response_headers_ms,
+            "first_event_ms": first_event_ms,
+            "first_text_ms": first_text_ms,
             "response_content_type": response_content_type,
         },
     )
@@ -469,6 +503,9 @@ def log_model_http_error(
     model: str,
     error_type: str,
     duration_ms: float,
+    response_headers_ms: float | None = None,
+    first_event_ms: float | None = None,
+    first_text_ms: float | None = None,
 ) -> None:
     """记录超时或连接失败的有限分类和耗时，不记录异常原文或堆栈。"""
 
@@ -481,6 +518,9 @@ def log_model_http_error(
             "model": model,
             "error_type": error_type,
             "duration_ms": duration_ms,
+            "response_headers_ms": response_headers_ms,
+            "first_event_ms": first_event_ms,
+            "first_text_ms": first_text_ms,
         },
     )
 

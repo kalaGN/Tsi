@@ -348,11 +348,15 @@ def test_webui_router_serves_local_page_bootstrap_and_ndjson(tmp_path):
     client = TestClient(application)
 
     page = client.get("/ui")
+    brand_mark = client.get("/ui/tsi-mark.svg")
     bootstrap = client.get("/ui/api/bootstrap")
     response = client.post("/ui/api/chat", json={"input": "你好"})
 
     assert page.status_code == 200
     assert "Tsi 助手" in page.text
+    assert brand_mark.status_code == 200
+    assert brand_mark.headers["content-type"].startswith("image/svg+xml")
+    assert '<link rel="icon" type="image/svg+xml" href="/ui/tsi-mark.svg"' in page.text
     assert bootstrap.status_code == 200
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/x-ndjson")
@@ -433,17 +437,24 @@ def test_webui_settings_and_workspace_approval_contract_are_present(tmp_path):
     assert 'id="send-key-setting"' in html
     assert 'id="conversation-list"' in html
     assert 'id="tool-approval-dialog"' in html
+    assert 'id="session-dialog"' in html
     assert 'id="approval-diff"' in html
     assert 'id="session-title"' in html
     assert 'aria-label="新建会话"' in html
     assert 'aria-label="打开设置"' in html
+    assert 'class="welcome-mark" src="/ui/tsi-mark.svg"' in html
+    assert 'class="send-button" id="send" aria-label="发送"' in html
     assert 'data-tab="files" aria-label="文件"' in html
     assert "tsi-web-preferences" in javascript
     assert "createIcon" in javascript
+    assert "fileIconName" in javascript
     assert 'matchMedia("(max-width: 1040px)")' in javascript
     assert 'api("/sessions"' in javascript
     assert 'method: "DELETE"' in javascript
     assert "tool_approval_required" in javascript
+    assert "window.prompt" not in javascript
+    assert "window.confirm" not in javascript
+    assert ".showModal()" not in javascript
     assert "/tool-approvals/" in javascript
     assert '$("#activity-text").textContent = "正在回答"' in javascript
     assert 'return ["completed", "failed", "cancelled"].includes(event.type)' in javascript

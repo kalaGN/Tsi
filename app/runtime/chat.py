@@ -33,6 +33,7 @@ from app.services.llm.contracts import (
     ProviderConnectionError,
     ProviderInvalidResponseError,
     ProviderInvalidRequestError,
+    ProviderQuotaError,
     ProviderResponseError,
     ProviderTimeoutError,
     TextDeltaHandler,
@@ -101,6 +102,7 @@ ERROR_CODES = {
     ProviderTimeoutError: ChatErrorCode.TIMEOUT,
     ProviderConnectionError: ChatErrorCode.CONNECTION,
     ProviderAuthenticationError: ChatErrorCode.AUTHENTICATION,
+    ProviderQuotaError: ChatErrorCode.UPSTREAM,
     ProviderResponseError: ChatErrorCode.UPSTREAM,
     ProviderInvalidResponseError: ChatErrorCode.INVALID_RESPONSE,
 }
@@ -302,6 +304,6 @@ def _runtime_error(error: LlmProviderError) -> ChatRuntimeError:
             return ChatRuntimeError(code, error.user_message, error.status_code)
     return ChatRuntimeError(
         ChatErrorCode.UPSTREAM,
-        "Upstream service returned an error",
+        "模型接口异常",
         error.status_code,
     )

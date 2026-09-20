@@ -77,8 +77,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .brand-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-height: 42px; padding: 0 4px 10px; }
 .brand-lockup, .brand-actions, .topbar-actions { display: flex; align-items: center; gap: 8px; }
 .brand-lockup strong { font-size: 15px; letter-spacing: -.01em; }
-.brand-mark, .welcome-mark { display: grid; place-items: center; color: #fff; font-weight: 760; background: var(--accent); }
-.brand-mark { width: 28px; height: 28px; border-radius: 8px; font-size: 13px; }
+.brand-mark, .welcome-mark { display: block; object-fit: contain; }
+.brand-mark { width: 28px; height: 28px; border-radius: 8px; box-shadow: 0 4px 12px color-mix(in srgb, var(--accent) 20%, transparent); }
 .brand-actions { gap: 2px; }
 
 .icon-button { display: inline-grid; place-items: center; flex: 0 0 auto; width: 34px; height: 34px; padding: 0; border: 0; border-radius: 9px; background: transparent; color: var(--muted); cursor: pointer; }
@@ -136,7 +136,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 
 .messages { min-height: 0; overflow-y: auto; scroll-behavior: smooth; padding: 30px max(24px, calc((100% - 780px) / 2)); }
 .welcome { display: grid; place-content: center; justify-items: center; min-height: 100%; padding-bottom: 7vh; text-align: center; }
-.welcome-mark { width: 44px; height: 44px; border-radius: 13px; font-size: 18px; box-shadow: 0 10px 26px color-mix(in srgb, var(--accent) 24%, transparent); }
+.welcome-mark { width: 58px; height: 58px; border-radius: 16px; box-shadow: 0 14px 34px color-mix(in srgb, var(--accent) 28%, transparent); }
 .welcome h1 { margin: 17px 0 0; font-size: clamp(23px, 3vw, 32px); font-weight: 650; letter-spacing: -.035em; }
 .suggestions { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; max-width: 600px; margin-top: 24px; }
 .suggestions button { padding: 8px 11px; border: 1px solid var(--border); border-radius: 9px; background: transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
@@ -176,6 +176,7 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .send-button:hover { background: var(--accent-hover); }
 .send-button:disabled { opacity: .35; cursor: not-allowed; }
 .stop-button { background: var(--danger); }
+.send-button svg, .stop-button svg { width: 16px; height: 16px; stroke-width: 2; }
 .status-line { display: flex; justify-content: space-between; padding: 6px 4px 0; color: var(--muted); font-size: 10px; }
 
 .inspector { position: relative; display: grid; grid-template-rows: 48px minmax(0, 1fr); border-left: 1px solid var(--border); transition: width .2s ease, transform .2s ease; }
@@ -196,6 +197,9 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .file-entry.directory { cursor: default; font-weight: 600; }
 .file-entry span:first-child { width: 16px; text-align: center; }
 .file-entry span:last-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-type-icon { display: grid; place-items: center; flex: 0 0 20px; color: var(--muted); }
+.file-type-icon svg { width: 16px; height: 16px; }
+.file-entry.directory .file-type-icon { color: var(--accent); }
 .file-preview { position: absolute; inset: 48px 0 0; z-index: 2; display: grid; grid-template-rows: 44px 1fr; margin: 0; background: var(--bg); }
 .file-preview header { display: flex; align-items: center; justify-content: space-between; padding: 6px 10px 6px 13px; border-bottom: 1px solid var(--border); }
 .file-preview header strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
@@ -269,9 +273,8 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .statistics-model-name { display: grid; gap: 2px; }
 .statistics-model-name small { color: var(--muted); }
 
-.approval-dialog { width: min(860px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--border); border-radius: 15px; background: var(--surface); color: var(--text); box-shadow: 0 24px 80px rgba(0, 0, 0, .28); }
-.approval-dialog::backdrop { background: rgba(15, 20, 30, .5); backdrop-filter: blur(3px); }
-.approval-card { display: grid; grid-template-rows: auto auto minmax(180px, 1fr) auto; max-height: min(760px, calc(100vh - 40px)); }
+.modal-layer { position: fixed; inset: 0; z-index: 30; display: grid; place-items: center; padding: 16px; background: rgba(15, 20, 30, .5); backdrop-filter: blur(3px); }
+.approval-card { display: grid; grid-template-rows: auto auto minmax(180px, 1fr) auto; width: min(860px, calc(100vw - 32px)); max-height: min(760px, calc(100vh - 40px)); overflow: hidden; border: 1px solid var(--border); border-radius: 15px; background: var(--surface); color: var(--text); box-shadow: 0 24px 80px rgba(0, 0, 0, .28); }
 .approval-header { padding: 14px 16px; border-bottom: 1px solid var(--border); }
 .approval-header > div { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
 .approval-header strong { font-size: 15px; }
@@ -285,7 +288,19 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .secondary-button:hover { background: var(--surface-hover); }
 .primary-action-button { border: 1px solid var(--accent); background: var(--accent); color: #fff; }
 .primary-action-button:hover { background: var(--accent-hover); }
+.primary-action-button.danger-button { border-color: var(--danger); background: var(--danger); }
 .secondary-button:disabled, .primary-action-button:disabled { opacity: .45; cursor: default; }
+
+.session-dialog-card { width: min(430px, calc(100vw - 32px)); overflow: hidden; border: 1px solid var(--border); border-radius: 15px; background: var(--surface); color: var(--text); box-shadow: 0 24px 80px rgba(0, 0, 0, .28); }
+.session-dialog-card > header { padding: 15px 17px; border-bottom: 1px solid var(--border); }
+.session-dialog-card > header strong { font-size: 15px; }
+.session-dialog-content { display: grid; gap: 16px; padding: 18px 17px; }
+.session-dialog-content p { margin: 0; line-height: 1.6; }
+.session-dialog-input { display: grid; gap: 6px; }
+.session-dialog-input span { color: var(--muted); font-size: 12px; }
+.session-dialog-input input { width: 100%; padding: 9px 10px; border: 1px solid var(--border-strong); border-radius: 8px; outline: 0; background: var(--surface-muted); color: var(--text); }
+.session-dialog-input input:focus { border-color: var(--accent); }
+.session-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 14px; border-top: 1px solid var(--border); }
 
 :root[data-density="compact"] .messages { padding-top: 20px; padding-bottom: 20px; }
 :root[data-density="compact"] .message { gap: 4px; margin-bottom: 16px; }

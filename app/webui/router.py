@@ -101,6 +101,16 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
             media_type="application/javascript",
         )
 
+    @router.get("/ui/tsi-mark.svg", include_in_schema=False)
+    async def web_ui_brand_mark(request: Request):
+        """提供页面品牌标记与浏览器 favicon。"""
+
+        _require_loopback(request)
+        return FileResponse(
+            STATIC_ROOT / "tsi-mark.svg",
+            media_type="image/svg+xml",
+        )
+
     @router.get("/ui/api/bootstrap")
     async def bootstrap(request: Request):
         _require_loopback(request)

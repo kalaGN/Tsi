@@ -24,6 +24,7 @@ from app.services.llm.contracts import (
     ProviderConnectionError,
     ProviderInvalidResponseError,
     ProviderInvalidRequestError,
+    ProviderQuotaError,
     ProviderResponseError,
     ProviderTimeoutError,
     TokenUsage,
@@ -904,6 +905,76 @@ def test_aliyun_streams_text_deltas_and_validates_completed_response(monkeypatch
     assert step.tool_calls == ()
 
 
+def test_aliyun_maps_failed_free_quota_event_to_actionable_error(monkeypatch):
+    event = {
+        "type": "response.failed",
+        "response": {
+            "status": "failed",
+            "error": {
+                "code": "server_error",
+                "message": (
+                    "Free quota exhausted. To continue accessing the model on a "
+                    "paid basis, please add funds or disable the free tier only mode."
+                ),
+            },
+            "output": [],
+        },
+    }
+    body = f"data: {json.dumps(event)}\n\n".encode()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream((body,)),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+    turn = AliyunResponsesProvider(FAKE_API_KEY).create_turn(
+        user_messages(),
+        (),
+        request_id=REQUEST_ID,
+    )
+
+    with pytest.raises(ProviderQuotaError) as captured:
+        asyncio.run(turn.next())
+
+    assert captured.value.user_message == (
+        "阿里云模型额度已用尽，请充值或关闭控制台中的“仅使用免费额度”模式。"
+    )
+    assert captured.value.status_code is None
+    assert "response.failed" in (captured.value.raw_response or "")
+
+
+def test_aliyun_maps_other_well_formed_failed_event_to_upstream_error(monkeypatch):
+    event = {
+        "type": "response.failed",
+        "response": {
+            "status": "failed",
+            "error": {"code": "server_error", "message": "private detail"},
+            "output": [],
+        },
+    }
+    body = f"data: {json.dumps(event)}\n\n".encode()
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ChunkedAsyncStream((body,)),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+
+    with pytest.raises(ProviderResponseError) as captured:
+        asyncio.run(
+            run_provider_once(AliyunResponsesProvider(FAKE_API_KEY), user_messages())
+        )
+
+    assert captured.value.user_message == "模型接口异常"
+    assert "private detail" not in str(captured.value)
+
+
 def test_aliyun_stream_rejects_non_string_text_delta(monkeypatch):
     body = b'data:{"type":"response.output_text.delta","delta":null}\n\n'
 
@@ -1757,7 +1828,7 @@ def test_deepseek_preserves_other_error_status(monkeypatch, status_code):
         asyncio.run(run_provider_once(provider, user_messages()))
 
     assert captured.value.status_code == status_code
-    assert captured.value.user_message == "Upstream service returned an error"
+    assert captured.value.user_message == "模型接口异常"
     assert "secret" not in str(captured.value)
 
 

@@ -185,7 +185,16 @@ class ProviderAuthenticationError(LlmProviderError):
 
 class ProviderResponseError(LlmProviderError):
     def __init__(self, status_code: int) -> None:
-        super().__init__("Upstream service returned an error", status_code)
+        super().__init__("模型接口异常", status_code)
+
+
+class ProviderQuotaError(LlmProviderError):
+    """上游以成功 HTTP 状态返回额度耗尽业务终态。"""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "阿里云模型额度已用尽，请充值或关闭控制台中的“仅使用免费额度”模式。"
+        )
 
 
 class ProviderInvalidResponseError(LlmProviderError):

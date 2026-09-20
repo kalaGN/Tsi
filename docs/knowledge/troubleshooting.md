@@ -10,6 +10,8 @@
 
 先查看当日 `logs/runtime/YYYYMMDD-model-calls.log` 中对应请求是否已获得 HTTP 响应。新版会在最终失败处追加同一请求 ID 的“模型调用失败”分块，并保存有界的“上游原始响应”；如果前面是 HTTP 200，说明网络成功但协议或最终模型步骤结构无效。阿里云 Responses API 的真实 SSE 可能发送空字符串 `response.output_text.delta`、当前版 `response.custom_tool_call_input.*` 工具参数事件，或在 EOF 前省略最后一个事件后的空行；项目会兼容这些合法差异。`output_item.done` 和 `response.completed` 只交叉校验工具调用稳定字段，允许最终对象补充 `status` 等元数据。非字符串 Delta、缺少完成事件、稳定字段不一致或非法工具调用结构仍会返回该中立错误。
 
+如果原始响应是 HTTP 200 下的 `response.failed`，它属于上游业务失败而不是协议损坏。已知的 `Free quota exhausted` 会显示“阿里云模型额度已用尽”，需要在阿里云控制台充值或关闭“仅使用免费额度”模式；其他结构合法的失败终态以及模型接口 HTTP 异常统一显示“模型接口异常”，具体状态和正文只保留在本地有界日志中。
+
 如果只在启用项目 Skill 后出现该错误，还应检查 Function Tool Schema：`required` 中的每个字段都必须在 `properties` 中声明。项目会在 Registry 创建阶段拒绝矛盾 Schema，避免将其发送给阿里云；`read_skill_resource` 当前只要求 `name` 和 `path`。
 
 如果升级到包含此兼容修复的版本后仍报错，应按 `request_id` 检查响应状态和 `Content-Type`，不要把上游响应正文、系统提示词或密钥复制到公开日志中。
@@ -47,6 +49,7 @@ TUI 启动时只捕获一次命令执行目录。确认该目录存在、是普�
 - `approval_denied`：本次 Diff 被拒绝；拒绝按钮、`n` 和审批界面的 `Esc` 都不会写盘。
 - Web UI 的审批弹窗默认聚焦“拒绝”。若提示“审批已失效”，说明请求已取消、页面断流、模型已结束或该审批已经提交；必须重新发起模型请求，不能复用旧 ID。
 - Web UI 等待审批时保持请求忙碌；取消请求或刷新页面会立即使待审批写操作失效，之后批准不会落盘。
+- Pake/WKWebView 中不得依赖 `window.prompt`、`window.confirm` 或原生 `<dialog>.showModal()`；会话操作与工具审批统一使用页面内模态层，避免桌面壳禁用原生 Web 弹窗后按钮无响应。
 - `protected_path`：目标属于 `.env*`、Git、虚拟环境、会话/日志、Rules、依赖文件或 Workspace 安全实现等固定保护区域，不能由提示词关闭。
 - `workspace_conflict`：读取后的 SHA-256、精确旧文本、审批后的内容或撤销目标发生变化。重新让模型读取文件并生成新变更，不要绕过冲突覆盖。
 - `check_timeout` / `check_unavailable`：固定检查超过 120 秒，或本地 Python/Git 不可用。检查工具不会接受自定义命令作为替代。

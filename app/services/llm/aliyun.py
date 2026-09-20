@@ -10,6 +10,8 @@ from app.services.llm.contracts import (
     ProviderConfigurationError,
     ProviderInvalidResponseError,
     ProviderInvalidRequestError,
+    ProviderQuotaError,
+    ProviderResponseError,
     TextDeltaHandler,
     TokenUsage,
     validate_provider_messages,
@@ -258,8 +260,13 @@ class _AliyunStreamState:
             if not isinstance(response, dict) or self._completed_response is not None:
                 raise _invalid_structure()
             self._completed_response = response
-        elif event_type in {"response.failed", "response.incomplete"}:
-            raise _invalid_structure()
+        elif event_type == "response.failed":
+            _raise_failed_response(event.get("response"))
+        elif event_type == "response.incomplete":
+            response = event.get("response")
+            if not isinstance(response, dict) or response.get("status") != "incomplete":
+                raise _invalid_structure()
+            raise ProviderResponseError(200)
         return False
 
     def finish(
@@ -523,3 +530,25 @@ def _invalid_structure() -> ProviderInvalidResponseError:
     return ProviderInvalidResponseError(
         "Upstream service returned an invalid response"
     )
+
+
+def _raise_failed_response(response: Any) -> None:
+    """校验 Responses 失败终态，并将已知额度错误映射为稳定提示。"""
+
+    if not isinstance(response, dict) or response.get("status") != "failed":
+        raise _invalid_structure()
+    error = response.get("error")
+    if not isinstance(error, dict):
+        raise _invalid_structure()
+    code = error.get("code")
+    message = error.get("message")
+    if not isinstance(code, str) or not code or not isinstance(message, str):
+        raise _invalid_structure()
+    normalized_code = code.strip().lower()
+    normalized_message = message.strip().lower()
+    if normalized_code in {"insufficient_quota", "quota_exhausted"} or (
+        "free quota exhausted" in normalized_message
+    ):
+        raise ProviderQuotaError()
+    # 错误正文仅进入有界本地日志，界面不透传任意上游信息。
+    raise ProviderResponseError(200)

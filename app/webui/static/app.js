@@ -9,6 +9,8 @@ const state = {
   sessions: [],
   currentSessionId: null,
   pendingApproval: null,
+  sessionDialogResolve: null,
+  modalReturnFocus: null,
   settingsRoute: null,
   statistics: {
     data: null,
@@ -36,6 +38,10 @@ const ICON_PATHS = {
   edit: ["M4 20h4l11-11-4-4L4 16z", "m13.5 6.5 4 4"],
   clear: ["M4 4v6h6", "M5.5 15a7 7 0 1 0 .5-7.5L4 10"],
   delete: ["M4 7h16", "M9 7V4h6v3", "m7 7-.5 6M12 10v10M8 10l.5 10", "M6 7l1 14h10l1-14"],
+  folder: ["M3 7.5h7l2-2h9v13H3z"],
+  file: ["M6 3h8l4 4v14H6z", "M14 3v5h5"],
+  code: ["m9 9-3 3 3 3", "m15 9 3 3-3 3", "m13 7-2 10"],
+  markdown: ["M4 6h16v12H4z", "M7 15V9l3 3 3-3v6", "m15 9 3 3 3-3", "M18 9v6"],
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -381,6 +387,14 @@ function createIcon(name) {
   return svg;
 }
 
+function fileIconName(item) {
+  if (item.type === "directory") return "folder";
+  const extension = String(item.path || "").split(".").pop().toLowerCase();
+  if (["md", "markdown"].includes(extension)) return "markdown";
+  if (["py", "js", "ts", "tsx", "jsx", "json", "html", "css", "sh"].includes(extension)) return "code";
+  return "file";
+}
+
 function sessionAction(label, icon, action, { danger = false } = {}) {
   const button = document.createElement("button");
   button.type = "button";
@@ -394,6 +408,43 @@ function sessionAction(label, icon, action, { danger = false } = {}) {
     action();
   });
   return button;
+}
+
+function rememberModalFocus() {
+  state.modalReturnFocus = document.activeElement instanceof HTMLElement
+    ? document.activeElement
+    : null;
+}
+
+function restoreModalFocus() {
+  const target = state.modalReturnFocus;
+  state.modalReturnFocus = null;
+  if (target?.isConnected) target.focus();
+}
+
+function closeSessionDialog(result = null) {
+  const resolve = state.sessionDialogResolve;
+  state.sessionDialogResolve = null;
+  $("#session-dialog").hidden = true;
+  restoreModalFocus();
+  if (resolve) resolve(result);
+}
+
+function requestSessionDialog({ title, message, inputValue = null, confirmLabel, danger = false }) {
+  if (state.sessionDialogResolve) closeSessionDialog(null);
+  rememberModalFocus();
+  $("#session-dialog-title").textContent = title;
+  $("#session-dialog-message").textContent = message;
+  const inputWrap = $("#session-dialog-input-wrap");
+  const input = $("#session-dialog-input");
+  inputWrap.hidden = inputValue === null;
+  input.value = inputValue ?? "";
+  const confirm = $("#confirm-session-dialog");
+  confirm.textContent = confirmLabel;
+  confirm.classList.toggle("danger-button", danger);
+  $("#session-dialog").hidden = false;
+  window.requestAnimationFrame(() => (inputValue === null ? confirm : input).focus());
+  return new Promise((resolve) => { state.sessionDialogResolve = resolve; });
 }
 
 function renderSessions() {
@@ -435,9 +486,10 @@ function renderWelcome() {
   const welcome = document.createElement("div");
   welcome.className = "welcome";
   welcome.id = "welcome";
-  const mark = document.createElement("div");
+  const mark = document.createElement("img");
   mark.className = "welcome-mark";
-  mark.textContent = "T";
+  mark.src = "/ui/tsi-mark.svg";
+  mark.alt = "Tsi 助手";
   const heading = document.createElement("h1");
   heading.textContent = "今天想一起完成什么？";
   const suggestions = document.createElement("div");
@@ -501,8 +553,13 @@ async function selectSession(sessionId) {
 
 async function renameSession(item) {
   if (state.busy) return;
-  const title = window.prompt("输入新的会话名称", item.title);
-  if (title === null || !title.trim() || title.trim() === item.title) return;
+  const title = await requestSessionDialog({
+    title: "重命名会话",
+    message: "输入新的会话名称。",
+    inputValue: item.title,
+    confirmLabel: "保存",
+  });
+  if (typeof title !== "string" || title === item.title) return;
   try {
     const response = await api(`/sessions/${encodeURIComponent(item.id)}`, {
       method: "PATCH",
@@ -514,7 +571,13 @@ async function renameSession(item) {
 
 async function clearSession(item) {
   if (state.busy) return;
-  if (!window.confirm(`清空“${item.title}”的消息？`)) return;
+  const confirmed = await requestSessionDialog({
+    title: "清空会话",
+    message: `清空“${item.title}”的全部消息？此操作不可撤销。`,
+    confirmLabel: "清空",
+    danger: true,
+  });
+  if (confirmed !== true) return;
   if (item.id !== state.currentSessionId) await selectSession(item.id);
   if (item.id !== state.currentSessionId) return;
   try {
@@ -524,7 +587,14 @@ async function clearSession(item) {
 }
 
 async function deleteSession(item) {
-  if (state.busy || !window.confirm(`删除会话“${item.title}”？此操作不可撤销。`)) return;
+  if (state.busy) return;
+  const confirmed = await requestSessionDialog({
+    title: "删除会话",
+    message: `删除会话“${item.title}”？此操作不可撤销。`,
+    confirmLabel: "删除",
+    danger: true,
+  });
+  if (confirmed !== true) return;
   try {
     const response = await api(`/sessions/${encodeURIComponent(item.id)}`, { method: "DELETE" });
     applyConversation(await response.json(), { closeSidebar: false });
@@ -646,9 +716,10 @@ function addActivity(title, status, detail = "") {
 function closeToolApproval() {
   state.pendingApproval = null;
   const dialog = $("#tool-approval-dialog");
-  if (dialog.open) dialog.close();
+  dialog.hidden = true;
   $("#approve-tool-change").disabled = false;
   $("#reject-tool-change").disabled = false;
+  restoreModalFocus();
 }
 
 function showToolApproval(event) {
@@ -662,7 +733,8 @@ function showToolApproval(event) {
   $("#approval-tool").textContent = event.tool;
   $("#approval-paths").textContent = event.paths.join("\n");
   $("#approval-diff").textContent = event.diff;
-  $("#tool-approval-dialog").showModal();
+  rememberModalFocus();
+  $("#tool-approval-dialog").hidden = false;
   $("#reject-tool-change").focus();
 }
 
@@ -809,7 +881,8 @@ async function loadFiles() {
       const button = document.createElement("button");
       button.className = `file-entry ${item.type}`;
       const icon = document.createElement("span");
-      icon.textContent = item.type === "directory" ? "⌄" : "·";
+      icon.className = "file-type-icon";
+      icon.append(createIcon(fileIconName(item)));
       const label = document.createElement("span");
       label.textContent = item.path;
       button.append(icon, label);
@@ -913,9 +986,31 @@ stopButton.addEventListener("click", async () => {
 });
 $("#approve-tool-change").addEventListener("click", () => submitToolApproval(true));
 $("#reject-tool-change").addEventListener("click", () => submitToolApproval(false));
-$("#tool-approval-dialog").addEventListener("cancel", (event) => {
+$("#cancel-session-dialog").addEventListener("click", () => closeSessionDialog(null));
+$("#session-dialog").addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) closeSessionDialog(null);
+});
+$("#session-dialog-form").addEventListener("submit", (event) => {
   event.preventDefault();
-  submitToolApproval(false);
+  const inputWrap = $("#session-dialog-input-wrap");
+  if (inputWrap.hidden) {
+    closeSessionDialog(true);
+    return;
+  }
+  const title = $("#session-dialog-input").value.trim();
+  if (!title) {
+    $("#session-dialog-input").focus();
+    return;
+  }
+  closeSessionDialog(title);
+});
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Escape") return;
+  if (!$("#session-dialog").hidden) {
+    closeSessionDialog(null);
+  } else if (!$("#tool-approval-dialog").hidden) {
+    submitToolApproval(false);
+  }
 });
 $("#new-chat").addEventListener("click", createSession);
 $("#model-select").addEventListener("change", selectModel);

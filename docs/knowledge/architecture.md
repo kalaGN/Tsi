@@ -73,6 +73,7 @@ main.py -> app.application -> FastAPI app + root route + Web UI Router
 /ui -> app.webui.router -> WebUiService -> ChatSession -> app.runtime.chat
              |               |
              |               +-> WebSessionCatalog -> data/web-sessions/{index,sessions}
+             |               +-> WebStatisticsStore -> data/web-statistics.json
              +-> static UI + loopback-only API + request-bound approval
                              +-> Web search + Workspace Policy + read/write Registry
 
@@ -98,6 +99,7 @@ app.observability  tool_loop   provider factory
 ```
 
 - Web UI Router 和 TUI 只依赖 Runtime，不理解外部响应结构。
+- Web UI 的成功、失败和取消由 `WebUiService` 在唯一终态写入有界统计 Store；Router 只返回脱敏聚合 DTO，页面不解析模型日志。
 - Runtime 只依赖 Provider 契约、工厂和根目录工具契约，不导入具体 Provider 模块。
 - Tool Loop 只理解 ModelStep、ToolCall、ToolResult 和 Registry，不理解两家上游 JSON。
 - 根目录 `tools/` 不依赖 Runtime、FastAPI、Textual 或具体 Provider。
@@ -152,6 +154,8 @@ ChatSession.send
 DeepSeek Turn 请求 `stream_options.include_usage`，按 choice/tool index 拼接流式文本和工具参数，把 assistant `tool_calls` 和对应 `role=tool/tool_call_id` 结果加入 messages，并把结束 usage Chunk 转成中立 TokenUsage。阿里云 Turn 消费 `output_text.delta/done`、function call 与 `response.completed`，把每个 `function_call` 与对应 `function_call_output` 紧邻加入 input，并从完成响应映射 TokenUsage。两家私有字段都止于 Provider 边界。
 
 Tool Loop 对每个已知步骤立即记录 Token 日志，并分别累加输入、输出和总量；只有所有步骤都提供 usage 时，`ChatResult.token_usage` 才包含完整本轮合计。TUI 在成功回答后用一条系统消息把最终耗时和 Token 合计放在同一行，缺失时显示不可用；失败仍只显示耗时，取消和陈旧 Worker 不显示统计。统计系统消息不进入 Session。Web UI 与 TUI 各自在界面上展示耗时与 Token，Runtime 结果本身不含任何界面字段。
+
+Web UI 另将每个已接受请求的唯一终态聚合到 `data/web-statistics.json`：累计和模型桶保留请求结果与真实 Usage，日桶只保留最近 30 天。统计写入使用 `0600` 原子替换，失败只记录有限诊断并保留原模型终态；损坏文件隔离后从空统计继续。设置页通过同源只读接口获取 30 个连续日桶，在浏览器内切换 7/30 天及请求数、Token、平均耗时的原生 SVG 波形图。统计文件和接口不包含消息、请求/会话 ID、工具参数、路径或密钥。
 
 DeepSeek 必须收到合法终止原因和 `[DONE]`；阿里云必须收到成功的 `response.completed`。事件 JSON、UTF-8、终止标记、完成文本或工具结构不一致均属于无效上游响应并映射为 502。单 SSE 事件上限 96 KiB，单步文本上限 1 MiB，流解析层单工具参数上限 64 KiB；Registry 再按具体工具执行 8 KiB 或 64 KiB 上限。
 

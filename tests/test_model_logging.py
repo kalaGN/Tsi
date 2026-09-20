@@ -675,6 +675,34 @@ def test_token_usage_event_uses_step_metadata_only(tmp_path):
     assert "总 Token：195" in file_text
 
 
+def test_web_statistics_error_uses_bounded_diagnostic_fields(tmp_path):
+    stream = io.StringIO()
+    log_path = tmp_path / "model-calls.log"
+    model_logging.configure_model_logging(stream=stream, log_path=log_path)
+
+    model_logging.log_web_statistics_error(
+        request_id="8" * 32,
+        operation="record",
+        error_type="WebStatisticsStoreError",
+    )
+
+    event = json.loads(stream.getvalue())
+    assert event == {
+        "timestamp": event["timestamp"],
+        "level": "WARNING",
+        "event": "web_statistics_error",
+        "request_id": "8" * 32,
+        "operation": "record",
+        "error_type": "WebStatisticsStoreError",
+    }
+    assert "path" not in event
+    assert "message" not in event
+    file_text = log_path.read_text(encoding="utf-8")
+    assert "事件：Web 统计异常" in file_text
+    assert "操作：record" in file_text
+    assert "异常类型：WebStatisticsStoreError" in file_text
+
+
 def test_readable_tool_content_falls_back_to_original_non_json_text(tmp_path):
     log_path = tmp_path / "model-calls.log"
     model_logging.configure_model_logging(

@@ -106,6 +106,11 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
         _require_loopback(request)
         return current_service().bootstrap()
 
+    @router.get("/ui/api/statistics")
+    async def statistics(request: Request):
+        _require_loopback(request)
+        return current_service().statistics_payload()
+
     @router.post("/ui/api/chat")
     async def chat(request: Request, payload: WebChatRequest):
         _require_loopback(request)

@@ -67,6 +67,7 @@ git diff --check
 - 严格非空的单轮文本输入。
 - 部署环境通过 `LLM_PROVIDER` 选择 `aliyun` 或 `deepseek`；TUI 可通过 `/model` 在有界环境候选中切换 Provider 和模型，并在下次启动恢复最近一次成功选择。
 - Web UI 可在相同安全候选中切换模型，复用模型选择文件；多会话索引和内容独立保存到 `data/web-sessions/`，旧单会话自动迁移。
+- Web 设置使用通用、模型、统计三个独立 Hash 页面；Web 请求终态聚合保存到 `data/web-statistics.json`，统计页支持最近 7/30 天请求数、Token 和平均耗时波形图。
 - 两家上游均使用 SSE；Web UI 以 NDJSON 流式推送并在页面上增量展示，TUI 增量展示纯文本并在完成后用同一原文渲染 Assistant Markdown。
 - 中文输入、`Cmd+A` / `Ctrl+A` 全选输入、Esc 清空输入、耗时与 Token 单行统计、请求中动画与实时耗时、请求取消、`/clear`、`/memory`、`/model`、`/skills`、`/quit`、Enter 和双击 Esc。
 - TUI 启动目录直属 `AGENTS.md` 的 32 KiB UTF-8 有界读取，以及不持久化的 Provider 标准 system 消息。

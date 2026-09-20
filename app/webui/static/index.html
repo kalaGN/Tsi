@@ -8,7 +8,7 @@
     <link rel="stylesheet" href="/ui/app.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <div class="app-shell" id="chat-view">
       <aside class="sidebar" id="sidebar">
         <div class="brand-row">
           <div class="brand-lockup">
@@ -141,69 +141,157 @@
       </aside>
     </div>
 
-    <dialog class="settings-dialog" id="settings-dialog" aria-labelledby="settings-title">
-      <form method="dialog" class="settings-card">
-        <header class="settings-header">
-          <strong id="settings-title">设置</strong>
-          <button class="icon-button" value="cancel" aria-label="关闭设置" title="关闭">
-            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>
+    <section class="settings-page" id="settings-view" aria-labelledby="settings-page-title" hidden>
+      <aside class="settings-navigation">
+        <header class="settings-brand">
+          <div class="brand-lockup">
+            <div class="brand-mark">T</div>
+            <strong>Tsi 助手</strong>
+          </div>
+        </header>
+        <button class="settings-back" id="close-settings" type="button">
+          <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6" /></svg>
+          <span>返回对话</span>
+        </button>
+        <nav class="settings-menu" aria-label="设置菜单">
+          <button type="button" data-settings-route="general">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 6h16M7 12h10M10 18h4" /></svg>
+            <span>通用</span>
           </button>
+          <button type="button" data-settings-route="model">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M9 9h6v6H9zM12 1v3M12 20v3M1 12h3M20 12h3" /></svg>
+            <span>模型</span>
+          </button>
+          <button type="button" data-settings-route="statistics">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3" /></svg>
+            <span>统计</span>
+          </button>
+        </nav>
+      </aside>
+
+      <main class="settings-main">
+        <header class="settings-page-header">
+          <div>
+            <span>设置</span>
+            <h1 id="settings-page-title">通用</h1>
+          </div>
         </header>
 
-        <section class="settings-section">
-          <div class="setting-copy">
-            <strong>外观</strong>
-          </div>
-          <label class="setting-control">
-            <span>主题</span>
-            <select id="theme-setting">
-              <option value="system">跟随系统</option>
-              <option value="light">浅色</option>
-              <option value="dark">深色</option>
-            </select>
-          </label>
-          <label class="setting-control">
-            <span>界面密度</span>
-            <select id="density-setting">
-              <option value="comfortable">舒适</option>
-              <option value="compact">紧凑</option>
-            </select>
-          </label>
-        </section>
+        <div class="settings-content">
+          <section class="settings-panel" id="settings-general-panel" data-settings-panel="general">
+            <div class="settings-panel-copy">
+              <h2>界面与输入</h2>
+              <p>这些偏好只保存在当前浏览器中。</p>
+            </div>
+            <div class="settings-card">
+              <label class="setting-control">
+                <span>主题</span>
+                <select id="theme-setting">
+                  <option value="system">跟随系统</option>
+                  <option value="light">浅色</option>
+                  <option value="dark">深色</option>
+                </select>
+              </label>
+              <label class="setting-control">
+                <span>界面密度</span>
+                <select id="density-setting">
+                  <option value="comfortable">舒适</option>
+                  <option value="compact">紧凑</option>
+                </select>
+              </label>
+              <label class="setting-control">
+                <span>发送消息</span>
+                <select id="send-key-setting">
+                  <option value="enter">Enter</option>
+                  <option value="modifier-enter">⌘/Ctrl + Enter</option>
+                </select>
+              </label>
+              <button type="button" class="secondary-button settings-reset" id="reset-settings">恢复默认设置</button>
+            </div>
+          </section>
 
-        <section class="settings-section">
-          <div class="setting-copy">
-            <strong>输入</strong>
-          </div>
-          <label class="setting-control">
-            <span>发送消息</span>
-            <select id="send-key-setting">
-              <option value="enter">Enter</option>
-              <option value="modifier-enter">⌘/Ctrl + Enter</option>
-            </select>
-          </label>
-        </section>
+          <section class="settings-panel" id="settings-model-panel" data-settings-panel="model" hidden>
+            <div class="settings-panel-copy">
+              <h2>模型</h2>
+              <p>选择已在环境变量中配置的 Provider 与模型。</p>
+            </div>
+            <div class="settings-card">
+              <label class="setting-control">
+                <span>当前模型</span>
+                <select id="settings-model-select" aria-label="设置当前模型"></select>
+              </label>
+              <p class="settings-note">页面不会显示、编辑或回传 API Key。</p>
+            </div>
+          </section>
 
-        <section class="settings-section">
-          <div class="setting-copy">
-            <strong>模型</strong>
-          </div>
-          <label class="setting-control">
-            <span>当前模型</span>
-            <select id="settings-model-select" aria-label="设置当前模型"></select>
-          </label>
-        </section>
+          <section class="settings-panel statistics-panel" id="settings-statistics-panel" data-settings-panel="statistics" hidden>
+            <div class="settings-panel-copy statistics-heading">
+              <div>
+                <h2>使用统计</h2>
+                <p>仅统计本机 Web UI，从功能启用后开始累计。</p>
+              </div>
+              <button type="button" class="secondary-button" id="retry-statistics" hidden>重新加载</button>
+            </div>
+            <div class="statistics-state" id="statistics-state" role="status">正在加载统计…</div>
+            <div id="statistics-content" hidden>
+              <div class="statistics-cards" aria-label="累计统计">
+                <article><span>请求</span><strong id="stat-total-requests">0</strong></article>
+                <article><span>成功率</span><strong id="stat-success-rate">0%</strong></article>
+                <article><span>总 Token</span><strong id="stat-total-tokens">0</strong></article>
+                <article><span>平均耗时</span><strong id="stat-average-elapsed">0s</strong></article>
+              </div>
 
-        <footer class="settings-footer">
-          <button type="button" class="icon-button" id="reset-settings" aria-label="恢复默认设置" title="恢复默认">
-            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 4v6h6M5.5 15a7 7 0 1 0 .5-7.5L4 10" /></svg>
-          </button>
-          <button class="primary-button icon-button" value="confirm" aria-label="保存设置" title="完成">
-            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 4 4L19 6" /></svg>
-          </button>
-        </footer>
-      </form>
-    </dialog>
+              <article class="statistics-chart-card">
+                <header class="statistics-chart-header">
+                  <div>
+                    <strong>使用趋势</strong>
+                    <span id="statistics-chart-caption">近 7 天 · 请求数</span>
+                  </div>
+                  <div class="statistics-chart-controls">
+                    <div class="segmented-control" aria-label="统计指标">
+                      <button type="button" data-stat-metric="requests" aria-pressed="true">请求</button>
+                      <button type="button" data-stat-metric="total_tokens" aria-pressed="false">Token</button>
+                      <button type="button" data-stat-metric="average_elapsed_ms" aria-pressed="false">耗时</button>
+                    </div>
+                    <div class="segmented-control" aria-label="统计范围">
+                      <button type="button" data-stat-range="7" aria-pressed="true">7 天</button>
+                      <button type="button" data-stat-range="30" aria-pressed="false">30 天</button>
+                    </div>
+                  </div>
+                </header>
+                <div class="statistics-chart-wrap">
+                  <svg class="statistics-chart" id="statistics-chart" viewBox="0 0 800 280" role="img" aria-labelledby="statistics-chart-caption"></svg>
+                </div>
+                <div class="statistics-chart-summary" id="statistics-chart-summary"></div>
+              </article>
+
+              <article class="statistics-detail-card">
+                <header>
+                  <strong>Token 明细</strong>
+                  <span id="stat-usage-coverage">Usage 覆盖率 0%</span>
+                </header>
+                <dl>
+                  <div><dt>输入</dt><dd id="stat-input-tokens">0</dd></div>
+                  <div><dt>输出</dt><dd id="stat-output-tokens">0</dd></div>
+                  <div><dt>失败</dt><dd id="stat-failed-requests">0</dd></div>
+                  <div><dt>取消</dt><dd id="stat-cancelled-requests">0</dd></div>
+                </dl>
+              </article>
+
+              <article class="statistics-model-card">
+                <header><strong>模型分布</strong></header>
+                <div class="statistics-table-wrap">
+                  <table>
+                    <thead><tr><th>模型</th><th>请求</th><th>输入 Token</th><th>输出 Token</th><th>总 Token</th></tr></thead>
+                    <tbody id="statistics-models"></tbody>
+                  </table>
+                </div>
+              </article>
+            </div>
+          </section>
+        </div>
+      </main>
+    </section>
 
     <dialog class="approval-dialog" id="tool-approval-dialog" aria-labelledby="approval-title">
       <section class="approval-card">

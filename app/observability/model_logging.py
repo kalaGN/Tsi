@@ -132,6 +132,11 @@ _EVENT_FIELDS = {
         "output_tokens",
         "total_tokens",
     ),
+    "web_statistics_error": (
+        "request_id",
+        "operation",
+        "error_type",
+    ),
 }
 
 
@@ -170,6 +175,7 @@ class _ModelEventReadableFormatter(logging.Formatter):
         "llm_tool_result": "工具结果",
         "llm_tool_approval": "工具审批",
         "llm_token_usage": "Token 消耗",
+        "web_statistics_error": "Web 统计异常",
     }
     _ERROR_NAMES = {"timeout": "超时", "connection": "连接失败"}
     _STATUS_NAMES = {"success": "成功", "error": "错误"}
@@ -271,6 +277,13 @@ class _ModelEventReadableFormatter(logging.Formatter):
                     f"输入 Token：{record.input_tokens}",
                     f"输出 Token：{record.output_tokens}",
                     f"总 Token：{record.total_tokens}",
+                )
+            )
+        elif event_name == "web_statistics_error":
+            lines.extend(
+                (
+                    f"操作：{record.operation}",
+                    f"异常类型：{record.error_type}",
                 )
             )
         return lines
@@ -652,6 +665,25 @@ def log_model_token_usage(
             "input_tokens": input_tokens,
             "output_tokens": output_tokens,
             "total_tokens": total_tokens,
+        },
+    )
+
+
+def log_web_statistics_error(
+    *,
+    request_id: str,
+    operation: str,
+    error_type: str,
+) -> None:
+    """记录统计降级的有限分类，不记录路径、正文或异常原文。"""
+
+    logging.getLogger(LOGGER_NAME).warning(
+        "web_statistics_error",
+        extra={
+            "event": "web_statistics_error",
+            "request_id": request_id,
+            "operation": operation,
+            "error_type": error_type,
         },
     )
 

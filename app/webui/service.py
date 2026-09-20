@@ -8,7 +8,9 @@ import secrets
 import time
 from collections.abc import AsyncIterator, Callable, Mapping
 from pathlib import Path
+from typing import Literal
 
+from app.observability.model_logging import log_web_statistics_error
 from app.runtime.chat import ChatRuntimeError, ChatRuntimeInfo, get_chat_runtime_info
 from app.runtime.memory import estimate_messages_tokens, resolve_memory_policy
 from app.runtime.model_selection import ModelSelectionError, ModelSelectionService
@@ -17,10 +19,15 @@ from app.runtime.session import ChatExecutionSnapshot, ChatSession
 from app.runtime.session_store import SessionStore
 from app.runtime.system_prompt import SystemPromptLoadError, load_system_prompt
 from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS
-from app.services.llm.contracts import LlmProvider, ModelOption
+from app.services.llm.contracts import LlmProvider, ModelOption, TokenUsage
 from app.services.llm.factory import resolve_model_options
 from app.webui.approvals import WebApprovalCoordinator
 from app.webui.sessions import WebSessionCatalog, WebSessionStoreError
+from app.webui.statistics import (
+    WebRequestStatistic,
+    WebStatisticsStore,
+    WebStatisticsStoreError,
+)
 from tools.contracts import AnyToolApprovalRequest, ToolCall, ToolResult
 from tools.workspace import (
     ListWorkspaceFilesTool,
@@ -33,6 +40,7 @@ from tools.workspace import (
 DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 DEFAULT_WEB_SESSION_PATH = DATA_ROOT / "web-session.json"
 DEFAULT_WEB_SESSIONS_ROOT = DATA_ROOT / "web-sessions"
+DEFAULT_WEB_STATISTICS_PATH = DATA_ROOT / "web-statistics.json"
 SessionFactory = Callable[[SessionStore], ChatSession]
 
 
@@ -50,6 +58,7 @@ class WebUiService:
         runtime_info: ChatRuntimeInfo,
         model_options: tuple[ModelOption, ...],
         model_selection: ModelSelectionService,
+        statistics: WebStatisticsStore,
         workspace: Path,
         workspace_policy: WorkspacePolicy,
         *,
@@ -64,6 +73,7 @@ class WebUiService:
         self.runtime_info = runtime_info
         self.model_options = tuple(model_options)
         self.model_selection = model_selection
+        self.statistics = statistics
         self.workspace = workspace
         self.workspace_policy = workspace_policy
         self.context_window_tokens = context_window_tokens
@@ -153,6 +163,7 @@ class WebUiService:
             runtime_info,
             options,
             selection,
+            WebStatisticsStore(DEFAULT_WEB_STATISTICS_PATH),
             root,
             policy,
             context_window_tokens=memory_policy.context_window_tokens,
@@ -193,6 +204,9 @@ class WebUiService:
             sequence = 0
             queue: asyncio.Queue[dict[str, object]] = asyncio.Queue()
             started_at = time.monotonic()
+            request_provider = self.runtime_info.provider
+            request_model = self.runtime_info.model
+            statistics_recorded = False
 
             def emit(event_type: str, **payload: object) -> None:
                 nonlocal sequence
@@ -225,6 +239,34 @@ class WebUiService:
 
             async def run() -> None:
                 emit("request_started")
+
+                def record_statistics(
+                    outcome: Literal["completed", "failed", "cancelled"],
+                    token_usage: TokenUsage | None = None,
+                ) -> None:
+                    nonlocal statistics_recorded
+                    if statistics_recorded:
+                        return
+                    statistics_recorded = True
+                    elapsed_ms = (time.monotonic() - started_at) * 1000
+                    try:
+                        self.statistics.record(
+                            WebRequestStatistic(
+                                outcome,
+                                request_provider,
+                                request_model,
+                                elapsed_ms,
+                                token_usage,
+                            )
+                        )
+                    except (WebStatisticsStoreError, ValueError) as exc:
+                        # 统计属于诊断旁路，失败不能覆盖真实模型终态。
+                        log_web_statistics_error(
+                            request_id=request_id,
+                            operation="record",
+                            error_type=type(exc).__name__,
+                        )
+
                 try:
                     result = await active_session.send(
                         input_text,
@@ -234,13 +276,16 @@ class WebUiService:
                         on_tool_result=on_tool_result,
                     )
                 except asyncio.CancelledError:
+                    record_statistics("cancelled")
                     emit("cancelled")
                     return
                 except ChatRuntimeError as exc:
+                    record_statistics("failed")
                     emit("failed", code=exc.code.value, message=exc.user_message)
                     return
                 except Exception:
                     # 未知内部错误只返回稳定文案，具体诊断留在服务端日志。
+                    record_statistics("failed")
                     emit("failed", code="internal", message="Web UI 请求失败。")
                     return
                 usage = result.token_usage
@@ -251,6 +296,7 @@ class WebUiService:
                     # 对话内容已经由 ChatSession 持久化，索引异常不能让流悬挂。
                     record = self.catalog.current
                     metadata_warning = "消息已保存，但会话列表更新失败。"
+                record_statistics("completed", usage)
                 emit(
                     "completed",
                     output_text=result.output_text,
@@ -300,6 +346,11 @@ class WebUiService:
             self._approvals.invalidate(self._active_request_id)
         task.cancel()
         return True
+
+    def statistics_payload(self) -> dict[str, object]:
+        """返回不含请求正文、会话标识和密钥的聚合统计。"""
+
+        return self.statistics.snapshot()
 
     def resolve_tool_approval(
         self,

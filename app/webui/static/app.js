@@ -9,6 +9,13 @@ const state = {
   sessions: [],
   currentSessionId: null,
   pendingApproval: null,
+  settingsRoute: null,
+  statistics: {
+    data: null,
+    loading: false,
+    range: 7,
+    metric: "requests",
+  },
   preferences: {
     theme: "system",
     density: "comfortable",
@@ -18,6 +25,13 @@ const state = {
 
 const PREFERENCES_KEY = "tsi-web-preferences";
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
+const SETTINGS_ROUTES = new Set(["general", "model", "statistics"]);
+const SETTINGS_TITLES = { general: "通用", model: "模型", statistics: "统计" };
+const STATISTIC_METRICS = {
+  requests: { label: "请求数", unit: "次" },
+  total_tokens: { label: "Token", unit: "" },
+  average_elapsed_ms: { label: "平均耗时", unit: "" },
+};
 const ICON_PATHS = {
   edit: ["M4 20h4l11-11-4-4L4 16z", "m13.5 6.5 4 4"],
   clear: ["M4 4v6h6", "M5.5 15a7 7 0 1 0 .5-7.5L4 10"],
@@ -53,6 +67,251 @@ async function api(path, options = {}) {
     throw new Error(detail);
   }
   return response;
+}
+
+function currentRoute() {
+  const hash = window.location.hash || "#/chat";
+  const match = hash.match(/^#\/settings\/(general|model|statistics)$/);
+  if (match) return { page: "settings", section: match[1] };
+  if (hash === "#/chat" || hash === "") return { page: "chat", section: null };
+  window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#/chat`);
+  return { page: "chat", section: null };
+}
+
+function navigate(hash) {
+  if (window.location.hash === hash) renderRoute();
+  else window.location.hash = hash;
+}
+
+function renderRoute() {
+  const route = currentRoute();
+  const previous = state.settingsRoute;
+  $("#chat-view").hidden = route.page !== "chat";
+  $("#settings-view").hidden = route.page !== "settings";
+  state.settingsRoute = route.section;
+  if (route.page === "chat") return;
+
+  $("#settings-page-title").textContent = SETTINGS_TITLES[route.section];
+  document.querySelectorAll("[data-settings-route]").forEach((button) => {
+    const active = button.dataset.settingsRoute === route.section;
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
+  });
+  document.querySelectorAll("[data-settings-panel]").forEach((panel) => {
+    panel.hidden = panel.dataset.settingsPanel !== route.section;
+  });
+  if (route.section === "statistics" && previous !== "statistics") loadStatistics();
+}
+
+function finiteNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? number : 0;
+}
+
+function formatInteger(value) {
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(finiteNumber(value));
+}
+
+function formatCompact(value) {
+  return new Intl.NumberFormat("zh-CN", {
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(finiteNumber(value));
+}
+
+function formatDuration(value) {
+  const milliseconds = finiteNumber(value);
+  if (milliseconds < 1000) return `${Math.round(milliseconds)}ms`;
+  return `${(milliseconds / 1000).toFixed(milliseconds < 10_000 ? 1 : 0)}s`;
+}
+
+function formatMetric(value, metric, compact = false) {
+  if (metric === "average_elapsed_ms") return formatDuration(value);
+  return compact ? formatCompact(value) : formatInteger(value);
+}
+
+function setStatisticsLoading(message, { retry = false } = {}) {
+  $("#statistics-state").textContent = message;
+  $("#statistics-state").hidden = false;
+  $("#statistics-content").hidden = true;
+  $("#retry-statistics").hidden = !retry;
+}
+
+async function loadStatistics() {
+  if (state.statistics.loading) return;
+  state.statistics.loading = true;
+  setStatisticsLoading("正在加载统计…");
+  try {
+    const response = await api("/statistics");
+    const data = await response.json();
+    if (!data || !Array.isArray(data.days) || !Array.isArray(data.models) || !data.totals) {
+      throw new Error("统计数据格式无效");
+    }
+    state.statistics.data = data;
+    renderStatistics();
+    $("#statistics-state").hidden = true;
+    $("#statistics-content").hidden = false;
+    $("#retry-statistics").hidden = true;
+  } catch (_) {
+    setStatisticsLoading("统计暂时不可用。", { retry: true });
+  } finally {
+    state.statistics.loading = false;
+  }
+}
+
+function renderStatistics() {
+  const data = state.statistics.data;
+  if (!data) return;
+  const totals = data.totals;
+  $("#stat-total-requests").textContent = formatInteger(totals.requests);
+  $("#stat-success-rate").textContent = `${finiteNumber(totals.success_rate).toFixed(1)}%`;
+  $("#stat-total-tokens").textContent = formatInteger(totals.total_tokens);
+  $("#stat-average-elapsed").textContent = formatDuration(totals.average_elapsed_ms);
+  $("#stat-input-tokens").textContent = formatInteger(totals.input_tokens);
+  $("#stat-output-tokens").textContent = formatInteger(totals.output_tokens);
+  $("#stat-failed-requests").textContent = formatInteger(totals.failed);
+  $("#stat-cancelled-requests").textContent = formatInteger(totals.cancelled);
+  $("#stat-usage-coverage").textContent = `Usage 覆盖率 ${finiteNumber(totals.usage_coverage).toFixed(1)}%`;
+  renderStatisticsModels(data.models);
+  renderStatisticsChart();
+}
+
+function renderStatisticsModels(models) {
+  const body = $("#statistics-models");
+  body.replaceChildren();
+  if (!models.length) {
+    const row = document.createElement("tr");
+    const cell = document.createElement("td");
+    cell.colSpan = 5;
+    cell.className = "empty-state";
+    cell.textContent = "暂无模型调用";
+    row.append(cell);
+    body.append(row);
+    return;
+  }
+  for (const item of models) {
+    const row = document.createElement("tr");
+    const nameCell = document.createElement("td");
+    const name = document.createElement("span");
+    name.className = "statistics-model-name";
+    const model = document.createElement("strong");
+    model.textContent = String(item.model || "-");
+    const provider = document.createElement("small");
+    provider.textContent = String(item.provider || "-");
+    name.append(model, provider);
+    nameCell.append(name);
+    row.append(nameCell);
+    for (const key of ["requests", "input_tokens", "output_tokens", "total_tokens"]) {
+      const cell = document.createElement("td");
+      cell.textContent = formatInteger(item[key]);
+      row.append(cell);
+    }
+    body.append(row);
+  }
+}
+
+function createSvgNode(name, attributes = {}) {
+  const node = document.createElementNS(SVG_NAMESPACE, name);
+  for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, String(value));
+  return node;
+}
+
+function renderStatisticsChart() {
+  const data = state.statistics.data;
+  if (!data) return;
+  const metric = state.statistics.metric;
+  const range = state.statistics.range;
+  const metricInfo = STATISTIC_METRICS[metric];
+  const days = data.days.slice(-range);
+  const values = days.map((item) => finiteNumber(item[metric]));
+  const chart = $("#statistics-chart");
+  chart.replaceChildren();
+  $("#statistics-chart-caption").textContent = `近 ${range} 天 · ${metricInfo.label}`;
+
+  const width = 800;
+  const height = 280;
+  const margin = { top: 18, right: 18, bottom: 38, left: 58 };
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const maximum = Math.max(0, ...values);
+  const ceiling = maximum || 1;
+  const xAt = (index) => margin.left + (days.length <= 1 ? plotWidth / 2 : index * plotWidth / (days.length - 1));
+  const yAt = (value) => margin.top + plotHeight - finiteNumber(value) * plotHeight / ceiling;
+
+  for (let index = 0; index <= 4; index += 1) {
+    const y = margin.top + index * plotHeight / 4;
+    chart.append(createSvgNode("line", {
+      x1: margin.left,
+      x2: width - margin.right,
+      y1: y,
+      y2: y,
+      class: "chart-grid",
+    }));
+    const label = createSvgNode("text", {
+      x: margin.left - 9,
+      y: y + 3,
+      "text-anchor": "end",
+      class: "chart-axis-label",
+    });
+    const axisValue = maximum ? ceiling * (4 - index) / 4 : 0;
+    label.textContent = formatMetric(axisValue, metric, true);
+    chart.append(label);
+  }
+
+  if (!days.length) return;
+  const coordinates = days.map((item, index) => [xAt(index), yAt(values[index]), item]);
+  const linePath = coordinates.map(([x, y], index) => `${index ? "L" : "M"}${x.toFixed(2)},${y.toFixed(2)}`).join(" ");
+  const baseline = margin.top + plotHeight;
+  const areaPath = `M${coordinates[0][0].toFixed(2)},${baseline} ${linePath.replace(/^M/, "L")} L${coordinates.at(-1)[0].toFixed(2)},${baseline} Z`;
+  chart.append(createSvgNode("path", { d: areaPath, class: "chart-area" }));
+  chart.append(createSvgNode("path", { d: linePath, class: "chart-line" }));
+
+  const labelStep = range === 7 ? 1 : 5;
+  coordinates.forEach(([x, y, item], index) => {
+    const point = createSvgNode("circle", {
+      cx: x,
+      cy: y,
+      r: 4,
+      tabindex: 0,
+      role: "img",
+      class: "chart-point",
+      "aria-label": `${item.date}，${metricInfo.label} ${formatMetric(values[index], metric)}${metricInfo.unit}`,
+    });
+    chart.append(point);
+    if (index % labelStep === 0 || index === coordinates.length - 1) {
+      const label = createSvgNode("text", {
+        x,
+        y: height - 13,
+        "text-anchor": index === 0 ? "start" : index === coordinates.length - 1 ? "end" : "middle",
+        class: "chart-axis-label",
+      });
+      label.textContent = String(item.date).slice(5).replace("-", "/");
+      chart.append(label);
+    }
+  });
+
+  const minimum = Math.min(...values);
+  const total = values.reduce((sum, value) => sum + value, 0);
+  const completed = days.reduce((sum, item) => sum + finiteNumber(item.completed), 0);
+  const weightedElapsed = days.reduce(
+    (sum, item) => sum + finiteNumber(item.average_elapsed_ms) * finiteNumber(item.completed),
+    0,
+  );
+  const aggregateLabel = metric === "average_elapsed_ms" ? "期间平均" : "合计";
+  const aggregateValue = metric === "average_elapsed_ms"
+    ? weightedElapsed / Math.max(completed, 1)
+    : total;
+  const summary = $("#statistics-chart-summary");
+  summary.replaceChildren();
+  for (const [label, value] of [
+    ["最低", minimum],
+    ["最高", maximum],
+    [aggregateLabel, aggregateValue],
+  ]) {
+    const item = document.createElement("span");
+    item.textContent = `${label} ${formatMetric(value, metric)}${metricInfo.unit}`;
+    summary.append(item);
+  }
 }
 
 function setConnected(ok, text) {
@@ -460,7 +719,19 @@ async function sendMessage() {
       buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
       const lines = buffer.split("\n");
       buffer = lines.pop() || "";
-      for (const line of lines) if (line.trim()) handleEvent(JSON.parse(line));
+      let terminalReceived = false;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        if (handleEvent(JSON.parse(line))) {
+          terminalReceived = true;
+          break;
+        }
+      }
+      if (terminalReceived) {
+        // 业务终态比连接关闭更准确，避免服务端连接稍晚关闭时页面仍保持忙碌。
+        await reader.cancel();
+        break;
+      }
       if (done) break;
     }
     if (buffer.trim()) handleEvent(JSON.parse(buffer));
@@ -480,6 +751,8 @@ async function sendMessage() {
 
 function handleEvent(event) {
   if (event.type === "text_delta" && state.streamNode) {
+    // 收到正文增量说明模型已经开始作答，不能继续显示“思考中”。
+    $("#activity-text").textContent = "正在回答";
     state.streamNode.textContent += event.text;
     scrollToBottom();
   } else if (event.type === "text_reset" && state.streamNode) {
@@ -496,6 +769,7 @@ function handleEvent(event) {
   } else if (event.type === "completed") {
     closeToolApproval();
     finishStreamAsMarkdown(event.output_text);
+    $("#activity-text").textContent = "已完成";
     $("#elapsed-time").textContent = `${(event.elapsed_ms / 1000).toFixed(1)}s`;
     $("#context-text").textContent = `上下文 ${event.context_percent}%`;
     $("#usage-text").textContent = event.token_usage
@@ -508,17 +782,20 @@ function handleEvent(event) {
     if (event.warning) showToast(event.warning);
   } else if (event.type === "failed") {
     closeToolApproval();
+    $("#activity-text").textContent = "请求失败";
     state.streamNode?.closest(".message")?.remove();
     state.streamNode = null;
     addMessage("assistant", event.message || "请求失败", { error: true });
     addActivity("模型请求", "失败", event.message || "请求失败");
   } else if (event.type === "cancelled") {
     closeToolApproval();
+    $("#activity-text").textContent = "已取消";
     state.streamNode?.closest(".message")?.remove();
     state.streamNode = null;
     addActivity("模型请求", "已取消");
     showToast("已取消当前请求");
   }
+  return ["completed", "failed", "cancelled"].includes(event.type);
 }
 
 async function loadFiles() {
@@ -652,7 +929,11 @@ document.querySelectorAll(".inspector-tabs button").forEach((button) => button.a
   document.querySelectorAll(".inspector-tabs button").forEach((item) => item.classList.toggle("active", item === button));
   document.querySelectorAll(".inspector-panel").forEach((panel) => panel.classList.toggle("active", panel.id === `${button.dataset.tab}-panel`));
 }));
-$("#open-settings").addEventListener("click", () => $("#settings-dialog").showModal());
+$("#open-settings").addEventListener("click", () => navigate("#/settings/general"));
+$("#close-settings").addEventListener("click", () => navigate("#/chat"));
+document.querySelectorAll("[data-settings-route]").forEach((button) => {
+  button.addEventListener("click", () => navigate(`#/settings/${button.dataset.settingsRoute}`));
+});
 $("#theme-setting").addEventListener("change", (event) => savePreference("theme", event.target.value));
 $("#density-setting").addEventListener("change", (event) => savePreference("density", event.target.value));
 $("#send-key-setting").addEventListener("change", (event) => savePreference("sendKey", event.target.value));
@@ -663,10 +944,30 @@ $("#reset-settings").addEventListener("click", () => {
   applyPreferences();
   showToast("已恢复默认设置");
 });
-$("#settings-dialog").addEventListener("click", (event) => {
-  if (event.target === event.currentTarget) event.currentTarget.close();
+$("#retry-statistics").addEventListener("click", loadStatistics);
+document.querySelectorAll("[data-stat-range]").forEach((button) => {
+  button.addEventListener("click", () => {
+    state.statistics.range = Number(button.dataset.statRange);
+    document.querySelectorAll("[data-stat-range]").forEach((item) => {
+      item.setAttribute("aria-pressed", String(item === button));
+    });
+    renderStatisticsChart();
+  });
 });
+document.querySelectorAll("[data-stat-metric]").forEach((button) => {
+  button.addEventListener("click", () => {
+    const metric = button.dataset.statMetric;
+    if (!Object.hasOwn(STATISTIC_METRICS, metric)) return;
+    state.statistics.metric = metric;
+    document.querySelectorAll("[data-stat-metric]").forEach((item) => {
+      item.setAttribute("aria-pressed", String(item === button));
+    });
+    renderStatisticsChart();
+  });
+});
+window.addEventListener("hashchange", renderRoute);
 
 loadPreferences();
 applyPreferences();
+renderRoute();
 bootstrap();

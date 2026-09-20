@@ -6,7 +6,7 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.runtime.chat import ChatRuntimeInfo
+from app.runtime.chat import ChatErrorCode, ChatRuntimeError, ChatRuntimeInfo
 from app.runtime.model_selection import ModelSelectionService
 from app.runtime.session import ChatExecutionSnapshot, ChatSession
 from app.runtime.session_store import SessionStore
@@ -15,6 +15,7 @@ from app.webui.router import create_webui_router
 from app.webui.approvals import WebApprovalConflict, WebApprovalNotFound
 from app.webui.service import WebUiBusyError, WebUiService
 from app.webui.sessions import WebSessionCatalog, WebSessionStoreError
+from app.webui.statistics import WebStatisticsStore, WebStatisticsStoreError
 from tools.contracts import ToolCall
 from tools.workspace import (
     WorkspacePolicy,
@@ -130,6 +131,7 @@ def create_service(tmp_path, provider=None):
         ChatRuntimeInfo("deepseek", "test-model", True),
         (),
         ModelSelectionService(()),
+        WebStatisticsStore(tmp_path / "web-statistics.json"),
         tmp_path,
         policy,
         context_window_tokens=1_000,
@@ -181,6 +183,8 @@ def test_webui_streams_deltas_and_commits_only_final_message(tmp_path):
             "你好",
             "你好，Web UI",
         ]
+        assert service.statistics_payload()["totals"]["completed"] == 1
+        assert service.statistics_payload()["totals"]["total_tokens"] == 12
 
     asyncio.run(scenario())
 
@@ -326,6 +330,7 @@ def test_webui_cancel_invalidates_pending_workspace_approval(tmp_path):
 
         assert approval is not None
         assert events[-1]["type"] == "cancelled"
+        assert service.statistics_payload()["totals"]["cancelled"] == 1
         assert not (tmp_path / "generated.txt").exists()
         with pytest.raises(WebApprovalNotFound):
             service.resolve_tool_approval(
@@ -352,6 +357,20 @@ def test_webui_router_serves_local_page_bootstrap_and_ndjson(tmp_path):
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/x-ndjson")
     assert '"type": "completed"' in response.text
+
+
+def test_webui_router_exposes_aggregate_statistics(tmp_path):
+    service = create_service(tmp_path)
+    application = FastAPI()
+    application.include_router(create_webui_router(service))
+    client = TestClient(application)
+
+    client.post("/ui/api/chat", json={"input": "你好"})
+    response = client.get("/ui/api/statistics")
+
+    assert response.status_code == 200
+    assert response.json()["totals"]["requests"] == 1
+    assert response.json()["models"][0]["model"] == "test-model"
 
 
 def test_webui_router_exposes_session_lifecycle(tmp_path):
@@ -398,7 +417,17 @@ def test_webui_settings_and_workspace_approval_contract_are_present(tmp_path):
     html = client.get("/ui").text
     javascript = client.get("/ui/app.js").text
 
-    assert 'id="settings-dialog"' in html
+    assert 'id="settings-dialog"' not in html
+    assert 'id="settings-view"' in html
+    assert 'data-settings-route="general"' in html
+    assert 'data-settings-route="model"' in html
+    assert 'data-settings-route="statistics"' in html
+    assert 'id="statistics-chart"' in html
+    assert 'data-stat-range="7"' in html
+    assert 'data-stat-range="30"' in html
+    assert 'data-stat-metric="requests"' in html
+    assert 'data-stat-metric="total_tokens"' in html
+    assert 'data-stat-metric="average_elapsed_ms"' in html
     assert 'id="theme-setting"' in html
     assert 'id="density-setting"' in html
     assert 'id="send-key-setting"' in html
@@ -416,7 +445,12 @@ def test_webui_settings_and_workspace_approval_contract_are_present(tmp_path):
     assert 'method: "DELETE"' in javascript
     assert "tool_approval_required" in javascript
     assert "/tool-approvals/" in javascript
-    assert '/settings' not in javascript
+    assert '$("#activity-text").textContent = "正在回答"' in javascript
+    assert 'return ["completed", "failed", "cancelled"].includes(event.type)' in javascript
+    assert "await reader.cancel()" in javascript
+    assert '#/settings/general' in javascript
+    assert 'api("/statistics")' in javascript
+    assert "createElementNS(SVG_NAMESPACE" in javascript
     assert client.post("/ui/api/settings", json={}).status_code == 404
 
 
@@ -484,6 +518,7 @@ def test_webui_rejects_non_loopback_clients(tmp_path):
         ) as client:
             page = await client.get("/ui")
             bootstrap = await client.get("/ui/api/bootstrap")
+            statistics = await client.get("/ui/api/statistics")
             approval = await client.post(
                 "/ui/api/tool-approvals/approval-1",
                 json={"request_id": "request-1", "approved": True},
@@ -491,6 +526,7 @@ def test_webui_rejects_non_loopback_clients(tmp_path):
 
         assert page.status_code == 403
         assert bootstrap.status_code == 403
+        assert statistics.status_code == 403
         assert approval.status_code == 403
 
     asyncio.run(scenario())
@@ -510,6 +546,45 @@ def test_webui_unknown_runtime_failure_ends_stream_safely(tmp_path, monkeypatch)
         assert events[-1]["code"] == "internal"
         assert events[-1]["message"] == "Web UI 请求失败。"
         assert "private failure" not in str(events)
+        assert service.statistics_payload()["totals"]["failed"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_webui_known_runtime_failure_is_counted_once(tmp_path, monkeypatch):
+    async def scenario():
+        service = create_service(tmp_path)
+
+        async def fail(*args, **kwargs):
+            raise ChatRuntimeError(ChatErrorCode.TIMEOUT, "上游请求超时。")
+
+        monkeypatch.setattr(service.session, "send", fail)
+        events = [event async for event in service.stream_message("你好")]
+
+        assert events[-1]["type"] == "failed"
+        assert events[-1]["code"] == "timeout"
+        assert service.statistics_payload()["totals"]["requests"] == 1
+        assert service.statistics_payload()["totals"]["failed"] == 1
+
+    asyncio.run(scenario())
+
+
+def test_webui_statistics_failure_does_not_change_terminal_event(
+    tmp_path,
+    monkeypatch,
+):
+    async def scenario():
+        service = create_service(tmp_path)
+
+        def fail_record(*args, **kwargs):
+            raise WebStatisticsStoreError("private statistics path")
+
+        monkeypatch.setattr(service.statistics, "record", fail_record)
+        events = [event async for event in service.stream_message("你好")]
+
+        assert events[-1]["type"] == "completed"
+        assert events[-1]["output_text"] == "你好，Web UI"
+        assert "private statistics" not in str(events)
 
     asyncio.run(scenario())
 

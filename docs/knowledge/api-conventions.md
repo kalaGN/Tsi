@@ -13,6 +13,7 @@
 页面挂载在 `/ui`，数据接口挂载在 `/ui/api/`：
 
 - `GET /ui/api/bootstrap`：返回当前会话、模型和启动健康状态。
+- `GET/PUT /ui/api/context-settings`：读取有效模型预算与压缩配置、逐字段来源；按修订号显式保存页面覆盖值，不含密钥或对话正文。
 - `POST /ui/api/chat`：对话入口，以 `application/x-ndjson` 流式返回有序事件。
 - `POST /ui/api/cancel`、`POST /ui/api/tool-approvals/{approval_id}`：取消当前请求，或提交一次性审批决定。
 - `/ui/api/sessions`、`/ui/api/model`、`/ui/api/files`：多会话管理、模型切换和工作区读取。

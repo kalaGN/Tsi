@@ -14,10 +14,12 @@ from app.services.llm.contracts import (
     LlmTurn,
     ModelStep,
     ProviderInvalidResponseError,
+    RequestGuard,
     TextDeltaHandler,
     TextResetHandler,
     TokenUsage,
 )
+from app.services.llm.budget import default_request_guard
 from app.runtime.trace import (
     ModelStepCompletedTraceEvent,
     ToolApprovalCompletedTraceEvent,
@@ -53,6 +55,7 @@ class ToolLoopResult:
 
     output_text: str
     token_usage: TokenUsage | None
+    finish_reason: str = "completed"
 
 
 DEFAULT_TOOL_LOOP_LIMITS = ToolLoopLimits(5, 4, 16)
@@ -77,6 +80,7 @@ async def run_tool_loop(
     limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
     clock: Callable[[], float] = time.monotonic,
     trace_observer: TraceObserver | None = None,
+    request_guard: RequestGuard = default_request_guard,
 ) -> ToolLoopResult:
     """串行执行模型要求的白名单工具，直到得到最终文本或触达上限。"""
 
@@ -163,6 +167,7 @@ async def run_tool_loop(
             return ToolLoopResult(
                 step.output_text,
                 aggregate_usage if usage_complete else None,
+                step.finish_reason,
             )
 
         # 当前模型步骤属于工具中间态，撤销可能已展示的临时文本。
@@ -179,7 +184,9 @@ async def run_tool_loop(
             raise ToolLoopLimitError("Tool call limit exceeded")
 
         current_results: list[ToolResult] = []
+        request_guard(turn.estimate_pending((), complete=False))
         visible_names = {definition.name for definition in definitions_before}
+        active_definitions = definitions_before
         for call in step.tool_calls:
             emit_trace(
                 trace_observer,
@@ -233,9 +240,13 @@ async def run_tool_loop(
                 on_tool_result(call, result)
             current_results.append(result)
             executed_calls += 1
+            if registry.definitions != active_definitions:
+                active_definitions = registry.definitions
+                turn.replace_tools(active_definitions)
+            # 先公布实际副作用，再拒绝必定超限的续接，禁止继续审批或执行。
+            request_guard(turn.estimate_pending(tuple(current_results), complete=False))
         results = tuple(current_results)
-        if registry.definitions != definitions_before:
-            turn.replace_tools(registry.definitions)
+        request_guard(turn.estimate_pending(results, complete=True))
 
     # 循环范围已覆盖所有分支，仅作为类型和未来修改的防御性兜底。
     raise ToolLoopLimitError("Tool call limit exceeded")

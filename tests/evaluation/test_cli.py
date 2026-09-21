@@ -5,6 +5,7 @@ from app.evaluation import __main__ as evaluation_cli
 from app.evaluation.__main__ import _all_live_trials_failed, main
 from app.evaluation.contracts import ReplayStep, load_suite
 from app.evaluation.replay import ReplayProvider
+from budget_support import BudgetedTestTurn, estimate_test_request
 from app.evaluation.runner import run_suite
 from app.services.llm.contracts import ProviderTimeoutError
 
@@ -111,12 +112,13 @@ class _TimeoutTurn:
 
 
 class _TimeoutProvider:
+    estimate_request = staticmethod(estimate_test_request)
     name = "deepseek"
     model = "timeout-model"
     api_key_configured = True
 
-    def create_turn(self, messages, tools, *, request_id):
-        return _TimeoutTurn()
+    def create_turn(self, messages, tools, *, request_id, **budget):
+        return BudgetedTestTurn(_TimeoutTurn(), messages, tools, **budget)
 
 
 def test_live_report_distinguishes_total_provider_failure(tmp_path):

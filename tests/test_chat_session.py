@@ -1,17 +1,21 @@
 import asyncio
 
 import pytest
+from budget_support import BudgetedTestTurn, estimate_test_request
 
 from app.runtime import session as session_module
 from app.runtime.chat import ChatErrorCode, ChatResult, ChatRuntimeError
-from app.runtime.memory import ConversationState, MemoryPolicy
-from app.runtime.session import ChatExecutionSnapshot, ChatSession
+from app.runtime.context_compaction import SummaryCallResult
+from app.runtime.memory import ConversationState, ConversationSummary
+from app.runtime.model_budget import ModelBudget
+from app.runtime.session import ChatExecutionSnapshot, ChatSession, RuntimeBudgetSnapshot
 from app.runtime.session_store import SessionStore, SessionStoreError
 from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS
 from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
+    GenerationOptions,
     ModelStep,
     ProviderTimeoutError,
     TokenUsage,
@@ -23,6 +27,7 @@ from tools.workspace import WorkspacePolicy
 
 
 class RecordingProvider:
+    estimate_request = staticmethod(estimate_test_request)
     name = "fake"
     model = "fake-model"
     api_key_configured = True
@@ -32,9 +37,9 @@ class RecordingProvider:
         self.error = error
         self.calls = []
 
-    def create_turn(self, messages, tools, *, request_id):
+    def create_turn(self, messages, tools, *, request_id, **budget):
         self.calls.append(tuple(messages))
-        return RecordingTurn(self)
+        return BudgetedTestTurn(RecordingTurn(self), messages, tools, **budget)
 
     async def next_step(self, tool_results=(), *, on_text_delta=None):
         if self.error is not None:
@@ -54,6 +59,17 @@ class RecordingTurn:
             tool_results,
             on_text_delta=on_text_delta,
         )
+
+
+SUMMARY = ConversationSummary("此前目标", (), (), (), (), (), ())
+COMPACTION_BUDGET = ModelBudget(
+    context_window_tokens=12_800, trigger_percent=6, target_percent=3,
+    recent_turns=2,
+)
+
+
+def compact_budget(_provider):
+    return RuntimeBudgetSnapshot(COMPACTION_BUDGET)
 
 
 def test_chat_session_persists_turns_and_restores_history(tmp_path):
@@ -517,28 +533,22 @@ def test_chat_session_compacts_model_context_but_preserves_full_transcript(tmp_p
         provider = RecordingProvider(["本轮回答"])
         summary_calls = []
 
-        async def summarize(previous, messages):
+        async def summarize(previous, messages, budget, request_id):
             summary_calls.append((previous, messages))
-            return "此前摘要"
+            return SummaryCallResult(SUMMARY.to_json(), None, None)
 
         session = ChatSession.load(
             store,
             provider=provider,
             memory_summarizer=summarize,
-            memory_policy=MemoryPolicy(
-                context_window_tokens=260,
-                trigger_ratio=0.7,
-                target_ratio=0.6,
-                recent_turns=2,
-                reserved_tokens=20,
-            ),
+            budget_snapshot_provider=compact_budget,
         )
 
         await session.send("继续开发")
 
         assert summary_calls
         assert provider.calls[0][0].role is ChatRole.SYSTEM
-        assert "此前摘要" in provider.calls[0][0].content
+        assert "此前目标" in provider.calls[0][0].content
         assert provider.calls[0][-1] == ChatMessage(ChatRole.USER, "继续开发")
         assert len(provider.calls[0]) < len(history) + 2
         assert session.messages == history + (
@@ -547,8 +557,68 @@ def test_chat_session_compacts_model_context_but_preserves_full_transcript(tmp_p
         )
         persisted = store.load_state()
         assert persisted.messages == session.messages
-        assert persisted.summary == "此前摘要"
-        assert persisted.summarized_message_count > 0
+        assert persisted.summary == SUMMARY
+        assert persisted.summary_through_message_count > 0
+
+    asyncio.run(scenario())
+
+
+def test_restored_context_percent_uses_visible_suffix_and_summary(tmp_path):
+    history = tuple(
+        message for index in range(4)
+        for message in (
+            ChatMessage(ChatRole.USER, f"问{index}" + "中" * 80),
+            ChatMessage(ChatRole.ASSISTANT, f"答{index}" + "文" * 80),
+        )
+    )
+    store = SessionStore(tmp_path / "chat-session.json")
+    store.save_state(ConversationState(history, SUMMARY, 2, 6))
+    provider = RecordingProvider(["好的"])
+    session = ChatSession.load(store, provider=provider, budget_snapshot_provider=compact_budget)
+
+    preview = session.preview_context_snapshot()
+    full = provider.estimate_request(history + (ChatMessage(ChatRole.USER, ""),), (),
+                                     options=GenerationOptions(COMPACTION_BUDGET.max_output_tokens)).input_tokens
+
+    assert preview["scope"] == "restored"
+    assert preview["input_limit"] == COMPACTION_BUDGET.input_limit
+    assert preview["input_tokens"] < full
+    assert provider.calls == []
+
+
+def test_cooldown_is_not_reset_by_unrelated_settings_revision(tmp_path):
+    async def scenario():
+        history = tuple(message for number in range(5) for message in (
+            ChatMessage(ChatRole.USER, f"问{number}" + "中" * 80),
+            ChatMessage(ChatRole.ASSISTANT, f"答{number}" + "文" * 80),
+        ))
+        store = SessionStore(tmp_path / "session.json")
+        store.save_state(ConversationState(messages=history))
+        settings = {"revision": 0, "budget": COMPACTION_BUDGET}
+        calls = []
+
+        async def invalid(*args):
+            calls.append(args)
+            return SummaryCallResult("invalid", None, "completed")
+
+        session = ChatSession.load(
+            store, provider=RecordingProvider(["一", "二", "三"]),
+            budget_snapshot_provider=lambda _provider: RuntimeBudgetSnapshot(
+                settings["budget"], settings["revision"],
+            ),
+            memory_summarizer=invalid, clock=lambda: 100.0,
+        )
+        await session.send("继续一")
+        settings["revision"] = 1
+        await session.send("继续二")
+        assert len(calls) == 1
+        settings["revision"] = 2
+        settings["budget"] = ModelBudget(
+            context_window_tokens=12_800, trigger_percent=5,
+            target_percent=3, recent_turns=2,
+        )
+        await session.send("继续三")
+        assert len(calls) == 2
 
     asyncio.run(scenario())
 
@@ -557,13 +627,13 @@ def test_default_memory_summarizer_uses_current_provider_without_tools(tmp_path)
     async def scenario():
         class SummaryProvider(RecordingProvider):
             def __init__(self):
-                super().__init__(["模型摘要", "业务回答"])
+                super().__init__([SUMMARY.to_json(), "业务回答"])
                 self.tools = []
 
-            def create_turn(self, messages, tools, *, request_id):
+            def create_turn(self, messages, tools, *, request_id, **budget):
                 self.calls.append(tuple(messages))
                 self.tools.append(tuple(tools))
-                return RecordingTurn(self)
+                return BudgetedTestTurn(RecordingTurn(self), messages, tools, **budget)
 
         history = tuple(
             message
@@ -576,13 +646,7 @@ def test_default_memory_summarizer_uses_current_provider_without_tools(tmp_path)
         session = ChatSession.load(
             store,
             provider=provider,
-            memory_policy=MemoryPolicy(
-                context_window_tokens=190,
-                trigger_ratio=0.7,
-                target_ratio=0.6,
-                recent_turns=1,
-                reserved_tokens=20,
-            ),
+            budget_snapshot_provider=compact_budget,
         )
 
         await session.send("继续")
@@ -590,7 +654,7 @@ def test_default_memory_summarizer_uses_current_provider_without_tools(tmp_path)
         assert provider.tools[0] == ()
         assert "会话记忆压缩器" in provider.calls[0][0].content
         assert provider.calls[1][-1] == ChatMessage(ChatRole.USER, "继续")
-        assert session.summary == "模型摘要"
+        assert session.summary == SUMMARY
 
     def _history_turn(number, size):
         return (
@@ -608,7 +672,7 @@ def test_default_memory_summarizer_usage_is_included_in_user_turn_total(tmp_path
                 super().__init__()
                 self.steps = iter(
                     (
-                        ModelStep(200, "摘要", (), TokenUsage(10, 2, 12)),
+                        ModelStep(200, SUMMARY.to_json(), (), TokenUsage(10, 2, 12)),
                         ModelStep(200, "回答", (), TokenUsage(20, 3, 23)),
                     )
                 )
@@ -632,13 +696,7 @@ def test_default_memory_summarizer_usage_is_included_in_user_turn_total(tmp_path
         session = ChatSession.load(
             store,
             provider=UsageProvider(),
-            memory_policy=MemoryPolicy(
-                context_window_tokens=190,
-                trigger_ratio=0.7,
-                target_ratio=0.6,
-                recent_turns=1,
-                reserved_tokens=20,
-            ),
+            budget_snapshot_provider=compact_budget,
         )
 
         result = await session.send("继续")
@@ -679,17 +737,11 @@ def test_context_limit_does_not_call_provider_or_commit(tmp_path):
         session = ChatSession(
             store,
             provider=provider,
-            memory_policy=MemoryPolicy(
-                context_window_tokens=80,
-                trigger_ratio=0.7,
-                target_ratio=0.5,
-                recent_turns=0,
-                reserved_tokens=10,
-            ),
+            budget_snapshot_provider=compact_budget,
         )
 
         with pytest.raises(ChatRuntimeError) as captured:
-            await session.send("中" * 100)
+            await session.send("中" * 5000)
 
         assert captured.value.code is ChatErrorCode.CONTEXT_LIMIT
         assert provider.calls == []

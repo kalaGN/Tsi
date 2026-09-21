@@ -291,6 +291,26 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .primary-action-button.danger-button { border-color: var(--danger); background: var(--danger); }
 .secondary-button:disabled, .primary-action-button:disabled { opacity: .45; cursor: default; }
 
+.budget-card { margin-top: 18px; }
+.budget-card h3 { margin: 0 0 8px; font-size: 15px; }
+.budget-field { display: flex; justify-content: space-between; align-items: center; gap: 18px; padding: 16px 0; border-bottom: 1px solid var(--border); }
+.budget-field strong { display: block; font-size: 13px; font-weight: 500; }
+.budget-field small { display: block; max-width: 350px; margin-top: 5px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.budget-field .budget-source { color: var(--accent); }
+.budget-value { display: flex; align-items: center; gap: 8px; flex-shrink: 0; color: var(--muted); font-size: 11px; }
+.budget-value input { width: 104px; padding: 8px; border: 1px solid var(--border-strong); border-radius: 7px; background: var(--surface-muted); color: var(--text); font: inherit; font-size: 13px; text-align: right; }
+.budget-value input:focus { outline: 2px solid var(--accent); outline-offset: 2px; }
+.budget-card details { margin-top: 18px; }
+.budget-card summary { color: var(--muted); font-size: 12px; cursor: pointer; }
+.budget-status { min-height: 20px; color: var(--muted); font-size: 12px; }
+.budget-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 12px; }
+
+@media (max-width: 500px) {
+  .budget-field { align-items: flex-start; gap: 10px; }
+  .budget-value { flex-direction: column; align-items: flex-end; }
+  .budget-value input { width: 86px; }
+}
+
 .session-dialog-card { width: min(430px, calc(100vw - 32px)); overflow: hidden; border: 1px solid var(--border); border-radius: 15px; background: var(--surface); color: var(--text); box-shadow: 0 24px 80px rgba(0, 0, 0, .28); }
 .session-dialog-card > header { padding: 15px 17px; border-bottom: 1px solid var(--border); }
 .session-dialog-card > header strong { font-size: 15px; }

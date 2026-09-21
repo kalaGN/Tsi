@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 import pytest
+from budget_support import BudgetedTestTurn, estimate_test_request
 from textual.geometry import Offset
 from textual.selection import SELECT_ALL, Selection
 from textual.widgets import Footer, RichLog, Static, TextArea
@@ -69,6 +70,7 @@ class ImmediateProvider:
     """为模型切换测试记录实际收到的历史和模型。"""
 
     api_key_configured = True
+    estimate_request = staticmethod(estimate_test_request)
 
     def __init__(self, name: str, model: str, answer: str = "切换后回答") -> None:
         self.name = name
@@ -76,9 +78,9 @@ class ImmediateProvider:
         self.answer = answer
         self.calls = []
 
-    def create_turn(self, messages, tools, *, request_id):
+    def create_turn(self, messages, tools, *, request_id, **budget):
         self.calls.append(tuple(messages))
-        return ImmediateTurn(self.answer)
+        return BudgetedTestTurn(ImmediateTurn(self.answer), messages, tools, **budget)
 
 
 class ImmediateTurn:

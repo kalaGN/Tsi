@@ -239,8 +239,8 @@ TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默�
 - TUI 上下键固定用于输入历史，历史不去重、不循环且没有独立持久化文件；`/clear` 同步清空。
 - TUI 模型候选打开时优先消费上下键、Enter 和 Esc；选择器只保存安全候选快照，Provider 创建和 Session 替换仍由应用协调。
 - TUI 使用独立的 `data/model-selection.json` v1 保存最近一次成功切换的供应商和模型；文件以 `0600` 原子替换，不含 Key，且不受 `/clear` 或 `/memory clear` 影响。
-- TUI 使用唯一 `data/chat-session.json` v2 保存完整 Transcript、滚动摘要边界和最多 50 条显式长期偏好；v1 延迟迁移，损坏历史不自动覆盖。
-- 模型上下文按本地估算在 70% 触发、以 50% 为压缩目标，正常保留最近 6 轮；摘要调用不开放工具，失败或仍超预算时按完整轮次淘汰上下文但不删除 Transcript。
+- TUI 使用唯一 `data/chat-session.json` v3 保存完整 Transcript、结构化摘要、双边界和最多 50 条显式长期偏好；v1/v2 延迟迁移并在首次成功保存前创建原字节私密备份，损坏历史不自动覆盖。
+- Web 多会话和 TUI 共用 `ChatSession`、有界摘要、逐步 Provider 载荷估算和 `data/context-settings.json` 页面配置。业务输入上限为当前模型窗口减输出上限与安全余量，默认 70% 触发、50% 为目标，最近 6 轮软保护；摘要超时或失败可降级并冷却，淘汰上下文不删除 Transcript。Web 设置页“模型”保存逐模型预算，“上下文”保存全局压缩策略，TUI 下一次发送读取新设置。
 - `/clear` 清除 Transcript 和摘要但保留长期偏好；`/memory` 只读偏好，`/memory clear` 单独原子清除偏好。
 - TUI 只在启动时读取当前目录直属 `AGENTS.md`，不递归、不热重载；system 消息与 Session schema 隔离。
 - TUI 从 `.agents/skills/*/SKILL.md` 读取 Codex 兼容项目 Skill；Catalog 仅含名称、描述和相对位置，正文与资源按需读取，任一非法 Skill 会禁用整批但不影响 Workspace 和安装工具。

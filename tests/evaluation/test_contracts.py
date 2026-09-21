@@ -91,6 +91,28 @@ def test_load_suite_allows_empty_file_content(tmp_path):
     assert case.expected.files[0].content == ""
 
 
+def test_load_suite_requires_structured_summary_with_ordered_boundaries(tmp_path):
+    summary = {"goal": "继续开发", "decisions": [], "constraints": [],
+               "completed": [], "pending": [], "references": [], "uncertainties": []}
+    history = [{"role": role, "content": text} for role, text in
+               [("user", "问一"), ("assistant", "答一"), ("user", "问二"), ("assistant", "答二")]]
+    path = tmp_path / "context.jsonl"
+    path.write_text(json.dumps(_case(setup={
+        "messages": history, "summary": summary,
+        "summary_through_message_count": 2, "context_start_message_count": 4,
+    }), ensure_ascii=False) + "\n", encoding="utf-8")
+    setup = load_suite(path).cases[0].setup
+    assert setup.summary.goal == "继续开发"
+    assert (setup.summary_through_message_count, setup.context_start_message_count) == (2, 4)
+
+    path.write_text(json.dumps(_case(setup={
+        "messages": history, "summary": summary,
+        "summary_through_message_count": 4, "context_start_message_count": 2,
+    }), ensure_ascii=False) + "\n", encoding="utf-8")
+    with pytest.raises(EvaluationConfigError, match="boundaries"):
+        load_suite(path)
+
+
 def test_load_suite_rejects_duplicate_tool_call_ids(tmp_path):
     path = tmp_path / "core.jsonl"
     path.write_text(

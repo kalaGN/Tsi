@@ -23,7 +23,7 @@ from app.evaluation.graders import grade_trial
 from app.evaluation.observer import TraceCollector
 from app.evaluation.replay import ReplayProvider
 from app.runtime.chat import ChatRuntimeError
-from app.runtime.memory import MemoryPolicy
+from app.runtime.model_budget import ModelBudget
 from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS, ToolLoopLimits
 from app.services.llm.contracts import LlmProvider
 from app.services.llm.factory import create_provider_for_model
@@ -42,7 +42,7 @@ async def run_suite(
     provider_name: str | None = None,
     model: str | None = None,
     provider_factory=create_provider_for_model,
-    memory_policy: MemoryPolicy = MemoryPolicy(),
+    model_budget: ModelBudget = ModelBudget(),
     tool_loop_limits: ToolLoopLimits = WORKSPACE_TOOL_LOOP_LIMITS,
 ) -> EvaluationReport:
     """串行执行完整 Suite，单个 Trial 失败不阻断其余 Case。"""
@@ -75,7 +75,7 @@ async def run_suite(
                     Path(project_root),
                     case.setup,
                     provider,
-                    memory_policy=memory_policy,
+                    model_budget=model_budget,
                     tool_loop_limits=tool_loop_limits,
                 )
             except Exception as exc:
@@ -116,7 +116,9 @@ async def run_suite(
                     replay.assert_consumed()
             except ChatRuntimeError as exc:
                 collector.force_failure(exc.code.value, exc.user_message)
-                if replay is not None:
+                if replay is not None and not (
+                    exc.code.value == "context_limit" and not replay.turns
+                ):
                     try:
                         replay.assert_consumed()
                     except EvaluationConfigError as exc:

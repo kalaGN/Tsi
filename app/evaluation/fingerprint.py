@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from app.evaluation.contracts import HarnessFingerprint
-from app.runtime.memory import MemoryPolicy
+from app.runtime.model_budget import ModelBudget
 from app.runtime.tool_loop import ToolLoopLimits
 from tools.contracts import ToolDefinition
 
@@ -18,7 +18,7 @@ from tools.contracts import ToolDefinition
 def build_harness_fingerprint(
     project_root: Path,
     definitions: Sequence[ToolDefinition],
-    memory_policy: MemoryPolicy,
+    model_budget: ModelBudget,
     tool_loop_limits: ToolLoopLimits,
 ) -> HarnessFingerprint:
     """对影响行为的仓库输入和运行策略生成规范哈希。"""
@@ -37,7 +37,7 @@ def build_harness_fingerprint(
         for item in definitions
     ]
     policy_payload = {
-        "memory": asdict(memory_policy),
+        "model_budget": asdict(model_budget),
         "tool_loop": asdict(tool_loop_limits),
     }
     return HarnessFingerprint(

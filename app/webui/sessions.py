@@ -67,6 +67,7 @@ class WebSessionCatalog:
         self._now = now or (lambda: datetime.now(timezone.utc))
         self._records: tuple[WebSessionRecord, ...] = ()
         self._current_id = ""
+        self.last_cleanup_warning: str | None = None
         self._load_or_initialize()
 
     @property
@@ -146,9 +147,17 @@ class WebSessionCatalog:
         return updated
 
     def delete(self, session_id: str) -> WebSessionRecord:
-        """先提交安全索引，再尽力清理不再可达的内容文件。"""
+        """先移除可能含历史的迁移备份，再更新索引及清理正文。"""
 
         target = self._record(session_id)
+        self.last_cleanup_warning = None
+        store = self.session_store(target.id)
+        if store.backup_path.is_symlink():
+            raise WebSessionStoreError("Unable to delete conversation backup")
+        try:
+            store.backup_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise WebSessionStoreError("Unable to delete conversation backup") from exc
         remaining = tuple(item for item in self._records if item.id != target.id)
         if not remaining:
             replacement = self._new_record(DEFAULT_TITLE, auto_title=True)
@@ -163,10 +172,10 @@ class WebSessionCatalog:
             current_id = self._current_id
         self._save(remaining, current_id)
         try:
-            (self.sessions_path / f"{target.id}.json").unlink(missing_ok=True)
+            store.path.unlink(missing_ok=True)
         except OSError:
             # 索引已经安全提交，孤儿内容不会再次被加载。
-            pass
+            self.last_cleanup_warning = "会话已从列表移除，但本地文件清理失败，请检查磁盘。"
         return self.current
 
     def _load_or_initialize(self) -> None:

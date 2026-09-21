@@ -4,13 +4,14 @@ import json
 import pytest
 
 from app.runtime import tool_loop
+from app.evaluation.replay import ReplayRequestState
 from app.runtime.tool_loop import (
     DEFAULT_TOOL_LOOP_LIMITS,
     WORKSPACE_TOOL_LOOP_LIMITS,
     ToolLoopLimitError,
     run_tool_loop,
 )
-from app.services.llm.contracts import ModelStep, TokenUsage
+from app.services.llm.contracts import ModelStep, ProviderContextLimitError, TokenUsage
 from tools.contracts import (
     SKILL_INSTALL_APPROVAL_WARNING_TEXT,
     SkillInstallApprovalRequest,
@@ -45,10 +46,17 @@ class FakeTurn:
     def __init__(self, steps):
         self.steps = iter(steps)
         self.received_results = []
+        self.budget_state = ReplayRequestState()
 
     async def next(self, tool_results=(), *, on_text_delta=None):
+        self.budget_state.prepare(tool_results)
         self.received_results.append(tuple(tool_results))
-        return next(self.steps)
+        step = next(self.steps)
+        self.budget_state.accept(step)
+        return step
+
+    def estimate_pending(self, tool_results=(), *, complete=True):
+        return self.budget_state.estimate(tool_results, complete=complete)
 
     def replace_tools(self, tools):
         raise AssertionError("静态 Registry 不应刷新工具定义")
@@ -78,6 +86,7 @@ class RefreshingTurn(FakeTurn):
 
     def replace_tools(self, tools):
         self.replacements.append(tools)
+        self.budget_state.tools = tools
 
 
 def tool_step(*calls):
@@ -86,6 +95,60 @@ def tool_step(*calls):
 
 def final_step(text="done"):
     return ModelStep(200, text, ())
+
+
+def test_budget_rejects_known_calls_before_any_tool_runs():
+    tool = RecordingTool()
+    turn = FakeTurn([tool_step(ToolCall("first", "lookup", '{"large":"' + "中" * 100 + '"}'))])
+
+    def guard(estimate):
+        if estimate.input_tokens > 100:
+            raise ProviderContextLimitError()
+
+    with pytest.raises(ProviderContextLimitError):
+        asyncio.run(run_tool_loop(turn, ToolRegistry([tool]), request_id="budget-before", request_guard=guard))
+    assert tool.events == []
+    assert turn.received_results == [()]
+
+
+def test_budget_stops_later_tools_but_reports_first_result_and_side_effect():
+    observed = []
+
+    class LargeResult(RecordingTool):
+        async def invoke(self, arguments):
+            self.events.append(arguments)  # 代表已执行且不能自动回滚的副作用。
+            return {"content": "中" * 1000}
+
+    tool = LargeResult()
+    turn = FakeTurn([tool_step(ToolCall("first", "lookup", "{}"), ToolCall("second", "lookup", "{}")), final_step()])
+
+    def guard(estimate):
+        if estimate.input_tokens > 500:
+            raise ProviderContextLimitError()
+
+    with pytest.raises(ProviderContextLimitError):
+        asyncio.run(run_tool_loop(turn, ToolRegistry([tool]), request_id="budget-after", request_guard=guard, on_tool_result=lambda call, result: observed.append(call.call_id)))
+    assert observed == ["first"]
+    assert tool.events == [{}]
+    assert turn.received_results == [()]
+
+
+def test_budget_checks_dynamically_activated_definitions_before_next_tool():
+    tool = RecordingTool()
+    registry = DynamicRegistry(ToolRegistry([tool]))
+    turn = RefreshingTurn([tool_step(ToolCall("first", "lookup", "{}"), ToolCall("second", "lookup", "{}")), final_step()])
+    observed = []
+
+    def guard(estimate):
+        if turn.replacements:
+            assert observed == ["first"]
+            assert estimate.input_tokens > 0
+            raise ProviderContextLimitError()
+
+    with pytest.raises(ProviderContextLimitError):
+        asyncio.run(run_tool_loop(turn, registry, request_id="budget-schema", request_guard=guard, on_tool_result=lambda call, result: observed.append(call.call_id)))
+    assert tool.events == [{}]
+    assert len(turn.replacements) == 1
 
 
 class ApprovalRecordingTool(RecordingTool):

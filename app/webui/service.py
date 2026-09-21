@@ -12,11 +12,14 @@ from typing import Literal
 
 from app.observability.model_logging import log_web_statistics_error
 from app.runtime.chat import ChatRuntimeError, ChatRuntimeInfo, get_chat_runtime_info
-from app.runtime.memory import estimate_messages_tokens, resolve_memory_policy
+from app.runtime.context_settings import ContextSettings
+from app.runtime.context_settings_store import ContextSettingsConflict, ContextSettingsStore
+from app.runtime.model_budget import ModelBudgetCatalog
 from app.runtime.model_selection import ModelSelectionError, ModelSelectionService
 from app.runtime.model_selection_store import ModelSelectionStore
-from app.runtime.session import ChatExecutionSnapshot, ChatSession
+from app.runtime.session import ChatExecutionSnapshot, ChatSession, RuntimeBudgetSnapshot
 from app.runtime.session_store import SessionStore
+from app.runtime.workspace_changes import AppliedChangeTracker
 from app.runtime.system_prompt import SystemPromptLoadError, load_system_prompt
 from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS
 from app.services.llm.contracts import LlmProvider, ModelOption, TokenUsage
@@ -65,6 +68,7 @@ class WebUiService:
         context_window_tokens: int,
         startup_warning: str | None = None,
         system_prompt_loaded: bool = False,
+        context_settings: ContextSettings | None = None,
     ) -> None:
         self.catalog = catalog
         self._session_factory = session_factory
@@ -79,6 +83,9 @@ class WebUiService:
         self.context_window_tokens = context_window_tokens
         self.startup_warning = startup_warning
         self.system_prompt_loaded = system_prompt_loaded
+        self.context_settings = context_settings or ContextSettings(
+            ModelBudgetCatalog({}), ContextSettingsStore(workspace / "data" / "context-settings.json"),
+        )
         self._request_lock = asyncio.Lock()
         self._active_task: asyncio.Task[None] | None = None
         self._active_request_id: str | None = None
@@ -109,7 +116,7 @@ class WebUiService:
         root = (workspace or Path.cwd()).resolve()
         values = os.environ if environ is None else environ
         policy = WorkspacePolicy(root)
-        memory_policy = resolve_memory_policy(values)
+        context_settings = ContextSettings(ModelBudgetCatalog(values), ContextSettingsStore())
         try:
             system_prompt = load_system_prompt(root)
             startup_warning = None
@@ -151,7 +158,9 @@ class WebUiService:
                 provider=current_provider,
                 execution_snapshot_provider=execution_snapshot,
                 tool_loop_limits=WORKSPACE_TOOL_LOOP_LIMITS,
-                memory_policy=memory_policy,
+                budget_snapshot_provider=lambda active: _runtime_budget_snapshot(
+                    context_settings, active,
+                ),
             )
 
         return cls(
@@ -166,9 +175,27 @@ class WebUiService:
             WebStatisticsStore(DEFAULT_WEB_STATISTICS_PATH),
             root,
             policy,
-            context_window_tokens=memory_policy.context_window_tokens,
+            context_window_tokens=(
+                context_settings.snapshot(runtime_info.provider, runtime_info.model).budget.context_window_tokens
+                if runtime_info.provider in {"deepseek", "aliyun"} else 128_000
+            ),
             startup_warning=warning,
             system_prompt_loaded=system_prompt is not None,
+            context_settings=context_settings,
+        )
+
+    def context_settings_payload(self) -> dict:
+        return self.context_settings.payload(self.runtime_info.provider, self.runtime_info.model)
+
+    def save_context_settings(self, payload: dict) -> dict:
+        self._require_idle("保存上下文设置")
+        provider, model = self.runtime_info.provider, self.runtime_info.model
+        if payload["scope"] == "model" and (payload.get("provider"), payload.get("model")) != (provider, model):
+            raise ContextSettingsConflict("当前模型已变化，请重新加载设置。")
+        return self.context_settings.save(
+            expected_revision=payload["expected_revision"], scope=payload["scope"],
+            overrides=payload["overrides"], provider=provider, model=model,
+            configured_models=tuple((item.provider, item.model) for item in self.model_options),
         )
 
     def bootstrap(self) -> dict[str, object]:
@@ -207,6 +234,7 @@ class WebUiService:
             request_provider = self.runtime_info.provider
             request_model = self.runtime_info.model
             statistics_recorded = False
+            applied_changes = AppliedChangeTracker()
 
             def emit(event_type: str, **payload: object) -> None:
                 nonlocal sequence
@@ -222,6 +250,7 @@ class WebUiService:
                 )
 
             def on_tool_result(call: ToolCall, result: ToolResult) -> None:
+                applied_changes.observe(call, result)
                 emit(
                     "tool_finished",
                     tool=call.name,
@@ -268,25 +297,32 @@ class WebUiService:
                         )
 
                 try:
+                    def on_context_event(event: dict[str, object]) -> None:
+                        event_type = str(event["type"])
+                        emit(event_type, **{key: value for key, value in event.items() if key not in {"type", "request_id"}})
+
                     result = await active_session.send(
                         input_text,
                         on_text_delta=lambda text: emit("text_delta", text=text),
                         on_text_reset=lambda: emit("text_reset"),
                         on_tool_approval=on_tool_approval,
                         on_tool_result=on_tool_result,
+                        on_context_event=on_context_event,
                     )
                 except asyncio.CancelledError:
                     record_statistics("cancelled")
-                    emit("cancelled")
+                    emit("cancelled", applied_changes=applied_changes.paths())
                     return
                 except ChatRuntimeError as exc:
                     record_statistics("failed")
-                    emit("failed", code=exc.code.value, message=exc.user_message)
+                    emit("failed", code=exc.code.value, message=exc.user_message,
+                         applied_changes=applied_changes.paths())
                     return
                 except Exception:
                     # 未知内部错误只返回稳定文案，具体诊断留在服务端日志。
                     record_statistics("failed")
-                    emit("failed", code="internal", message="Web UI 请求失败。")
+                    emit("failed", code="internal", message="Web UI 请求失败。",
+                         applied_changes=applied_changes.paths())
                     return
                 usage = result.token_usage
                 metadata_warning = None
@@ -311,6 +347,7 @@ class WebUiService:
                         else None
                     ),
                     context_percent=self._context_percent(active_session),
+                    finish_reason=result.finish_reason,
                     session=record.to_payload(),
                     sessions=self._sessions_payload(),
                     warning=metadata_warning,
@@ -403,7 +440,7 @@ class WebUiService:
         self._require_idle("删除")
         self.catalog.delete(session_id)
         self._sessions.pop(session_id, None)
-        return self._conversation_payload()
+        return {**self._conversation_payload(), "warning": self.catalog.last_cleanup_warning}
 
     def select_model(self, provider: str, model: str) -> dict[str, object]:
         """切换项目级模型，并同步所有已缓存的 Web 会话。"""
@@ -420,6 +457,10 @@ class WebUiService:
         )
         if option is None:
             raise ModelSelectionError("模型切换失败。")
+        try:
+            self.context_settings.snapshot(provider, model)
+        except ContextSettingsError as exc:
+            raise ModelSelectionError("目标模型的上下文预算不可用。") from exc
         current_id = self.catalog.current.id
         current_session = self.session
         result = self.model_selection.switch(current_session, option)
@@ -483,5 +524,15 @@ class WebUiService:
 
     def _context_percent(self, session: ChatSession | None = None) -> float:
         active_session = session or self.session
-        used = estimate_messages_tokens(active_session.messages)
-        return round(min(100.0, used * 100 / self.context_window_tokens), 1)
+        if self.runtime_info.provider not in {"deepseek", "aliyun"}:
+            return 0.0
+        return active_session.preview_context_snapshot()["percent"]
+
+
+def _runtime_budget_snapshot(settings: ContextSettings, provider: LlmProvider) -> RuntimeBudgetSnapshot:
+    snapshot = settings.snapshot(provider.name, provider.model)
+    return RuntimeBudgetSnapshot(
+        snapshot.budget, snapshot.revision,
+        ",".join(sorted(set(snapshot.sources.values()))),
+        snapshot.warning,
+    )

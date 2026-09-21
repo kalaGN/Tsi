@@ -27,8 +27,8 @@ const state = {
 
 const PREFERENCES_KEY = "tsi-web-preferences";
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
-const SETTINGS_ROUTES = new Set(["general", "model", "statistics"]);
-const SETTINGS_TITLES = { general: "通用", model: "模型", statistics: "统计" };
+const SETTINGS_ROUTES = new Set(["general", "model", "context", "statistics"]);
+const SETTINGS_TITLES = { general: "通用", model: "模型", context: "上下文", statistics: "统计" };
 const STATISTIC_METRICS = {
   requests: { label: "请求数", unit: "次" },
   total_tokens: { label: "Token", unit: "" },
@@ -49,6 +49,10 @@ const messages = $("#messages");
 const prompt = $("#prompt");
 const sendButton = $("#send");
 const stopButton = $("#stop");
+const contextSettings = new window.ContextSettingsView(api, showToast, (locked) => {
+  $("#model-select").disabled = state.busy || locked;
+  $("#settings-model-select").disabled = state.busy || locked;
+});
 
 if (window.matchMedia("(max-width: 1040px)").matches) {
   $(".app-shell").classList.add("inspector-closed");
@@ -77,7 +81,7 @@ async function api(path, options = {}) {
 
 function currentRoute() {
   const hash = window.location.hash || "#/chat";
-  const match = hash.match(/^#\/settings\/(general|model|statistics)$/);
+  const match = hash.match(/^#\/settings\/(general|model|context|statistics)$/);
   if (match) return { page: "settings", section: match[1] };
   if (hash === "#/chat" || hash === "") return { page: "chat", section: null };
   window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#/chat`);
@@ -107,6 +111,7 @@ function renderRoute() {
     panel.hidden = panel.dataset.settingsPanel !== route.section;
   });
   if (route.section === "statistics" && previous !== "statistics") loadStatistics();
+  if (["model", "context"].includes(route.section)) contextSettings.load();
 }
 
 function finiteNumber(value) {
@@ -597,7 +602,9 @@ async function deleteSession(item) {
   if (confirmed !== true) return;
   try {
     const response = await api(`/sessions/${encodeURIComponent(item.id)}`, { method: "DELETE" });
-    applyConversation(await response.json(), { closeSidebar: false });
+    const data = await response.json();
+    applyConversation(data, { closeSidebar: false });
+    if (data.warning) showToast(data.warning);
   } catch (error) { showToast(error.message); }
 }
 
@@ -607,6 +614,7 @@ function setBusy(busy) {
   $("#new-chat").disabled = busy;
   $("#model-select").disabled = busy;
   $("#settings-model-select").disabled = busy;
+  contextSettings.setBusy(busy);
   sendButton.hidden = busy;
   stopButton.hidden = !busy;
   $("#activity-strip").hidden = !busy;
@@ -838,6 +846,14 @@ function handleEvent(event) {
     addActivity(event.tool, event.status === "success" ? "已完成" : "失败");
     $("#activity-text").textContent = `工具：${event.tool}`;
     if (event.status === "success" && ["apply_workspace_edits", "delete_workspace_file", "undo_workspace_change"].includes(event.tool)) loadFiles();
+  } else if (event.type === "context_compaction_started") {
+    $("#activity-text").textContent = "正在整理上下文";
+  } else if (event.type === "context_compaction_finished") {
+    $("#activity-text").textContent = "思考中";
+  } else if (event.type === "context_updated") {
+    $("#context-text").textContent = `上下文 ${event.percent}%`;
+  } else if (event.type === "context_settings_warning") {
+    showToast(event.message);
   } else if (event.type === "completed") {
     closeToolApproval();
     finishStreamAsMarkdown(event.output_text);
@@ -848,6 +864,7 @@ function handleEvent(event) {
       ? `Token：${event.token_usage.input} + ${event.token_usage.output} = ${event.token_usage.total}`
       : "Token：不可用";
     addActivity("模型请求", "已完成", `${(event.elapsed_ms / 1000).toFixed(1)}s`);
+    if (event.finish_reason === "output_limit") showToast("回答达到最大输出 Token，内容可能不完整。");
     state.sessions = event.sessions;
     $("#session-title").textContent = event.session.title;
     renderSessions();
@@ -859,12 +876,14 @@ function handleEvent(event) {
     state.streamNode = null;
     addMessage("assistant", event.message || "请求失败", { error: true });
     addActivity("模型请求", "失败", event.message || "请求失败");
+    if (event.applied_changes?.length) showToast(`本轮已有文件变更：${event.applied_changes.join("、")}`);
   } else if (event.type === "cancelled") {
     closeToolApproval();
     $("#activity-text").textContent = "已取消";
     state.streamNode?.closest(".message")?.remove();
     state.streamNode = null;
     addActivity("模型请求", "已取消");
+    if (event.applied_changes?.length) showToast(`本轮已有文件变更：${event.applied_changes.join("、")}`);
     showToast("已取消当前请求");
   }
   return ["completed", "failed", "cancelled"].includes(event.type);
@@ -923,6 +942,11 @@ function populateModels(models, runtime) {
 async function selectModel(event) {
   const source = event.target;
   const previous = source.dataset.current;
+  if (contextSettings.modelLocked || state.busy) {
+    source.value = previous;
+    showToast("请先保存或放弃当前模型的预算修改。");
+    return;
+  }
   const item = state.models[Number(source.value)];
   if (!item) {
     source.value = previous;
@@ -939,6 +963,7 @@ async function selectModel(event) {
       select.dataset.current = source.value;
     }
     setConnected(true, `${item.provider} · ${item.model}`);
+    await contextSettings.load();
     if (data.warning) showToast(data.warning);
   } catch (error) {
     source.value = previous;

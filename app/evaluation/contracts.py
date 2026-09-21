@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 from typing import Mapping
 
 from app.services.llm.contracts import ChatMessage, ChatRole, TokenUsage
+from app.runtime.memory import ConversationSummary, parse_conversation_summary
 from tools.contracts import ToolCall
 
 
@@ -45,8 +46,9 @@ class CaseSetup:
 
     files: tuple[tuple[str, str], ...] = ()
     messages: tuple[ChatMessage, ...] = ()
-    summary: str | None = None
-    summarized_message_count: int = 0
+    summary: ConversationSummary | None = None
+    summary_through_message_count: int = 0
+    context_start_message_count: int = 0
     preferences: tuple[str, ...] = ()
     approvals: tuple[tuple[str, bool], ...] = ()
 
@@ -304,7 +306,7 @@ def _parse_case(payload: object, *, require_replay: bool) -> EvaluationCase:
 
 def _parse_setup(payload: object) -> CaseSetup:
     data = _object(payload, "setup")
-    _fields(data, {"files", "messages", "summary", "summarized_message_count", "preferences", "approvals"})
+    _fields(data, {"files", "messages", "summary", "summary_through_message_count", "context_start_message_count", "preferences", "approvals"})
     raw_files = _object(data.get("files", {}), "setup.files")
     if len(raw_files) > 100:
         raise ValueError("setup has too many files")
@@ -320,10 +322,18 @@ def _parse_setup(payload: object) -> CaseSetup:
     messages = _parse_messages(data.get("messages", []))
     summary = data.get("summary")
     if summary is not None:
-        summary = _text(summary, "setup.summary")
-    boundary = _integer(data.get("summarized_message_count", 0), "setup.summarized_message_count", minimum=0)
-    if boundary > len(messages) or boundary % 2:
-        raise ValueError("setup summary boundary is invalid")
+        if not isinstance(summary, dict):
+            raise ValueError("setup summary must be an object")
+        try:
+            summary = parse_conversation_summary(json.dumps(summary, ensure_ascii=False))
+        except ValueError as exc:
+            raise ValueError("setup summary is invalid") from exc
+    summary_through = _integer(data.get("summary_through_message_count", 0), "setup.summary_through_message_count", minimum=0)
+    context_start = _integer(data.get("context_start_message_count", 0), "setup.context_start_message_count", minimum=0)
+    if (summary_through > context_start or context_start > len(messages)
+            or summary_through % 2 or context_start % 2
+            or (summary is None) != (summary_through == 0)):
+        raise ValueError("setup context boundaries are invalid")
     preferences = _unique_text_list(data.get("preferences", []), "setup.preferences", max_items=50, max_chars=500)
     raw_approvals = _object(data.get("approvals", {}), "setup.approvals")
     approvals: list[tuple[str, bool]] = []
@@ -332,7 +342,8 @@ def _parse_setup(payload: object) -> CaseSetup:
         if type(decision) is not bool:
             raise ValueError("setup approval decision must be boolean")
         approvals.append((name, decision))
-    return CaseSetup(tuple(sorted(files)), messages, summary, boundary, preferences, tuple(sorted(approvals)))
+    return CaseSetup(tuple(sorted(files)), messages, summary, summary_through,
+                     context_start, preferences, tuple(sorted(approvals)))
 
 
 def _parse_messages(payload: object) -> tuple[ChatMessage, ...]:

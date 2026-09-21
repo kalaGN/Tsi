@@ -111,6 +111,20 @@ def test_catalog_migrates_legacy_session_once(tmp_path):
     assert len(second_load.list_records()) == 1
 
 
+def test_catalog_delete_removes_private_migration_backup(tmp_path):
+    catalog = create_catalog(tmp_path)
+    target = catalog.current.id
+    store = catalog.session_store(target)
+    store.path.write_text('{"version":1,"messages":[]}', encoding="utf-8")
+    store.save_state(store.load_state())
+    assert store.backup_path.exists()
+
+    catalog.delete(target)
+
+    assert not store.path.exists()
+    assert not store.backup_path.exists()
+
+
 def test_catalog_rejects_invalid_ids_titles_and_corrupt_index(tmp_path):
     catalog = create_catalog(tmp_path)
 

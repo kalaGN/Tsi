@@ -5,6 +5,7 @@ import pytest
 
 from app.evaluation.contracts import EvaluationConfigError, load_suite
 from app.evaluation.runner import run_suite
+from app.runtime.model_budget import ModelBudget
 
 
 def test_runner_uses_real_session_and_isolated_workspace(tmp_path):
@@ -71,3 +72,40 @@ def test_runner_continues_after_one_environment_failure(tmp_path):
     assert report.cases[0].passed is False
     assert report.cases[0].trials[0].trace.error_code == "evaluation_infrastructure"
     assert report.cases[1].passed is True
+
+
+def test_runner_replays_summary_then_business_with_frozen_model_budget(tmp_path):
+    summary = {"goal": "已确认目标", "decisions": [], "constraints": [],
+               "completed": [], "pending": [], "references": [], "uncertainties": []}
+    messages = [message for index in range(4) for message in (
+        {"role": "user", "content": f"问{index}" + "中" * 180},
+        {"role": "assistant", "content": f"答{index}" + "文" * 180},
+    )]
+    path = tmp_path / "compression.jsonl"
+    path.write_text(json.dumps({
+        "id": "summary-replay", "input": "继续", "setup": {"messages": messages},
+        "replay_turns": [
+            [{"output_text": json.dumps(summary, ensure_ascii=False)}],
+            [{"output_text": "业务回答"}],
+        ],
+        "expected": {"output_contains": ["业务回答"], "system_prompt_contains": ["已确认目标"]},
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+    budget = ModelBudget(context_window_tokens=12_800, trigger_percent=5,
+                         target_percent=2, recent_turns=1)
+
+    report = asyncio.run(run_suite(load_suite(path), tmp_path, model_budget=budget))
+
+    assert report.passed
+    assert report.cases[0].trials[0].trace.request_messages[-1].content == "继续"
+
+
+def test_runner_rejects_irreducible_replay_input_without_calling_model(tmp_path):
+    path = tmp_path / "oversized.jsonl"
+    path.write_text(json.dumps({
+        "id": "too-long", "input": "中" * 5000,
+        "replay_steps": [{"output_text": "不应执行"}],
+        "expected": {"status": "error", "error_code": "context_limit"},
+    }, ensure_ascii=False) + "\n", encoding="utf-8")
+    report = asyncio.run(run_suite(load_suite(path), tmp_path,
+                                   model_budget=ModelBudget(context_window_tokens=12_800)))
+    assert report.cases[0].trials[0].trace.error_code == "context_limit"

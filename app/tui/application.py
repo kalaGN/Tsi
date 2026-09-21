@@ -6,9 +6,11 @@ from textual.reactive import reactive
 from textual.widgets import Button, RichLog, Static, TextArea
 
 from app.runtime.chat import ChatRuntimeError
+from app.runtime.context_settings_store import ContextSettingsError
 from app.runtime.model_selection import ModelSelectionError
 from app.services.llm.contracts import (
     ChatRole,
+    LlmProviderError,
     ModelOption,
 )
 from app.tui.activity_bar import ActivityBar
@@ -69,6 +71,13 @@ class ChatTuiApp(App[None]):
         self.clock = dependencies.clock
         self.runtime_info = dependencies.runtime_info
         self.chat_session = dependencies.chat_session
+        self._context_percent = None
+        if dependencies.chat_session is not None:
+            try:
+                self._context_percent = dependencies.chat_session.preview_context_snapshot()["percent"]
+            except (ChatRuntimeError, ContextSettingsError, LlmProviderError, ValueError):
+                # 启动诊断已负责阻止不可用配置；状态栏仍需能够正常挂载。
+                pass
         self._model_selection = dependencies.model_selection
         self._skill_runtime = dependencies.skill_runtime
         self._health = dependencies.health
@@ -157,8 +166,16 @@ class ChatTuiApp(App[None]):
                 skills_count=self._skills_count,
                 skills_error=self._issue_message("skills"),
                 run_status=self.run_status,
+                context_percent=self._context_percent,
             )
         )
+
+    def update_context_percent(self, percent: float) -> None:
+        """收到有效请求估算后更新底部状态，不以全量历史冒充窗口占比。"""
+
+        self._context_percent = percent
+        if self.is_mounted:
+            self._update_status_bar()
 
     def _write_message(self, role: str, content: str) -> None:
         """将消息交给展示组件，应用只协调消息产生的时机。"""
@@ -383,6 +400,7 @@ class ChatTuiApp(App[None]):
             return
         self._health = self._health.without_code("configuration")
         self.runtime_info = result.runtime_info
+        self._context_percent = self.chat_session.preview_context_snapshot()["percent"]
         self.run_status = self._idle_status()
         self._update_status_bar()
         self._write_message(

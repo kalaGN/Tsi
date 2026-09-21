@@ -1,21 +1,27 @@
 """阿里云兼容模式 Responses 流式 API Provider。"""
 
 import json
+from functools import partial
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Sequence
 
 from app.services.llm.contracts import (
     ChatMessage,
+    GenerationOptions,
     ModelStep,
     ProviderConfigurationError,
     ProviderInvalidResponseError,
     ProviderInvalidRequestError,
     ProviderQuotaError,
     ProviderResponseError,
+    ProviderOutputLimitError,
+    RequestBudgetEstimate,
+    RequestGuard,
     TextDeltaHandler,
     TokenUsage,
     validate_provider_messages,
 )
+from app.services.llm.budget import default_request_guard, estimate_payload, validate_pending_results
 from app.services.llm.http_client import (
     MAX_STREAM_OUTPUT_BYTES,
     MAX_STREAM_TOOL_ARGUMENT_BYTES,
@@ -51,6 +57,8 @@ class AliyunResponsesProvider:
         tools: Sequence[ToolDefinition],
         *,
         request_id: str,
+        options: GenerationOptions = GenerationOptions(),
+        request_guard: RequestGuard | None = None,
     ) -> "AliyunTurn":
         if not self.api_key_configured:
             raise ProviderConfigurationError("Upstream API key is not configured")
@@ -64,7 +72,16 @@ class AliyunResponsesProvider:
             ],
             tools=tuple(tools),
             request_id=request_id,
+            options=options,
+            request_guard=request_guard or partial(default_request_guard, max_output_tokens=options.max_output_tokens),
         )
+
+    def estimate_request(
+        self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition],
+        *, options: GenerationOptions = GenerationOptions(),
+    ) -> RequestBudgetEstimate:
+        mapped = [{"role": message.role.value, "content": message.content} for message in messages]
+        return estimate_payload(_build_payload(self.model, mapped, tools, options))
 
 
 class AliyunTurn:
@@ -78,12 +95,16 @@ class AliyunTurn:
         input_items: list[dict[str, Any]],
         tools: tuple[ToolDefinition, ...],
         request_id: str,
+        options: GenerationOptions,
+        request_guard: RequestGuard,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._input_items = input_items
         self._tools = tools
         self._request_id = request_id
+        self._options = options
+        self._request_guard = request_guard
         self._pending_calls: tuple[ToolCall, ...] = ()
         self._completed = False
         self._client = None
@@ -109,6 +130,12 @@ class AliyunTurn:
             raise ProviderInvalidRequestError()
         self._tools = tools
 
+    def estimate_pending(
+        self, tool_results: Sequence[ToolResult] = (), *, complete: bool = True,
+    ) -> RequestBudgetEstimate:
+        items = self._candidate_items(tuple(tool_results), complete=complete)
+        return estimate_payload(_build_payload(self._model, items, self._tools, self._options))
+
     async def next(
         self,
         tool_results: Sequence[ToolResult] = (),
@@ -118,19 +145,14 @@ class AliyunTurn:
         if self._completed:
             raise ProviderInvalidRequestError()
         try:
-            self._append_call_result_pairs(tuple(tool_results))
+            items = self._candidate_items(tuple(tool_results), complete=True)
+            payload = _build_payload(self._model, items, self._tools, self._options)
+            self._request_guard(estimate_payload(payload))
         except BaseException:
             await self.aclose()
             raise
-
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "input": self._input_items,
-            "stream": True,
-        }
-        if self._tools:
-            payload["tools"] = [_aliyun_tool(tool) for tool in self._tools]
-            payload["tool_choice"] = "auto"
+        self._input_items = items
+        self._pending_calls = ()
 
         stream_state = _AliyunStreamState(on_text_delta)
         raw_response: tuple[str, bool] | None = None
@@ -165,28 +187,22 @@ class AliyunTurn:
             raise
         if calls:
             self._pending_calls = calls
-            return ModelStep(status_code, output_text, calls, token_usage)
+            return ModelStep(status_code, output_text, calls, token_usage, "tool_calls")
 
         self._completed = True
         await self.aclose()
         return ModelStep(status_code, output_text, (), token_usage)
 
-    def _append_call_result_pairs(
+    def _candidate_items(
         self,
         results: tuple[ToolResult, ...],
-    ) -> None:
-        if not self._pending_calls:
-            if results:
-                raise ProviderInvalidRequestError()
-            return
-        if len(results) != len(self._pending_calls) or any(
-            result.call_id != call.call_id
-            for call, result in zip(self._pending_calls, results)
-        ):
-            raise ProviderInvalidRequestError()
-
-        for call, result in zip(self._pending_calls, results):
-            self._input_items.append(
+        *, complete: bool,
+    ) -> list[dict[str, Any]]:
+        validate_pending_results(self._pending_calls, results, complete=complete)
+        items = list(self._input_items)
+        # 部分下界仍计入全部已知调用，缺失的工具结果不伪造为空消息。
+        for index, call in enumerate(self._pending_calls):
+            items.append(
                 {
                     "type": "function_call",
                     "name": call.name,
@@ -194,14 +210,17 @@ class AliyunTurn:
                     "call_id": call.call_id,
                 }
             )
-            self._input_items.append(
+            if index >= len(results):
+                continue
+            result = results[index]
+            items.append(
                 {
                     "type": "function_call_output",
                     "call_id": result.call_id,
                     "output": result.output,
                 }
             )
-        self._pending_calls = ()
+        return items
 
 
 class _AliyunStreamState:
@@ -266,6 +285,9 @@ class _AliyunStreamState:
             response = event.get("response")
             if not isinstance(response, dict) or response.get("status") != "incomplete":
                 raise _invalid_structure()
+            details = response.get("incomplete_details")
+            if isinstance(details, dict) and details.get("reason") == "max_output_tokens":
+                raise ProviderOutputLimitError()
             raise ProviderResponseError(200)
         return False
 
@@ -515,6 +537,22 @@ def _extract_token_usage(body: dict[str, Any]) -> TokenUsage | None:
         )
     except (KeyError, ValueError) as exc:
         raise _invalid_structure() from exc
+
+
+def _build_payload(
+    model: str, items: list[dict[str, Any]], tools: Sequence[ToolDefinition],
+    options: GenerationOptions,
+) -> dict[str, Any]:
+    """预算预览与真实发送使用完全相同的 Responses 载荷。"""
+
+    payload: dict[str, Any] = {
+        "model": model, "input": items, "stream": True,
+        "max_output_tokens": options.max_output_tokens,
+    }
+    if tools:
+        payload["tools"] = [_aliyun_tool(tool) for tool in tools]
+        payload["tool_choice"] = "auto"
+    return payload
 
 
 def _aliyun_tool(definition: ToolDefinition) -> dict[str, Any]:

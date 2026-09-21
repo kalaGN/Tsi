@@ -3,8 +3,10 @@
 from dataclasses import dataclass
 from enum import Enum
 from typing import Sequence
+import os
 
 from app.observability.model_logging import (
+    log_context_management,
     log_model_error,
     log_model_request,
     log_model_response,
@@ -26,11 +28,13 @@ from app.runtime.trace import (
 from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
+    GenerationOptions,
     LlmProvider,
     LlmProviderError,
     ProviderAuthenticationError,
     ProviderConfigurationError,
     ProviderConnectionError,
+    ProviderContextLimitError,
     ProviderInvalidResponseError,
     ProviderInvalidRequestError,
     ProviderQuotaError,
@@ -39,7 +43,10 @@ from app.services.llm.contracts import (
     TextDeltaHandler,
     TextResetHandler,
     TokenUsage,
+    RequestBudgetEstimate,
+    RequestGuard,
 )
+from app.runtime.model_budget import ModelBudget, ModelBudgetCatalog
 from app.services.llm.factory import create_provider
 from tools import (
     ToolApprovalHandler,
@@ -57,6 +64,7 @@ class ChatResult:
     provider: str
     model: str
     token_usage: TokenUsage | None = None
+    finish_reason: str = "completed"
 
 
 @dataclass(frozen=True)
@@ -97,6 +105,7 @@ class ChatRuntimeError(Exception):
 
 
 ERROR_CODES = {
+    ProviderContextLimitError: ChatErrorCode.CONTEXT_LIMIT,
     ProviderInvalidRequestError: ChatErrorCode.INVALID_INPUT,
     ProviderConfigurationError: ChatErrorCode.CONFIGURATION,
     ProviderTimeoutError: ChatErrorCode.TIMEOUT,
@@ -119,6 +128,7 @@ async def run_chat(
     on_tool_result: ToolResultHandler | None = None,
     tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
     trace_observer: TraceObserver | None = None,
+    budget: ModelBudget | None = None,
 ) -> ChatResult:
     """校验输入、调用所选 Provider，并统一外部异常语义。"""
 
@@ -138,6 +148,7 @@ async def run_chat(
         on_tool_result=on_tool_result,
         tool_loop_limits=tool_loop_limits,
         trace_observer=trace_observer,
+        budget=budget,
     )
 
 
@@ -153,6 +164,9 @@ async def run_chat_messages(
     on_tool_result: ToolResultHandler | None = None,
     tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
     trace_observer: TraceObserver | None = None,
+    budget: ModelBudget | None = None,
+    request_id: str | None = None,
+    on_context_estimate: RequestGuard | None = None,
 ) -> ChatResult:
     """调用有序对话，可选 system 不改变当前 user 输入日志。"""
 
@@ -167,9 +181,27 @@ async def run_chat_messages(
     try:
         active_provider = create_provider() if provider is None else provider
         active_registry = create_default_registry() if registry is None else registry
-        request_id = new_request_id()
+        request_id = request_id or new_request_id()
         provider_name = active_provider.name
         model = active_provider.model
+        active_budget = budget
+        if active_budget is None:
+            active_budget = (
+                ModelBudgetCatalog(os.environ).resolve(provider_name, model)[0]
+                if provider_name in {"deepseek", "aliyun"} else ModelBudget()
+            )
+
+        def guard(estimate: RequestBudgetEstimate) -> None:
+            if on_context_estimate is not None:
+                on_context_estimate(estimate)
+            if estimate.input_tokens > active_budget.input_limit:
+                log_context_management(
+                    request_id=request_id, phase="budget", outcome="rejected",
+                    reason="business_input_limit",
+                    before_input_tokens=estimate.input_tokens,
+                    input_limit=active_budget.input_limit,
+                )
+                raise ProviderContextLimitError()
         log_model_request(
             request_id=request_id,
             provider=provider_name,
@@ -190,6 +222,8 @@ async def run_chat_messages(
             provider_messages,
             active_registry.definitions,
             request_id=request_id,
+            options=GenerationOptions(active_budget.max_output_tokens),
+            request_guard=guard,
         )
         try:
             loop_result = await run_tool_loop(
@@ -202,6 +236,7 @@ async def run_chat_messages(
                 on_tool_result=on_tool_result,
                 limits=tool_loop_limits,
                 trace_observer=trace_observer,
+                request_guard=guard,
             )
         finally:
             close_turn = getattr(turn, "aclose", None)
@@ -251,7 +286,7 @@ async def run_chat_messages(
     except LlmProviderError as exc:
         runtime_error = _runtime_error(exc)
         # 这里覆盖 HTTP 成功但响应语义无效等 Runtime 失败，沿用请求 ID 便于串联。
-        if "request_id" in locals():
+        if "provider_name" in locals():
             log_model_error(
                 request_id=request_id,
                 provider=provider_name,
@@ -278,6 +313,7 @@ async def run_chat_messages(
         provider=provider_name,
         model=model,
         token_usage=loop_result.token_usage,
+        finish_reason=loop_result.finish_reason,
     )
 
 

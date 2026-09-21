@@ -13,13 +13,17 @@ class ActivityBar(Static):
     def __init__(self) -> None:
         super().__init__(id="activity-bar", markup=False)
         self._frame_index = 0
+        self.compacting = False
 
     def show_activity(self, elapsed: float, status: RunStatus, *, advance: bool = False) -> None:
         """使用应用提供的时间与状态绘制，刷新时可前进一帧。"""
 
         if advance:
             self._frame_index = (self._frame_index + 1) % len(self.FRAMES)
-        label = "等待审批" if status is RunStatus.AWAITING_APPROVAL else "思考中"
+        label = (
+            "等待审批" if status is RunStatus.AWAITING_APPROVAL
+            else "正在整理上下文" if self.compacting else "思考中"
+        )
         self.update(
             f"{self.FRAMES[self._frame_index]} {label} · {elapsed:.1f} 秒 · Esc 取消"
         )
@@ -28,4 +32,5 @@ class ActivityBar(Static):
         """结束展示并复位动画，让下一次请求从第一帧开始。"""
 
         self._frame_index = 0
+        self.compacting = False
         self.update("")

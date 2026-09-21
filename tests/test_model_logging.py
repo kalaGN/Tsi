@@ -47,6 +47,22 @@ def test_default_log_paths_separate_runtime_and_tests():
     assert model_logging.DEFAULT_LOG_PATH == model_logging.RUNTIME_LOG_PATH
 
 
+def test_context_management_event_contains_only_metadata(tmp_path):
+    stream = io.StringIO()
+    model_logging.configure_model_logging(stream=stream, log_path=tmp_path / "events.log")
+    model_logging.log_context_management(
+        request_id="summary-id", parent_request_id="business-id",
+        phase="summary", outcome="rejected", reason="invalid_summary",
+        before_input_tokens=800, after_input_tokens=800, input_limit=1200,
+        summary_turns=0, omitted_turns=2, duration_ms=10.5,
+    )
+    payload = json.loads(stream.getvalue())
+    assert payload["parent_request_id"] == "business-id"
+    assert payload["reason"] == "invalid_summary"
+    assert "input_text" not in payload and "output_text" not in payload
+    assert "摘要正文" not in (tmp_path / "events.log").read_text(encoding="utf-8")
+
+
 def test_dated_log_path_uses_beijing_calendar_date():
     instant = datetime.fromisoformat("2026-09-19T16:30:00+00:00")
 

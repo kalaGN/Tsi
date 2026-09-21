@@ -8,7 +8,7 @@ from app.evaluation.contracts import (
 )
 from app.evaluation.environment import create_evaluation_environment
 from app.evaluation.replay import ReplayProvider
-from app.runtime.memory import MemoryPolicy
+from app.runtime.model_budget import ModelBudget
 from app.runtime.tool_loop import DEFAULT_TOOL_LOOP_LIMITS
 
 
@@ -22,7 +22,7 @@ def test_environment_copies_harness_seeds_state_and_cleans_up(tmp_path):
         tmp_path,
         setup,
         ReplayProvider(((ReplayStep("完成"),),)),
-        memory_policy=MemoryPolicy(),
+        model_budget=ModelBudget(),
         tool_loop_limits=DEFAULT_TOOL_LOOP_LIMITS,
     )
     temporary_root = environment.workspace.parent
@@ -51,6 +51,6 @@ def test_environment_rejects_symbolic_links_in_project_skills(tmp_path):
             tmp_path,
             CaseSetup(),
             ReplayProvider(((ReplayStep("完成"),),)),
-            memory_policy=MemoryPolicy(),
+            model_budget=ModelBudget(),
             tool_loop_limits=DEFAULT_TOOL_LOOP_LIMITS,
         )

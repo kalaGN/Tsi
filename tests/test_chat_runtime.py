@@ -5,6 +5,7 @@ import logging
 
 import httpx
 import pytest
+from budget_support import BudgetedTestTurn, estimate_test_request
 
 from app.observability import model_logging
 from app.runtime import chat
@@ -30,6 +31,7 @@ from app.services.llm.contracts import (
     TokenUsage,
 )
 from app.services.llm.deepseek import DeepSeekChatProvider
+from app.runtime.model_budget import ModelBudget
 
 
 def deepseek_sse_response(message):
@@ -62,6 +64,7 @@ def deepseek_sse_response(message):
 
 
 class FakeProvider:
+    estimate_request = staticmethod(estimate_test_request)
     name = "fake"
     model = "fake-model"
     api_key_configured = True
@@ -75,11 +78,11 @@ class FakeProvider:
         self.received_tools = []
         self.request_ids = []
 
-    def create_turn(self, messages, tools, *, request_id):
+    def create_turn(self, messages, tools, *, request_id, **budget):
         self.received_inputs.append(tuple(messages))
         self.received_tools.append(tuple(tools))
         self.request_ids.append(request_id)
-        return FakeTurn(self)
+        return BudgetedTestTurn(FakeTurn(self), messages, tools, **budget)
 
 
 class FakeTurn:
@@ -112,6 +115,43 @@ def test_run_chat_returns_normalized_provider_result():
     assert result.model == "fake-model"
     assert not hasattr(result, "raw_body")
     assert not hasattr(result, "upstream_status")
+
+
+def test_runtime_budget_uses_input_limit_not_total_window():
+    from app.evaluation.contracts import ReplayStep
+    from app.evaluation.replay import ReplayProvider
+
+    provider = ReplayProvider(((ReplayStep("不能发送"),),))
+    with pytest.raises(ChatRuntimeError) as captured:
+        asyncio.run(run_chat("中" * 5000, provider=provider, budget=ModelBudget(context_window_tokens=12800)))
+    assert captured.value.code is ChatErrorCode.CONTEXT_LIMIT
+    assert not provider.turns[0].received_results
+
+
+@pytest.mark.parametrize("excess", [0, 1])
+def test_runtime_budget_allows_exact_limit_and_rejects_one_token_over(excess):
+    from app.evaluation.contracts import ReplayStep
+    from app.evaluation.replay import ReplayProvider
+    from app.services.llm.contracts import GenerationOptions
+    from tools import create_default_registry
+
+    messages = (ChatMessage(ChatRole.USER, "中" * 1000),)
+    provider = ReplayProvider(((ReplayStep("完成"),),))
+    registry = create_default_registry()
+    estimated = provider.estimate_request(messages, registry.definitions, options=GenerationOptions()).input_tokens
+    budget = ModelBudget(context_window_tokens=estimated + 8192 - excess)
+    if excess:
+        with pytest.raises(ChatRuntimeError) as captured:
+            asyncio.run(run_chat_messages(messages, provider, registry, budget=budget))
+        assert captured.value.code is ChatErrorCode.CONTEXT_LIMIT
+    else:
+        assert asyncio.run(run_chat_messages(messages, provider, registry, budget=budget)).output_text == "完成"
+
+
+def test_runtime_preserves_output_limit_finish_reason():
+    provider = FakeProvider(result=ModelStep(200, "部分回答", (), finish_reason="output_limit"))
+    result = asyncio.run(run_chat("继续", provider=provider))
+    assert result.finish_reason == "output_limit"
 
 
 def test_run_chat_returns_aggregated_token_usage():

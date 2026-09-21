@@ -10,8 +10,9 @@ from pathlib import Path
 
 from app.evaluation.contracts import CaseSetup, EvaluationConfigError, FileExpectation, HarnessFingerprint
 from app.evaluation.fingerprint import build_harness_fingerprint
-from app.runtime.memory import ConversationState, MemoryPolicy, UserPreference, is_safe_preference_content
-from app.runtime.session import ChatSession
+from app.runtime.memory import ConversationState, UserPreference, is_safe_preference_content
+from app.runtime.model_budget import ModelBudget
+from app.runtime.session import ChatSession, RuntimeBudgetSnapshot
 from app.runtime.session_store import SessionStore
 from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.system_prompt import SystemPromptLoadError, load_system_prompt
@@ -66,7 +67,7 @@ def create_evaluation_environment(
     setup: CaseSetup,
     provider: LlmProvider,
     *,
-    memory_policy: MemoryPolicy,
+    model_budget: ModelBudget,
     tool_loop_limits: ToolLoopLimits,
 ) -> EvaluationEnvironment:
     """在系统临时目录装配真实 Session、SkillRuntime 和工具 Registry。"""
@@ -96,7 +97,8 @@ def create_evaluation_environment(
         initial_state = ConversationState(
             messages=setup.messages,
             summary=setup.summary,
-            summarized_message_count=setup.summarized_message_count,
+            summary_through_message_count=setup.summary_through_message_count,
+            context_start_message_count=setup.context_start_message_count,
             preferences=_preferences(setup.preferences),
         )
         if initial_state.messages or initial_state.summary or initial_state.preferences:
@@ -108,12 +110,12 @@ def create_evaluation_environment(
             registry=initial_snapshot.registry,
             execution_snapshot_provider=skill_runtime.snapshot,
             tool_loop_limits=tool_loop_limits,
-            memory_policy=memory_policy,
+            budget_snapshot_provider=lambda _provider: RuntimeBudgetSnapshot(model_budget),
         )
         fingerprint = build_harness_fingerprint(
             Path(project_root),
             initial_snapshot.registry.definitions,
-            memory_policy,
+            model_budget,
             tool_loop_limits,
         )
         return EvaluationEnvironment(

@@ -5,12 +5,15 @@ from __future__ import annotations
 import ipaddress
 import json
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, StrictBool, StrictStr, validator
 
 from app.runtime.chat import ChatRuntimeError
+from app.runtime.context_settings_store import ContextSettingsConflict, ContextSettingsError
+from app.runtime.model_budget import strict_json
 from app.runtime.model_selection import ModelSelectionError
 from app.webui.approvals import WebApprovalConflict, WebApprovalNotFound
 from app.webui.service import WebUiBusyError, WebUiService
@@ -75,6 +78,7 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
                 OSError,
                 ValueError,
                 ChatRuntimeError,
+                ContextSettingsError,
                 WebSessionStoreError,
             ) as exc:
                 raise HTTPException(
@@ -111,6 +115,11 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
             media_type="image/svg+xml",
         )
 
+    @router.get("/ui/context-settings.js", include_in_schema=False)
+    async def context_settings_javascript(request: Request):
+        _require_loopback(request)
+        return FileResponse(STATIC_ROOT / "context-settings.js", media_type="application/javascript")
+
     @router.get("/ui/api/bootstrap")
     async def bootstrap(request: Request):
         _require_loopback(request)
@@ -120,6 +129,43 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
     async def statistics(request: Request):
         _require_loopback(request)
         return current_service().statistics_payload()
+
+    @router.get("/ui/api/context-settings")
+    async def context_settings(request: Request):
+        _require_loopback(request)
+        try:
+            return current_service().context_settings_payload()
+        except ContextSettingsError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @router.put("/ui/api/context-settings")
+    async def save_context_settings(request: Request):
+        _require_loopback(request)
+        _require_same_origin_json(request)
+        # 在拼接前逐块限制大小，同时严格拒绝重复键与未知秘密字段。
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 16 * 1024:
+                raise HTTPException(status_code=422, detail="上下文设置请求过大。")
+            raw.extend(chunk)
+        try:
+            payload = strict_json(raw.decode("utf-8"))
+            if not isinstance(payload, dict) or payload.get("scope") not in {"model", "compaction"}:
+                raise ValueError("设置范围无效。")
+            keys = {"expected_revision", "scope", "overrides"}
+            if payload["scope"] == "model":
+                keys |= {"provider", "model"}
+                if not all(isinstance(payload.get(key), str) for key in ("provider", "model")):
+                    raise ValueError("模型标识无效。")
+            if set(payload) != keys or type(payload["expected_revision"]) is not int or payload["expected_revision"] < 0:
+                raise ValueError("上下文设置字段无效。")
+            return current_service().save_context_settings(payload)
+        except (UnicodeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="上下文设置无效，请检查字段范围和预算组合。") from exc
+        except (ContextSettingsConflict, WebUiBusyError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ContextSettingsError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @router.post("/ui/api/chat")
     async def chat(request: Request, payload: WebChatRequest):
@@ -241,6 +287,30 @@ def _require_loopback(request: Request) -> None:
         is_loopback = False
     if not is_loopback:
         raise HTTPException(status_code=403, detail="Web UI 仅允许本机访问。")
+
+
+def _require_same_origin_json(request: Request) -> None:
+    """本机地址不等于同源；浏览器跨站写入和不透明 Origin 一律拒绝。"""
+
+    if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
+        raise HTTPException(status_code=422, detail="上下文设置只接受 JSON。")
+    site = request.headers.get("sec-fetch-site")
+    if site is not None and site not in {"same-origin", "none"}:
+        raise HTTPException(status_code=403, detail="不允许跨站修改设置。")
+    origin = request.headers.get("origin")
+    if origin is None:
+        # 无浏览器来源头的本机 JSON 客户端可用；浏览器声明来源时必须精确匹配。
+        return
+    try:
+        source, target = urlsplit(origin), urlsplit(str(request.url))
+        def identity(parts):
+            return parts.scheme, parts.hostname, parts.port or (443 if parts.scheme == "https" else 80)
+        valid = source.scheme in {"http", "https"} and identity(source) == identity(target)
+        valid = valid and not source.username and not source.password and source.path in {"", "/"} and not source.query and not source.fragment
+    except ValueError:
+        valid = False
+    if not valid:
+        raise HTTPException(status_code=403, detail="不允许跨站修改设置。")
 
 
 def _run_session_action(action, *args):

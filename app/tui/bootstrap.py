@@ -14,12 +14,15 @@ from app.runtime.chat import (
     get_chat_runtime_info,
 )
 from app.runtime.memory import MemoryPolicy, resolve_memory_policy
+from app.runtime.context_settings import ContextSettings
+from app.runtime.context_settings_store import ContextSettingsError, ContextSettingsStore
+from app.runtime.model_budget import ModelBudget, ModelBudgetCatalog
 from app.runtime.model_selection import (
     ModelSelectionService,
     ProviderFactory,
 )
 from app.runtime.model_selection_store import ModelSelectionStore
-from app.runtime.session import ChatSession
+from app.runtime.session import ChatSession, RuntimeBudgetSnapshot
 from app.runtime.session_store import SessionStore
 from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.tool_loop import (
@@ -138,6 +141,24 @@ def build_tui_dependencies(
                 )
             memory_policy = MemoryPolicy()
 
+    try:
+        context_settings = ContextSettings(ModelBudgetCatalog(values), ContextSettingsStore())
+        context_settings.snapshot(current_info.provider, current_info.model) if current_info.provider in {"deepseek", "aliyun"} else None
+    except (ValueError, ContextSettingsError) as exc:
+        issues.append(_issue("configuration", str(exc), blocks_prompt=True))
+        context_settings = None
+
+    def budget_snapshot(active_provider):
+        if context_settings is not None and active_provider.name in {"deepseek", "aliyun"}:
+            resolved = context_settings.snapshot(active_provider.name, active_provider.model)
+            return RuntimeBudgetSnapshot(
+                resolved.budget, resolved.revision,
+                ",".join(sorted(set(resolved.sources.values()))),
+                resolved.warning,
+            )
+        # 显式测试策略仍可构造对应窗口；生产路径由 ContextSettings 提供。
+        return RuntimeBudgetSnapshot(ModelBudget(context_window_tokens=memory_policy.context_window_tokens))
+
     store = session_store or SessionStore()
     session_arguments = {
         "provider": restored.provider,
@@ -151,7 +172,7 @@ def build_tui_dependencies(
             if workspace_registry is not None
             else DEFAULT_TOOL_LOOP_LIMITS
         ),
-        "memory_policy": memory_policy,
+        "budget_snapshot_provider": budget_snapshot,
     }
     try:
         chat_session = ChatSession.load(store, **session_arguments)

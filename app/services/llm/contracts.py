@@ -12,6 +12,28 @@ TextResetHandler = Callable[[], None]
 
 
 @dataclass(frozen=True)
+class GenerationOptions:
+    """固定单轮输出上限；摘要与业务请求分别提供自己的配置。"""
+
+    max_output_tokens: int = 4096
+
+    def __post_init__(self) -> None:
+        if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 10_000_000:
+            raise ValueError("输出上限必须是有效的正整数。")
+
+
+@dataclass(frozen=True)
+class RequestBudgetEstimate:
+    """真实请求输入投影的本地估算，不代表上游计费 Token。"""
+
+    input_tokens: int
+    estimator: str = "heuristic_v1"
+
+
+RequestGuard = Callable[[RequestBudgetEstimate], None]
+
+
+@dataclass(frozen=True)
 class ModelOption:
     """TUI 可展示的安全模型候选，不携带 API Key 正文。"""
 
@@ -85,6 +107,7 @@ class ModelStep:
     output_text: str | None
     tool_calls: tuple[ToolCall, ...]
     token_usage: TokenUsage | None = None
+    finish_reason: str = "completed"
 
 
 @dataclass(frozen=True)
@@ -115,6 +138,12 @@ class LlmTurn(Protocol):
         """替换当前 Turn 下一模型步骤可见的工具定义。"""
         ...
 
+    def estimate_pending(
+        self, tool_results: Sequence[ToolResult] = (), *, complete: bool = True,
+    ) -> RequestBudgetEstimate:
+        """无副作用预览下一步；不完整结果只能用于判断已知下界。"""
+        ...
+
     async def aclose(self) -> None:
         """释放当前用户请求持有的 Provider 资源。"""
         ...
@@ -136,7 +165,16 @@ class LlmProvider(Protocol):
         tools: Sequence[ToolDefinition],
         *,
         request_id: str,
+        options: GenerationOptions,
+        request_guard: RequestGuard,
     ) -> LlmTurn:
+        ...
+
+    def estimate_request(
+        self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition],
+        *, options: GenerationOptions,
+    ) -> RequestBudgetEstimate:
+        """预览包含 system 和工具的真实输入，不创建 HTTP 客户端。"""
         ...
 
 
@@ -186,6 +224,19 @@ class ProviderAuthenticationError(LlmProviderError):
 class ProviderResponseError(LlmProviderError):
     def __init__(self, status_code: int) -> None:
         super().__init__("模型接口异常", status_code)
+
+
+class ProviderContextLimitError(LlmProviderError):
+    def __init__(self, status_code: int | None = None) -> None:
+        super().__init__("上下文超过模型输入上限，请减少输入、清理记忆或切换更大窗口的模型。", status_code)
+
+
+class ProviderOutputLimitError(ProviderResponseError):
+    """输出长度受限与输入窗口超限不同，不允许自动重试。"""
+
+    def __init__(self, status_code: int = 200) -> None:
+        super().__init__(status_code)
+        self.user_message = "模型达到输出上限，请提高最大回复长度或缩小任务范围。"
 
 
 class ProviderQuotaError(LlmProviderError):

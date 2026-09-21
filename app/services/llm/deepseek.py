@@ -1,19 +1,24 @@
 """DeepSeek 官方 Chat Completions 流式 API Provider。"""
 
 import json
+from functools import partial
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Sequence
 
 from app.services.llm.contracts import (
     ChatMessage,
+    GenerationOptions,
     ModelStep,
     ProviderConfigurationError,
     ProviderInvalidResponseError,
     ProviderInvalidRequestError,
     TextDeltaHandler,
+    RequestBudgetEstimate,
+    RequestGuard,
     TokenUsage,
     validate_provider_messages,
 )
+from app.services.llm.budget import default_request_guard, estimate_payload, validate_pending_results
 from app.services.llm.http_client import (
     MAX_STREAM_OUTPUT_BYTES,
     MAX_STREAM_TOOL_ARGUMENT_BYTES,
@@ -46,6 +51,8 @@ class DeepSeekChatProvider:
         tools: Sequence[ToolDefinition],
         *,
         request_id: str,
+        options: GenerationOptions = GenerationOptions(),
+        request_guard: RequestGuard | None = None,
     ) -> "DeepSeekTurn":
         if not self.api_key_configured:
             raise ProviderConfigurationError("Upstream API key is not configured")
@@ -59,7 +66,17 @@ class DeepSeekChatProvider:
             ],
             tools=tuple(tools),
             request_id=request_id,
+            options=options,
+            request_guard=request_guard or partial(default_request_guard, max_output_tokens=options.max_output_tokens),
         )
+
+    def estimate_request(
+        self, messages: Sequence[ChatMessage], tools: Sequence[ToolDefinition],
+        *, options: GenerationOptions = GenerationOptions(),
+    ) -> RequestBudgetEstimate:
+        # 空闲快照允许偶数条完整历史；发送校验仍由 create_turn 执行。
+        mapped = [{"role": message.role.value, "content": message.content} for message in messages]
+        return estimate_payload(_build_payload(self.model, mapped, tools, options))
 
 
 class DeepSeekTurn:
@@ -73,12 +90,16 @@ class DeepSeekTurn:
         messages: list[dict[str, Any]],
         tools: tuple[ToolDefinition, ...],
         request_id: str,
+        options: GenerationOptions,
+        request_guard: RequestGuard,
     ) -> None:
         self._api_key = api_key
         self._model = model
         self._messages = messages
         self._tools = tools
         self._request_id = request_id
+        self._options = options
+        self._request_guard = request_guard
         self._pending_calls: tuple[ToolCall, ...] = ()
         self._completed = False
         self._client = None
@@ -104,6 +125,12 @@ class DeepSeekTurn:
             raise ProviderInvalidRequestError()
         self._tools = tools
 
+    def estimate_pending(
+        self, tool_results: Sequence[ToolResult] = (), *, complete: bool = True,
+    ) -> RequestBudgetEstimate:
+        messages = self._candidate_messages(tuple(tool_results), complete=complete)
+        return estimate_payload(_build_payload(self._model, messages, self._tools, self._options))
+
     async def next(
         self,
         tool_results: Sequence[ToolResult] = (),
@@ -113,20 +140,15 @@ class DeepSeekTurn:
         if self._completed:
             raise ProviderInvalidRequestError()
         try:
-            self._append_tool_results(tuple(tool_results))
+            messages = self._candidate_messages(tuple(tool_results), complete=True)
+            payload = _build_payload(self._model, messages, self._tools, self._options)
+            self._request_guard(estimate_payload(payload))
         except BaseException:
             await self.aclose()
             raise
-
-        payload: dict[str, Any] = {
-            "model": self._model,
-            "messages": self._messages,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-        }
-        if self._tools:
-            payload["tools"] = [_deepseek_tool(tool) for tool in self._tools]
-            payload["tool_choice"] = "auto"
+        # 守卫通过后才提交续接状态；预算拒绝不消耗 pending calls。
+        self._messages = messages
+        self._pending_calls = ()
 
         stream_state = _DeepSeekStreamState(on_text_delta)
         raw_response: tuple[str, bool] | None = None
@@ -165,32 +187,25 @@ class DeepSeekTurn:
             intermediate_text = message.get("content")
             if not isinstance(intermediate_text, str) or not intermediate_text:
                 intermediate_text = None
-            return ModelStep(status_code, intermediate_text, calls, token_usage)
+            return ModelStep(status_code, intermediate_text, calls, token_usage, "tool_calls")
 
         output_text = _extract_message_text(message)
         self._completed = True
         await self.aclose()
-        return ModelStep(status_code, output_text, (), token_usage)
+        return ModelStep(status_code, output_text, (), token_usage, stream_state.finish_reason)
 
-    def _append_tool_results(self, results: tuple[ToolResult, ...]) -> None:
-        if not self._pending_calls:
-            if results:
-                raise ProviderInvalidRequestError()
-            return
-        if len(results) != len(self._pending_calls) or any(
-            result.call_id != call.call_id
-            for call, result in zip(self._pending_calls, results)
-        ):
-            raise ProviderInvalidRequestError()
-        self._messages.extend(
+    def _candidate_messages(
+        self, results: tuple[ToolResult, ...], *, complete: bool,
+    ) -> list[dict[str, Any]]:
+        validate_pending_results(self._pending_calls, results, complete=complete)
+        return self._messages + [
             {
                 "role": "tool",
                 "tool_call_id": result.call_id,
                 "content": result.output,
             }
             for result in results
-        )
-        self._pending_calls = ()
+        ]
 
 
 class _DeepSeekStreamState:
@@ -295,6 +310,14 @@ class _DeepSeekStreamState:
         if reasoning:
             message["reasoning_content"] = reasoning
         return message, calls, self._token_usage
+
+    @property
+    def finish_reason(self) -> str:
+        if self._finish_reason == "length":
+            return "output_limit"
+        if self._finish_reason == "tool_calls":
+            return "tool_calls"
+        return "completed"
 
     def _accept_token_usage(self, raw_usage: Any) -> None:
         """只接受一次完整 usage，并映射 DeepSeek 的字段命名。"""
@@ -447,6 +470,23 @@ def _assistant_tool_message(
     if isinstance(reasoning, str):
         rebuilt["reasoning_content"] = reasoning
     return rebuilt
+
+
+def _build_payload(
+    model: str, messages: list[dict[str, Any]], tools: Sequence[ToolDefinition],
+    options: GenerationOptions,
+) -> dict[str, Any]:
+    """预览和发送共用唯一载荷构造器，避免预算漏掉协议字段。"""
+
+    payload: dict[str, Any] = {
+        "model": model, "messages": messages, "stream": True,
+        "stream_options": {"include_usage": True},
+        "max_tokens": options.max_output_tokens,
+    }
+    if tools:
+        payload["tools"] = [_deepseek_tool(tool) for tool in tools]
+        payload["tool_choice"] = "auto"
+    return payload
 
 
 def _deepseek_tool(definition: ToolDefinition) -> dict[str, Any]:

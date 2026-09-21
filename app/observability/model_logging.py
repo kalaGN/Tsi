@@ -137,6 +137,11 @@ _EVENT_FIELDS = {
         "operation",
         "error_type",
     ),
+    "context_management": (
+        "request_id", "parent_request_id", "phase", "outcome", "reason",
+        "before_input_tokens", "after_input_tokens", "input_limit",
+        "summary_turns", "omitted_turns", "duration_ms",
+    ),
 }
 
 
@@ -176,6 +181,7 @@ class _ModelEventReadableFormatter(logging.Formatter):
         "llm_tool_approval": "工具审批",
         "llm_token_usage": "Token 消耗",
         "web_statistics_error": "Web 统计异常",
+        "context_management": "上下文整理",
     }
     _ERROR_NAMES = {"timeout": "超时", "connection": "连接失败"}
     _STATUS_NAMES = {"success": "成功", "error": "错误"}
@@ -286,6 +292,16 @@ class _ModelEventReadableFormatter(logging.Formatter):
                     f"异常类型：{record.error_type}",
                 )
             )
+        elif event_name == "context_management":
+            lines.extend((
+                f"父请求ID：{record.parent_request_id or '-'}",
+                f"阶段：{record.phase}", f"结果：{record.outcome or '-'}",
+                f"原因：{record.reason or '-'}",
+                f"输入估算：{record.before_input_tokens} → {record.after_input_tokens}",
+                f"输入上限：{record.input_limit}",
+                f"覆盖轮数：{record.summary_turns} | 省略轮数：{record.omitted_turns}",
+                f"耗时：{_display_duration(record.duration_ms)}",
+            ))
         return lines
 
     @staticmethod
@@ -402,6 +418,26 @@ def new_request_id() -> str:
     """为本地日志条目生成不受客户端控制的标识。"""
 
     return uuid4().hex
+
+
+def log_context_management(
+    *, request_id: str, phase: str, parent_request_id: str | None = None,
+    outcome: str | None = None, reason: str | None = None,
+    before_input_tokens: int | None = None, after_input_tokens: int | None = None,
+    input_limit: int | None = None, summary_turns: int = 0,
+    omitted_turns: int = 0, duration_ms: float | None = None,
+) -> None:
+    """只记录压缩与预算数值；不复制对话、摘要、工具输入或密钥。"""
+
+    logging.getLogger(LOGGER_NAME).info("context_management", extra={
+        "event": "context_management", "request_id": request_id,
+        "parent_request_id": parent_request_id, "phase": phase,
+        "outcome": outcome, "reason": reason,
+        "before_input_tokens": before_input_tokens,
+        "after_input_tokens": after_input_tokens, "input_limit": input_limit,
+        "summary_turns": summary_turns, "omitted_turns": omitted_turns,
+        "duration_ms": duration_ms,
+    })
 
 
 def log_model_request(

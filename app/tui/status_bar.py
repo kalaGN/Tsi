@@ -21,6 +21,7 @@ class StatusBarState:
     skills_count: int
     skills_error: str | None
     run_status: RunStatus
+    context_percent: float | None = None
 
 
 class StatusBar(Static):
@@ -46,11 +47,15 @@ class StatusBar(Static):
         else:
             workspace_status = "disabled"
         skills_status = "error" if state.skills_error else state.skills_count
+        context_status = (
+            f"上下文 {state.context_percent:.1f}%" if state.context_percent is not None
+            else "上下文 —"
+        )
         self.update(
             f"{provider_display_name(state.provider)} | {state.model} | "
             f"Key: {key_status} | AGENTS: {agents_status} | "
             f"Workspace: {workspace_status} | Skills: {skills_status} | "
-            f"{state.run_status.value}"
+            f"{state.run_status.value} | {context_status}"
         )
 
 

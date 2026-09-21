@@ -8,6 +8,7 @@ from textual.timer import Timer
 from textual.worker import Worker, get_current_worker
 
 from app.runtime.chat import ChatResult, ChatRuntimeError
+from app.runtime.session import ChatSession
 from app.services.llm.contracts import (
     TextDeltaHandler,
     TextResetHandler,
@@ -17,7 +18,7 @@ from app.tui.activity_bar import ActivityBar
 from app.tui.approval import ToolApprovalScreen
 from app.tui.state import RunStatus
 from app.tui.transcript import StreamOutput
-from app.tui.workspace_changes import AppliedChangeTracker
+from app.runtime.workspace_changes import AppliedChangeTracker
 from tools import AnyToolApprovalRequest
 
 
@@ -69,6 +70,9 @@ class RequestHost(Protocol):
     def focus_request_prompt(self) -> None:
         ...
 
+    def update_context_percent(self, percent: float) -> None:
+        ...
+
 
 class RequestCoordinator:
     """独占 TUI 请求 Worker、Timer、流输出和取消代次。"""
@@ -84,6 +88,7 @@ class RequestCoordinator:
     ) -> None:
         self._host = host
         self._runner = runner
+        self._supports_context_events = isinstance(getattr(runner, "__self__", None), ChatSession)
         self._clock = clock
         self._workspace_enabled = workspace_enabled
         self._activity_interval_seconds = activity_interval_seconds
@@ -193,6 +198,8 @@ class RequestCoordinator:
                 ),
                 "on_text_reset": lambda: self._reset_stream(generation),
             }
+            if self._supports_context_events:
+                runner_arguments["on_context_event"] = lambda event: self._on_context_event(event, generation)
             if self._workspace_enabled:
                 runner_arguments["on_tool_approval"] = (
                     lambda request: self._approve_tool(request, generation)
@@ -205,6 +212,8 @@ class RequestCoordinator:
             self.finish_stream(generation)
             self._host.write_request_message("Assistant", result.output_text)
             self._write_request_statistics(started_at, result.token_usage)
+            if result.finish_reason == "output_limit":
+                self._host.write_request_message("System", "回答达到最大输出 Token，内容可能不完整。")
             self._host.run_status = RunStatus.READY
         except ChatRuntimeError as exc:
             if worker.is_cancelled or generation != self._generation:
@@ -257,6 +266,21 @@ class RequestCoordinator:
             lambda: self.refresh_activity(generation),
             name="request-activity",
         )
+
+    def _on_context_event(self, event: dict[str, object], generation: int) -> None:
+        """只处理本代请求的阶段/数字，避免取消后的旧事件覆盖新状态。"""
+
+        if generation != self._generation or not self._host.is_mounted:
+            return
+        event_type = event.get("type")
+        if event_type == "context_compaction_started":
+            self._host.query_one(ActivityBar).compacting = True
+        elif event_type == "context_compaction_finished":
+            self._host.query_one(ActivityBar).compacting = False
+        elif event_type == "context_updated" and isinstance(event.get("percent"), (int, float)):
+            self._host.update_context_percent(float(event["percent"]))
+        elif event_type == "context_settings_warning" and isinstance(event.get("message"), str):
+            self._host.write_request_message("System", event["message"])
 
     def _stop_activity(self, expected_generation: int | None = None) -> None:
         if (

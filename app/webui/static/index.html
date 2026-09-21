@@ -169,6 +169,10 @@
             <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M9 9h6v6H9zM12 1v3M12 20v3M1 12h3M20 12h3" /></svg>
             <span>模型</span>
           </button>
+          <button type="button" data-settings-route="context">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM8 9h8M8 13h5M8 16h3" /></svg>
+            <span>上下文</span>
+          </button>
           <button type="button" data-settings-route="statistics">
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3" /></svg>
             <span>统计</span>
@@ -229,6 +233,15 @@
               </label>
               <p class="settings-note">页面不会显示、编辑或回传 API Key。</p>
             </div>
+            <div class="settings-card budget-card" data-budget-form="model"></div>
+          </section>
+
+          <section class="settings-panel" id="settings-context-panel" data-settings-panel="context" hidden>
+            <div class="settings-panel-copy">
+              <h2>上下文整理</h2>
+              <p>控制何时整理历史以及保留多少轮原文。适用于本项目全部 Web 会话和 TUI。</p>
+            </div>
+            <div class="settings-card budget-card" data-budget-form="compaction"></div>
           </section>
 
           <section class="settings-panel statistics-panel" id="settings-statistics-panel" data-settings-panel="statistics" hidden>
@@ -340,6 +353,7 @@
     </div>
 
     <div class="toast" id="toast" role="status" hidden></div>
+    <script src="/ui/context-settings.js" defer></script>
     <script src="/ui/app.js" defer></script>
   </body>
 </html>

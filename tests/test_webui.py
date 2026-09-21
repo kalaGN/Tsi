@@ -3,6 +3,7 @@ import json
 
 import httpx
 import pytest
+from budget_support import BudgetedTestTurn, estimate_test_request
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
@@ -13,7 +14,7 @@ from app.runtime.session_store import SessionStore
 from app.services.llm.contracts import ModelStep, TokenUsage
 from app.webui.router import create_webui_router
 from app.webui.approvals import WebApprovalConflict, WebApprovalNotFound
-from app.webui.service import WebUiBusyError, WebUiService
+from app.webui.service import WebUiBusyError, WebUiService, _runtime_budget_snapshot
 from app.webui.sessions import WebSessionCatalog, WebSessionStoreError
 from app.webui.statistics import WebStatisticsStore, WebStatisticsStoreError
 from tools.contracts import ToolCall
@@ -24,6 +25,7 @@ from tools.workspace import (
 
 
 class WebProvider:
+    estimate_request = staticmethod(estimate_test_request)
     name = "deepseek"
     model = "test-model"
     api_key_configured = True
@@ -31,8 +33,8 @@ class WebProvider:
     def __init__(self, answer="你好，Web UI"):
         self.answer = answer
 
-    def create_turn(self, messages, tools, *, request_id):
-        return WebTurn(self.answer)
+    def create_turn(self, messages, tools, *, request_id, **budget):
+        return BudgetedTestTurn(WebTurn(self.answer), messages, tools, **budget)
 
 
 class WebTurn:
@@ -52,12 +54,13 @@ class WebTurn:
 
 
 class WorkspaceWriteProvider:
+    estimate_request = staticmethod(estimate_test_request)
     name = "deepseek"
     model = "test-model"
     api_key_configured = True
 
-    def create_turn(self, messages, tools, *, request_id):
-        return WorkspaceWriteTurn()
+    def create_turn(self, messages, tools, *, request_id, **budget):
+        return BudgetedTestTurn(WorkspaceWriteTurn(), messages, tools, **budget)
 
 
 class WorkspaceWriteTurn:
@@ -138,6 +141,115 @@ def create_service(tmp_path, provider=None):
     )
 
 
+def settings_client(tmp_path):
+    service = create_service(tmp_path)
+    application = FastAPI()
+    application.include_router(create_webui_router(service))
+    return TestClient(application), service
+
+
+def test_context_settings_api_saves_and_resets_scope_with_revision(tmp_path):
+    client, service = settings_client(tmp_path)
+    initial = client.get("/ui/api/context-settings").json()
+    assert initial["revision"] == 0
+    assert initial["input_limit"] == 119808
+    payload = {"expected_revision": 0, "scope": "model", "provider": "deepseek", "model": "test-model", "overrides": {"context_window_tokens": 32000}}
+    saved = client.put("/ui/api/context-settings", json=payload, headers={"Origin": "http://testserver"})
+    assert saved.status_code == 200
+    assert saved.json()["input_limit"] == 23808
+    assert saved.json()["sources"]["context_window_tokens"] == "settings"
+    assert client.put("/ui/api/context-settings", json=payload).status_code == 409
+    payload.update(expected_revision=1, overrides={})
+    assert client.put("/ui/api/context-settings", json=payload).json()["effective"]["context_window_tokens"] == 128000
+    assert service.context_settings.store.path.exists()
+
+
+def test_saved_page_model_budget_is_used_on_next_web_send(tmp_path):
+    class RecordingBudgetProvider(WebProvider):
+        def __init__(self):
+            super().__init__()
+            self.options = []
+
+        def create_turn(self, messages, tools, *, request_id, **budget):
+            self.options.append(budget["options"].max_output_tokens)
+            return super().create_turn(messages, tools, request_id=request_id, **budget)
+
+    provider = RecordingBudgetProvider()
+    service = create_service(tmp_path, provider)
+    service.context_settings.save(
+        expected_revision=0, scope="model",
+        overrides={"context_window_tokens": 16_000, "max_output_tokens": 1000},
+        provider="deepseek", model="test-model", configured_models=(),
+    )
+    service._session_factory = lambda store: ChatSession.load(
+        store, provider=provider,
+        budget_snapshot_provider=lambda active: _runtime_budget_snapshot(service.context_settings, active),
+    )
+
+    async def collect():
+        return [event async for event in service.stream_message("你好")]
+
+    events = asyncio.run(collect())
+
+    assert provider.options == [1000]
+    assert events[-1]["type"] == "completed"
+    assert events[-1]["context_percent"] == service.session.context_snapshot["percent"]
+    assert service.session.context_snapshot["input_limit"] == 10_904
+
+
+@pytest.mark.parametrize("overrides", [{"max_output_tokens": True}, {"max_output_tokens": 0}, {"context_window_tokens": 4096}, {"api_key": "not-a-secret"}, {"path": "not-allowed"}])
+def test_context_settings_api_rejects_invalid_or_secret_fields(tmp_path, overrides):
+    client, service = settings_client(tmp_path)
+    response = client.put("/ui/api/context-settings", json={"scope": "model", "expected_revision": 0, "provider": "deepseek", "model": "test-model", "overrides": overrides})
+    assert response.status_code == 422
+    assert not service.context_settings.store.path.exists()
+
+
+@pytest.mark.parametrize("headers", [{"Origin": "https://example.com"}, {"Origin": "null"}, {"Origin": "http://testserver:9000"}, {"Sec-Fetch-Site": "cross-site"}])
+def test_context_settings_api_rejects_cross_origin_writes(tmp_path, headers):
+    client, service = settings_client(tmp_path)
+    response = client.put("/ui/api/context-settings", headers=headers, json={"scope": "compaction", "expected_revision": 0, "overrides": {}})
+    assert response.status_code == 403
+    assert not service.context_settings.store.path.exists()
+
+
+def test_context_settings_api_rejects_duplicate_json_busy_and_stale_model(tmp_path):
+    client, service = settings_client(tmp_path)
+    response = client.put("/ui/api/context-settings", content='{"scope":"compaction","scope":"model"}', headers={"Content-Type": "application/json"})
+    assert response.status_code == 422
+    assert client.put("/ui/api/context-settings", content="{}", headers={"Content-Type": "text/plain"}).status_code == 422
+    payload = {"scope": "model", "expected_revision": 0, "provider": "deepseek", "model": "old-model", "overrides": {}}
+    assert client.put("/ui/api/context-settings", json=payload).status_code == 409
+    asyncio.run(service._request_lock.acquire())
+    try:
+        payload.update(model="test-model")
+        assert client.put("/ui/api/context-settings", json=payload).status_code == 409
+    finally:
+        service._request_lock.release()
+
+
+def test_context_settings_api_does_not_replace_corrupt_file(tmp_path):
+    client, service = settings_client(tmp_path)
+    assert client.get("/ui/api/context-settings").status_code == 200
+    path = service.context_settings.store.path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("broken", encoding="utf-8")
+    assert client.get("/ui/api/context-settings").json()["warning"]
+    assert client.put("/ui/api/context-settings", json={"scope": "compaction", "expected_revision": 0, "overrides": {}}).status_code == 503
+    assert path.read_text() == "broken"
+
+
+def test_context_settings_menu_and_separate_script_are_available(tmp_path):
+    client, _ = settings_client(tmp_path)
+    page = client.get("/ui").text
+    assert page.index('data-settings-route="model"') < page.index('data-settings-route="context"') < page.index('data-settings-route="statistics"')
+    assert 'data-budget-form="model"' in page
+    assert 'data-budget-form="compaction"' in page
+    script = client.get("/ui/context-settings.js")
+    assert script.status_code == 200
+    assert 'method: "PUT"' in script.text
+
+
 def test_webui_bootstrap_is_provider_neutral_and_does_not_expose_secrets(tmp_path):
     service = create_service(tmp_path)
 
@@ -169,8 +281,10 @@ def test_webui_streams_deltas_and_commits_only_final_message(tmp_path):
 
         assert [event["type"] for event in events] == [
             "request_started",
+            "context_updated",
             "text_delta",
             "text_delta",
+            "context_updated",
             "completed",
         ]
         assert events[-1]["output_text"] == "你好，Web UI"

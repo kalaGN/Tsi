@@ -17,11 +17,14 @@ from app.services.llm.aliyun import (
 from app.services.llm.contracts import (
     ChatMessage,
     ChatRole,
+    GenerationOptions,
     LlmProviderError,
     ModelOption,
     ProviderAuthenticationError,
     ProviderConfigurationError,
     ProviderConnectionError,
+    ProviderContextLimitError,
+    ProviderOutputLimitError,
     ProviderInvalidResponseError,
     ProviderInvalidRequestError,
     ProviderQuotaError,
@@ -29,6 +32,7 @@ from app.services.llm.contracts import (
     ProviderTimeoutError,
     TokenUsage,
 )
+from app.services.llm.budget import estimate_payload
 from app.services.llm.deepseek import (
     DEEPSEEK_CHAT_COMPLETIONS_URL,
     DeepSeekChatProvider,
@@ -402,7 +406,7 @@ def test_aliyun_sends_expected_request_and_extracts_text(
         assert request.headers["Accept"] == "text/event-stream"
         assert request.content == (
             b'{"model":"custom-qwen","input":'
-            b'[{"role":"user","content":"hello"}],"stream":true}'
+            b'[{"role":"user","content":"hello"}],"stream":true,"max_output_tokens":4096}'
         )
         return httpx.Response(200, json=body)
 
@@ -483,6 +487,7 @@ def test_aliyun_turn_declares_flat_tools_and_uses_array_input(monkeypatch):
             "model": "custom-qwen",
             "input": [{"role": "user", "content": "hello"}],
             "stream": True,
+            "max_output_tokens": 4096,
             "tools": [
                 {
                     "type": "function",
@@ -1134,7 +1139,7 @@ def test_deepseek_sends_expected_request_and_extracts_text(monkeypatch):
         assert request.content == (
             b'{"model":"deepseek-v4-pro","messages":'
             b'[{"role":"user","content":"\xe4\xbd\xa0\xe5\xa5\xbd"}],"stream":true,'
-            b'"stream_options":{"include_usage":true}}'
+            b'"stream_options":{"include_usage":true},"max_tokens":4096}'
         )
         return httpx.Response(200, json=body)
 
@@ -1178,6 +1183,7 @@ def test_deepseek_turn_declares_tools_and_returns_direct_text(monkeypatch):
             "messages": [{"role": "user", "content": "hello"}],
             "stream": True,
             "stream_options": {"include_usage": True},
+            "max_tokens": 4096,
             "tools": [
                 {
                     "type": "function",
@@ -2421,3 +2427,122 @@ def test_aliyun_logged_request_body_equals_actual_payload_for_single_and_multi_t
         assert event["provider"] == "aliyun"
         assert event["model"] == "custom-qwen"
         assert event["request_id"] == REQUEST_ID
+
+
+@pytest.mark.parametrize("provider", [DeepSeekChatProvider("fake"), AliyunResponsesProvider("fake")])
+def test_budget_preview_matches_sent_payload_and_configures_output(monkeypatch, provider):
+    payloads, checks = [], []
+    options = GenerationOptions(1234)
+
+    def handler(request):
+        payloads.append(json.loads(request.content))
+        body = {"output_text": "ok"} if provider.name == "aliyun" else _deepseek_ok_body()
+        return httpx.Response(200, json=body)
+
+    install_transport(monkeypatch, handler)
+    messages = (ChatMessage(ChatRole.SYSTEM, "规则"), *user_messages("输入"))
+    preview = provider.estimate_request(messages, (TIME_TOOL,), options=options)
+    assert payloads == []
+    # 不需要密钥或合法的待发送奇数历史，空闲快照也能纯预览。
+    idle = type(provider)("").estimate_request((), (), options=options)
+    assert idle.input_tokens > 0
+    turn = provider.create_turn(messages, (TIME_TOOL,), request_id=REQUEST_ID, options=options, request_guard=checks.append)
+    assert turn._client is None
+    assert turn.estimate_pending() == preview
+    asyncio.run(turn.next())
+    assert checks == [preview] == [estimate_payload(payloads[0])]
+    field = "max_output_tokens" if provider.name == "aliyun" else "max_tokens"
+    assert payloads[0][field] == 1234
+
+
+@pytest.mark.parametrize("provider", [DeepSeekChatProvider("fake"), AliyunResponsesProvider("fake")])
+def test_budget_guard_rejects_before_client_or_http_log(monkeypatch, captured_model_events, provider):
+    def forbidden_client():
+        pytest.fail("预算拒绝不应创建客户端")
+
+    module = "app.services.llm." + provider.name
+    monkeypatch.setattr(module + ".create_http_client", forbidden_client)
+
+    def reject(estimate):
+        assert estimate.input_tokens > 0
+        raise ProviderContextLimitError()
+
+    turn = provider.create_turn(user_messages(), (), request_id=REQUEST_ID, request_guard=reject)
+    with pytest.raises(ProviderContextLimitError):
+        asyncio.run(turn.next())
+    assert captured_model_events() == []
+    assert turn._client is None
+
+
+@pytest.mark.parametrize("provider", [DeepSeekChatProvider("fake"), AliyunResponsesProvider("fake")])
+def test_pending_budget_is_pure_monotonic_and_preserves_calls_on_rejection(monkeypatch, provider):
+    payloads, checks = [], []
+    blocked = False
+    raw_calls = [
+        {"id": f"call-{index}", "type": "function", "function": {"name": "get_current_time", "arguments": "{}"}}
+        for index in range(2)
+    ]
+
+    def handler(request):
+        payloads.append(json.loads(request.content))
+        if len(payloads) == 1:
+            if provider.name == "deepseek":
+                body = {"choices": [{"message": {"content": "查询中", "reasoning_content": "已知推理", "tool_calls": raw_calls}}]}
+            else:
+                body = {"output": [{"type": "function_call", "call_id": call["id"], "name": "get_current_time", "arguments": "{}"} for call in raw_calls]}
+        else:
+            body = {"output_text": "ok"} if provider.name == "aliyun" else _deepseek_ok_body()
+        return httpx.Response(200, json=body)
+
+    def guard(estimate):
+        checks.append(estimate)
+        if blocked:
+            raise ProviderContextLimitError()
+
+    install_transport(monkeypatch, handler)
+    turn = provider.create_turn(user_messages(), (TIME_TOOL,), request_id=REQUEST_ID, request_guard=guard)
+    first = asyncio.run(turn.next())
+    assert first.finish_reason == "tool_calls"
+    results = (ToolResult("call-0", "first"), ToolResult("call-1", "第二个结果"))
+    lower = turn.estimate_pending((), complete=False)
+    partial = turn.estimate_pending(results[:1], complete=False)
+    full = turn.estimate_pending(results)
+    assert lower.input_tokens < partial.input_tokens < full.input_tokens
+    assert turn.estimate_pending((), complete=False) == lower
+    assert len(payloads) == 1
+    with pytest.raises(ProviderInvalidRequestError):
+        turn.estimate_pending(results[1:], complete=False)
+    with pytest.raises(ProviderInvalidRequestError):
+        turn.estimate_pending(results[:1])
+    turn.replace_tools((TIME_TOOL, READ_TOOL))
+    expanded = turn.estimate_pending(results)
+    assert expanded.input_tokens > full.input_tokens
+    blocked = True
+    with pytest.raises(ProviderContextLimitError):
+        asyncio.run(turn.next(results))
+    assert len(payloads) == 1
+    assert turn.estimate_pending(results) == expanded
+    blocked = False
+    assert asyncio.run(turn.next(results)).output_text == "ok"
+    assert checks[-1] == expanded == estimate_payload(payloads[-1])
+    field = "messages" if provider.name == "deepseek" else "input"
+    assert len(payloads[-1][field]) == (4 if provider.name == "deepseek" else 5)
+
+
+def test_deepseek_length_finish_reason_is_not_lost(monkeypatch):
+    events = (
+        b'data: {"choices":[{"index":0,"delta":{"content":"partial"},"finish_reason":"length"}]}\n\n'
+        b'data: [DONE]\n\n'
+    )
+    install_transport(monkeypatch, lambda request: httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=ChunkedAsyncStream((events,))))
+    step = asyncio.run(run_provider_once(DeepSeekChatProvider("fake"), user_messages()))
+    assert step.output_text == "partial"
+    assert step.finish_reason == "output_limit"
+
+
+def test_aliyun_explicit_output_limit_is_not_input_context_limit(monkeypatch):
+    events = b'data: {"type":"response.incomplete","response":{"status":"incomplete","incomplete_details":{"reason":"max_output_tokens"}}}\n\n'
+    install_transport(monkeypatch, lambda request: httpx.Response(200, headers={"content-type": "text/event-stream"}, stream=ChunkedAsyncStream((events,))))
+    with pytest.raises(ProviderOutputLimitError) as captured:
+        asyncio.run(run_provider_once(AliyunResponsesProvider("fake"), user_messages()))
+    assert captured.value.raw_response is not None

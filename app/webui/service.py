@@ -26,6 +26,7 @@ from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS
 from app.services.llm.contracts import LlmProvider, ModelOption, TokenUsage
 from app.services.llm.factory import resolve_model_options
 from app.webui.approvals import WebApprovalCoordinator
+from app.webui.directory_picker import directory_picker_available
 from app.webui.projects import WebProjectCatalog, WebProjectRecord, normalize_project_path
 from app.webui.sessions import WebSessionCatalog, WebSessionStoreError
 from app.webui.statistics import (
@@ -245,6 +246,7 @@ class WebUiService:
                 "web_search": True,
                 "workspace_read": True,
                 "workspace_write": True,
+                "native_directory_picker": directory_picker_available(),
                 "skills": False,
             },
         }

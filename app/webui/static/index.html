@@ -386,7 +386,13 @@
         <div class="session-dialog-content">
           <p id="project-dialog-message">设置项目名称和已有的本地目录。</p>
           <label class="session-dialog-input">项目名称<input id="project-dialog-name" type="text" maxlength="80" autocomplete="off" required /></label>
-          <label class="session-dialog-input">项目路径<input id="project-dialog-path" type="text" maxlength="1024" autocomplete="off" spellcheck="false" placeholder="/Users/you/projects/example" required /></label>
+          <div class="session-dialog-input">
+            <label for="project-dialog-path">项目路径</label>
+            <div class="project-path-controls">
+              <input id="project-dialog-path" type="text" maxlength="1024" autocomplete="off" spellcheck="false" placeholder="/Users/you/projects/example" required />
+              <button type="button" class="secondary-button" id="choose-project-path" hidden>选择目录</button>
+            </div>
+          </div>
         </div>
         <footer class="session-dialog-actions">
           <button type="button" class="secondary-button" id="cancel-project-dialog">取消</button>

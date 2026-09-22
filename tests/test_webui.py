@@ -254,7 +254,37 @@ def test_project_menu_is_present_in_web_page(tmp_path):
     script = client.get("/ui/app.js").text
     assert 'id="new-project"' in page
     assert 'id="project-dialog-path"' in page
+    assert 'id="choose-project-path"' in page
+    assert '/projects/pick-directory' in script
     assert 'project-group-heading' in script
+
+
+def test_project_directory_picker_api_only_returns_path(tmp_path, monkeypatch):
+    client, service = settings_client(tmp_path)
+    before = service.bootstrap()["projects"]
+
+    async def choose():
+        return str(tmp_path)
+
+    monkeypatch.setattr("app.webui.router.pick_project_directory", choose)
+    assert client.post("/ui/api/projects/pick-directory", json={}, headers={"Origin": "https://example.com"}).status_code == 403
+    assert client.post("/ui/api/projects/pick-directory", json={"path": "/"}).status_code == 422
+    asyncio.run(service._request_lock.acquire())
+    try:
+        assert client.post("/ui/api/projects/pick-directory", json={}).status_code == 409
+    finally:
+        service._request_lock.release()
+    selected = client.post("/ui/api/projects/pick-directory", json={})
+    assert selected.status_code == 200
+    assert selected.json() == {"cancelled": False, "path": str(tmp_path)}
+    assert service.bootstrap()["projects"] == before
+
+    async def cancel():
+        return None
+
+    monkeypatch.setattr("app.webui.router.pick_project_directory", cancel)
+    assert client.post("/ui/api/projects/pick-directory", json={}).json() == {"cancelled": True, "path": None}
+    assert service.bootstrap()["projects"] == before
 
 
 def test_personalization_api_is_versioned_and_same_origin(tmp_path):

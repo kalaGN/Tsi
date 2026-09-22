@@ -539,6 +539,27 @@ function requestProjectDialog(project = null) {
   return new Promise((resolve) => { state.projectDialogResolve = resolve; });
 }
 
+async function chooseProjectPath() {
+  const button = $("#choose-project-path");
+  const activeDialog = state.projectDialogResolve;
+  button.disabled = true;
+  try {
+    const result = await (await api("/projects/pick-directory", {
+      method: "POST",
+      body: "{}",
+    })).json();
+    // 选择器只回填文本；关闭对话框后到达的结果不再应用。
+    if (!result.cancelled && activeDialog === state.projectDialogResolve && !$("#project-dialog").hidden) {
+      $("#project-dialog-path").value = result.path;
+      $("#project-dialog-path").focus();
+    }
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+}
+
 function renderSessions() {
   const list = $("#conversation-list");
   list.replaceChildren();
@@ -1139,6 +1160,7 @@ async function bootstrap() {
     const response = await api("/bootstrap");
     const data = await response.json();
     $("#workspace-access").textContent = data.capabilities.workspace_write ? "审批写入" : "只读";
+    $("#choose-project-path").hidden = !data.capabilities.native_directory_picker;
     $("#context-text").textContent = `上下文 ${data.context_percent}%`;
     populateModels(data.models, data.runtime);
     applyConversation(data, { closeSidebar: false });
@@ -1189,6 +1211,7 @@ $("#session-dialog-form").addEventListener("submit", (event) => {
   closeSessionDialog(title);
 });
 $("#cancel-project-dialog").addEventListener("click", () => closeProjectDialog(null));
+$("#choose-project-path").addEventListener("click", chooseProjectPath);
 $("#project-dialog").addEventListener("click", (event) => {
   if (event.target === event.currentTarget) closeProjectDialog(null);
 });

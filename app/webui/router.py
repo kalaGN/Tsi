@@ -21,6 +21,12 @@ from app.runtime.personalization_store import (
     PersonalizationError,
 )
 from app.webui.approvals import WebApprovalConflict, WebApprovalNotFound
+from app.webui.directory_picker import (
+    DirectoryPickerBusy,
+    DirectoryPickerError,
+    DirectoryPickerUnavailable,
+    pick_project_directory,
+)
 from app.webui.projects import WebProjectError, WebProjectNotFound
 from app.webui.service import WebUiBusyError, WebUiService
 from app.webui.sessions import WebSessionNotFound, WebSessionStoreError
@@ -275,6 +281,34 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
         _require_same_origin_json(request)
         payload = await _project_request(request)
         return _run_session_action(current_service().create_project, project_action=True, **payload)
+
+    @router.post("/ui/api/projects/pick-directory")
+    async def choose_project_directory(request: Request):
+        """只打开本机目录选择器，回填路径不等于保存项目。"""
+
+        _require_loopback(request)
+        _require_same_origin_json(request)
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 32:
+                raise HTTPException(status_code=422, detail="目录选择请求无效。")
+            raw.extend(chunk)
+        try:
+            if strict_json(raw.decode("utf-8")) != {}:
+                raise ValueError("unexpected request body")
+        except (UnicodeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="目录选择请求无效。") from exc
+        if current_service().is_busy:
+            raise HTTPException(status_code=409, detail="已有请求正在运行。")
+        try:
+            path = await pick_project_directory()
+        except DirectoryPickerUnavailable as exc:
+            raise HTTPException(status_code=501, detail=str(exc)) from exc
+        except DirectoryPickerBusy as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except DirectoryPickerError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+        return {"cancelled": path is None, "path": path}
 
     @router.patch("/ui/api/projects/{project_id}")
     async def update_project(request: Request, project_id: str):

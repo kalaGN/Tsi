@@ -1036,7 +1036,7 @@ function handleEvent(event) {
     $("#activity-text").textContent = "思考中";
   } else if (event.type === "context_updated") {
     $("#context-text").textContent = `上下文 ${event.percent}%`;
-  } else if (event.type === "context_settings_warning") {
+  } else if (["context_settings_warning", "mcp_warning"].includes(event.type)) {
     showToast(event.message);
   } else if (event.type === "completed") {
     closeToolApproval();

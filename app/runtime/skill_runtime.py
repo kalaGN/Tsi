@@ -21,6 +21,7 @@ from tools.skills import (
     resolve_skill_references,
 )
 from tools.contracts import ToolRuntime
+from tools.mcp_client import McpRegistry, load_mcp_config
 from tools.workspace import (
     WorkspaceChangeJournal,
     WorkspacePolicy,
@@ -139,6 +140,25 @@ class SkillRuntime:
             install_skill_tool=self._install_tool,
             preactivated_groups=preactivated_groups,
         )
+        try:
+            configs = load_mcp_config()
+        except ValueError as exc:
+            raise ChatRuntimeError(
+                ChatErrorCode.CONFIGURATION,
+                "MCP 配置无效，请检查 data/mcp-servers.json。",
+            ) from exc
+        if configs:
+            registry = McpRegistry(
+                lambda mcp_tools: self._registry_factory(
+                    self._workspace_policy,
+                    journal=self._journal,
+                    skill_catalog=catalog,
+                    install_skill_tool=self._install_tool,
+                    preactivated_groups=preactivated_groups,
+                    mcp_tools=mcp_tools,
+                ),
+                configs,
+            )
         return ChatExecutionSnapshot(
             system_prompt=compose_system_prompt(
                 self._agents_prompt,

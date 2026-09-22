@@ -12,8 +12,24 @@ from typing import Any, Mapping, TextIO
 from uuid import uuid4
 from zoneinfo import ZoneInfo
 
+from tools.mcp_context import MCP_REDACT_LOGS
+
 
 LOGGER_NAME = "app.model_calls"
+
+
+class _McpContentFilter(logging.Filter):
+    """MCP 请求中的模型报文也可能携带外部工具数据。"""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if MCP_REDACT_LOGS.get():
+            for field in ("input_text", "output_text", "request_body", "arguments_json", "raw_response", "user_message"):
+                if hasattr(record, field):
+                    setattr(record, field, "[MCP CONTENT REDACTED]")
+        return True
+
+
+logging.getLogger(LOGGER_NAME).addFilter(_McpContentFilter())
 # 模块被脚本直接复用且入口尚未配置日志时，避免 ERROR 触发 logging.lastResort 污染终端。
 logging.getLogger(LOGGER_NAME).addHandler(logging.NullHandler())
 MAX_LOG_BYTES = 10 * 1024 * 1024
@@ -44,6 +60,7 @@ _REDACTED_REQUEST_HEADERS = {
     "Authorization": "Bearer [REDACTED]",
 }
 _EVENT_FIELDS = {
+    "mcp_server": ("request_id", "server_name", "status", "duration_ms"),
     "llm_request": (
         "request_id",
         "provider",
@@ -220,6 +237,8 @@ class _ModelEventReadableFormatter(logging.Formatter):
             lines.extend((f"Provider：{record.provider}", f"模型：{record.model}"))
         if event_name.startswith("llm_tool_"):
             lines.extend((f"调用ID：{record.call_id}", f"工具：{record.tool_name}"))
+        if event_name == "mcp_server":
+            lines.extend((f"Server：{record.server_name}", f"状态：{record.status}", f"耗时：{record.duration_ms} ms"))
 
         if event_name == "llm_request":
             lines.append(f"输入长度：{record.input_chars} 字符")

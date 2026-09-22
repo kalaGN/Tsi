@@ -408,7 +408,7 @@ def test_run_chat_rejects_blank_input_without_calling_provider():
         (
             ProviderQuotaError(),
             ChatErrorCode.UPSTREAM,
-            "阿里云模型额度已用尽，请充值或关闭控制台中的“仅使用免费额度”模式。",
+            "模型额度已用尽，请充值或关闭控制台中的“仅使用免费额度”模式。",
             None,
         ),
         (

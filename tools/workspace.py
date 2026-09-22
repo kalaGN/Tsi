@@ -1206,6 +1206,7 @@ def create_intent_workspace_registry(
     install_skill_tool: "InstallSkillTool | None" = None,
     *,
     preactivated_groups=(),
+    mcp_tools=(),
 ):
     """创建 TUI 请求级工具组 Registry，首步仅披露激活元工具。"""
 
@@ -1216,6 +1217,7 @@ def create_intent_workspace_registry(
         install_skill_tool=install_skill_tool,
         include_git_write=True,
         preactivated_groups=preactivated_groups,
+        mcp_tools=mcp_tools,
     )
 
 
@@ -1225,6 +1227,7 @@ def create_web_intent_workspace_registry(
     *,
     web_search_environ: Mapping[str, str] | None = None,
     preactivated_groups=(),
+    mcp_tools=(),
 ):
     """创建含网络搜索和工作区读写能力的 Web 请求级 Registry。"""
 
@@ -1235,6 +1238,7 @@ def create_web_intent_workspace_registry(
         include_web_search=True,
         web_search_environ=web_search_environ,
         preactivated_groups=preactivated_groups,
+        mcp_tools=mcp_tools,
     )
 
 
@@ -1248,6 +1252,7 @@ def _create_grouped_workspace_registry(
     include_web_search: bool = False,
     web_search_environ: Mapping[str, str] | None = None,
     preactivated_groups=(),
+    mcp_tools=(),
 ):
     """按宿主允许的能力构造渐进披露 Registry。"""
 
@@ -1262,6 +1267,7 @@ def _create_grouped_workspace_registry(
         include_web_search=include_web_search,
         web_search_environ=web_search_environ,
     )
+    tools = (*tools, *mcp_tools)
     names = {tool.definition.name for tool in tools}
     read_names = (
         "list_workspace_files",
@@ -1325,6 +1331,14 @@ def _create_grouped_workspace_registry(
                 ToolGroup.GIT_WRITE,
                 "经逐次审批暂存文件、创建中文提交并推送既有上游",
                 ("git_stage", "git_commit", "git_push"),
+            )
+        )
+    if mcp_tools:
+        groups.append(
+            ToolGroupDefinition(
+                ToolGroup.MCP,
+                "调用用户配置的外部 MCP Server 工具，每次调用需本地审批",
+                tuple(tool.definition.name for tool in mcp_tools),
             )
         )
     return GroupedToolRegistry(

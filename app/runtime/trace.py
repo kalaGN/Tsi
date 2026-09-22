@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from dataclasses import replace
 from typing import Protocol, TypeAlias
 
 from app.services.llm.contracts import ChatMessage, TokenUsage
+from tools.mcp_context import MCP_REDACT_LOGS
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,4 +102,11 @@ def emit_trace(observer: TraceObserver | None, event: TraceEvent) -> None:
     """只在调用方显式提供 Observer 时发射事件。"""
 
     if observer is not None:
+        if MCP_REDACT_LOGS.get():
+            if isinstance(event, RequestStartedTraceEvent):
+                event = replace(event, messages=())
+            elif isinstance(event, ToolCallStartedTraceEvent):
+                event = replace(event, arguments_json="[MCP CONTENT REDACTED]")
+            elif isinstance(event, (ToolCallCompletedTraceEvent, RequestCompletedTraceEvent)):
+                event = replace(event, output_text="[MCP CONTENT REDACTED]")
         observer.record(event)

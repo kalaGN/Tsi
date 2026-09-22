@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from app.observability.model_logging import configure_model_logging
 from app.runtime.model_selection_store import ModelSelectionStore
+from app.runtime.chat import ChatRuntimeError
 from app.runtime.system_prompt import (
     SystemPromptLoadError,
     compose_system_prompt,
@@ -67,10 +68,10 @@ def main() -> None:
         skill_status = skill_runtime.status()
         skills_count = skill_status.skills_count
         system_prompt = initial_snapshot.system_prompt
-    except (OSError, ValueError):
+    except (OSError, ValueError, ChatRuntimeError) as exc:
         workspace_registry = None
         skill_runtime = None
-        workspace_error = "Workspace tools are unavailable"
+        workspace_error = exc.user_message if isinstance(exc, ChatRuntimeError) else "Workspace tools are unavailable"
         skills_count = 0
         system_prompt = compose_system_prompt(agents_prompt, None)
     dependencies = build_tui_dependencies(

@@ -44,6 +44,21 @@ SERPER_API_KEY=replace-with-real-api-key
 
 ## 工具调用
 
+### 外部 MCP 工具
+
+在项目根目录创建 Git 忽略的 `data/mcp-servers.json`，列出要启用的 MCP Server。安装依赖后，Web UI 和 TUI 都会在每轮对话开始时连接、发现工具，并按需提供 `mcp` 工具组；每次调用都需要本地审批。未创建配置文件时不会连接外部服务。
+
+```json
+{
+  "servers": [
+    {"name": "local", "transport": "stdio", "command": "/path/to/server", "args": ["--stdio"], "env": {"SERVICE_TOKEN": "MY_SERVICE_TOKEN"}},
+    {"name": "remote", "transport": "streamable_http", "url": "https://example.com/mcp", "headers": {"Authorization": "MY_MCP_AUTH_HEADER"}}
+  ]
+}
+```
+
+`env` 和 `headers` 的值是宿主环境变量名；例如先在 `.env` 中配置 `MY_SERVICE_TOKEN` 或 `MY_MCP_AUTH_HEADER`。HTTP Authorization 变量值应包含完整的 `Bearer ...`。本机 HTTP 仅允许 `localhost`、`127.0.0.1` 或 `::1`，远程服务必须使用 HTTPS。stdio 服务器是本机进程，会在本轮对话开始时启动；仅配置可信命令。连接与工具响应在请求结束或取消时清理。首版仅提供文本和结构化工具结果，不支持 MCP Resources、Prompts、OAuth 或管理界面。外部内容可能进入模型上下文；启用 MCP 的请求在本机模型日志及评测轨迹中隐藏正文。
+
 Web UI 与 TUI 使用不同的显式工具白名单。Web UI 可按需激活时间、网络搜索和 Workspace 读写工具，但不包含 Git、Skill 或脚本；TUI 每轮首步只发送 `activate_tool_groups`，由模型按任务意图激活所需工具组，避免每个模型步骤重复携带完整工具 Schema。一次请求最多追加两次，可在一次激活中选择多个组；组状态不会跨请求保留。显式 `$技能名` 会预激活 `skills`，不消耗追加次数。创建、修改、撤销、安装或执行脚本的审批规则不因激活而改变。
 
 | 工具组 | 包含能力 |
@@ -55,6 +70,7 @@ Web UI 与 TUI 使用不同的显式工具白名单。Web UI 可按需激活时�
 | `skills` | 加载 Skill、读取资源、执行脚本 |
 | `skill_install` | 安装 Skill |
 | `git_write` | 暂存指定文件、创建中文提交、推送既有上游 |
+| `mcp` | 当前请求发现的外部 MCP 工具，逐次本地审批 |
 
 `skills` 只在启动 Catalog 非空时可选；`skill_install` 只在 TUI 安装器可用时可选。模型不能创建新组或把任意工具加入组。
 
@@ -86,7 +102,7 @@ Web UI 与 TUI 使用不同的显式工具白名单。Web UI 可按需激活时�
 
 安全和成本边界：
 
-- 工具只能从根目录 `tools/` 显式注册；不提供模型自由拼接的 Shell/Python、动态 import、数据库或依赖安装。Git 只能通过三个固定结构化工具执行，不能传入任意命令或参数。
+- 内置工具只能从根目录 `tools/` 显式注册；外部 MCP 工具只来自本地明确配置的 Server，调用逐次审批。不提供模型自由拼接的 Shell/Python、动态 import、数据库或依赖安装。Git 只能通过三个固定结构化工具执行，不能传入任意命令或参数。
 - `web_search` 只向固定的 `https://google.serper.dev/search` 发送查询，模型不能指定 URL、Header、请求方法或搜索供应商；查询内容会发送给 Serper.dev，响应体限制为 1 MiB。
 - Workspace 固定为 Web 服务或 TUI 的启动目录；绝对路径、`..`、符号链接、二进制和保护路径会被拒绝。
 - `.env*`、`.git/`、`.venv/`、`data/`、`logs/` 和缓存目录不可读写；`AGENTS.md`、Rules、依赖文件和 Workspace 安全实现额外禁止写入。

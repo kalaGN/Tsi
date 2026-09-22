@@ -11,6 +11,7 @@ from app.tui.widgets import SelectableRichLog
 from tools import (
     AnyToolApprovalRequest,
     GitApprovalRequest,
+    McpApprovalRequest,
     ScriptApprovalRequest,
     SkillInstallApprovalRequest,
     ToolApprovalRequest,
@@ -51,6 +52,8 @@ class ToolApprovalScreen(ModalScreen[bool]):
             elif isinstance(self.request, GitApprovalRequest):
                 network = "是" if self.request.network_access else "否"
                 summary = f"{self.request.summary}\n访问网络：{network}"
+            elif isinstance(self.request, McpApprovalRequest):
+                summary = f"Server：{self.request.server_name} · Tool：{self.request.remote_tool_name}"
             else:
                 summary = "文件：" + "、".join(self.request.paths)
             yield Label(summary, id="approval-paths")
@@ -64,6 +67,8 @@ class ToolApprovalScreen(ModalScreen[bool]):
                     action = "安装 (Y)"
                 elif isinstance(self.request, GitApprovalRequest):
                     action = "执行 (Y)"
+                elif isinstance(self.request, McpApprovalRequest):
+                    action = "调用 (Y)"
                 yield Button(action, id="approve", variant="success")
 
     def on_mount(self) -> None:
@@ -79,6 +84,10 @@ class ToolApprovalScreen(ModalScreen[bool]):
             preview = Text(self.request.warning_text, style="bold yellow")
             preview.append("\n\n")
             preview.append(self.request.preview_text)
+        elif isinstance(self.request, McpApprovalRequest):
+            preview = Text(self.request.warning_text, style="bold yellow")
+            preview.append("\n\n参数：\n")
+            preview.append(self.request.arguments_text)
         else:
             preview = Text(self.request.diff_text)
         self.query_one("#approval-diff", RichLog).write(preview)

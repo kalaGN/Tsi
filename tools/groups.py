@@ -29,6 +29,7 @@ class ToolGroup(str, Enum):
     SKILLS = "skills"
     SKILL_INSTALL = "skill_install"
     GIT_WRITE = "git_write"
+    MCP = "mcp"
 
 
 @dataclass(frozen=True)

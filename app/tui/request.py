@@ -279,7 +279,7 @@ class RequestCoordinator:
             self._host.query_one(ActivityBar).compacting = False
         elif event_type == "context_updated" and isinstance(event.get("percent"), (int, float)):
             self._host.update_context_percent(float(event["percent"]))
-        elif event_type == "context_settings_warning" and isinstance(event.get("message"), str):
+        elif event_type in {"context_settings_warning", "mcp_warning"} and isinstance(event.get("message"), str):
             self._host.write_request_message("System", event["message"])
 
     def _stop_activity(self, expected_generation: int | None = None) -> None:

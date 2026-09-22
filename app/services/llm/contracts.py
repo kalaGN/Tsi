@@ -244,7 +244,7 @@ class ProviderQuotaError(LlmProviderError):
 
     def __init__(self) -> None:
         super().__init__(
-            "阿里云模型额度已用尽，请充值或关闭控制台中的“仅使用免费额度”模式。"
+            "模型额度已用尽，请充值或关闭控制台中的“仅使用免费额度”模式。"
         )
 
 

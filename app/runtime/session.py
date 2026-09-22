@@ -3,6 +3,7 @@
 import asyncio
 import os
 import time
+from contextlib import AsyncExitStack
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -196,132 +197,142 @@ class ChatSession:
                 if self._execution_snapshot_provider is not None
                 else ChatExecutionSnapshot(self._system_prompt, self._registry)
             )
-            provider = self._provider
-            if provider is None:
-                from app.services.llm.factory import create_provider
-                provider = create_provider()
-            budget_snapshot = self._budget_snapshot_provider(provider)
-            budget = budget_snapshot.budget
-            if budget_snapshot.warning is not None and on_context_event is not None:
-                on_context_event({"type": "context_settings_warning", "message": budget_snapshot.warning})
-            if self._active_budget is not None and self._active_budget != budget:
-                self._retry_after = 0.0
-                self._retry_model = None
-            self._active_budget = budget
-            model_key = (provider.name, provider.model)
-            retry_allowed = self._retry_model != model_key or self._clock() >= self._retry_after
-            state = ConversationState(
-                self._messages, self._summary, self._summary_through,
-                self._context_start, self._preferences,
-            )
-            self._active_summary_provider = provider
-            def report_context(event: dict[str, object]) -> None:
-                if event["type"] == "context_compaction_started":
-                    log_context_management(
-                        request_id=request_id, phase="summary", outcome="started",
-                        before_input_tokens=event["before_input_tokens"],
-                        input_limit=budget.input_limit,
-                    )
-                elif event["type"] == "context_compaction_finished":
-                    log_context_management(
-                        request_id=request_id, phase="summary",
-                        outcome=str(event["outcome"]), reason=event["reason"],
-                        before_input_tokens=event["before_input_tokens"],
-                        after_input_tokens=event["after_input_tokens"],
-                        input_limit=budget.input_limit,
-                        summary_turns=event["summarized_turns"],
-                        omitted_turns=event["omitted_turns"],
-                        duration_ms=event["duration_ms"],
-                    )
-                if on_context_event is not None:
-                    on_context_event(event)
-
-            try:
-                prepared = await prepare_context(
-                    state, input_text, snapshot.system_prompt, provider,
-                    snapshot.registry.definitions if snapshot.registry is not None else (),
-                    budget, self._memory_summarizer, request_id=request_id,
-                    retry_allowed=retry_allowed, on_context_event=report_context,
-                    clock=self._clock,
+            async with AsyncExitStack() as resources:
+                if snapshot.registry is not None and hasattr(snapshot.registry, "__aenter__"):
+                    if hasattr(snapshot.registry, "request_id"):
+                        snapshot.registry.request_id = request_id
+                    await resources.enter_async_context(snapshot.registry)
+                    if on_context_event is not None and getattr(snapshot.registry, "unavailable_servers", ()):
+                        on_context_event({
+                            "type": "mcp_warning",
+                            "message": "MCP Server 暂不可用，本轮已跳过：" + "、".join(snapshot.registry.unavailable_servers),
+                        })
+                provider = self._provider
+                if provider is None:
+                    from app.services.llm.factory import create_provider
+                    provider = create_provider()
+                budget_snapshot = self._budget_snapshot_provider(provider)
+                budget = budget_snapshot.budget
+                if budget_snapshot.warning is not None and on_context_event is not None:
+                    on_context_event({"type": "context_settings_warning", "message": budget_snapshot.warning})
+                if self._active_budget is not None and self._active_budget != budget:
+                    self._retry_after = 0.0
+                    self._retry_model = None
+                self._active_budget = budget
+                model_key = (provider.name, provider.model)
+                retry_allowed = self._retry_model != model_key or self._clock() >= self._retry_after
+                state = ConversationState(
+                    self._messages, self._summary, self._summary_through,
+                    self._context_start, self._preferences,
                 )
-            except ValueError as exc:
+                self._active_summary_provider = provider
+                def report_context(event: dict[str, object]) -> None:
+                    if event["type"] == "context_compaction_started":
+                        log_context_management(
+                            request_id=request_id, phase="summary", outcome="started",
+                            before_input_tokens=event["before_input_tokens"],
+                            input_limit=budget.input_limit,
+                        )
+                    elif event["type"] == "context_compaction_finished":
+                        log_context_management(
+                            request_id=request_id, phase="summary",
+                            outcome=str(event["outcome"]), reason=event["reason"],
+                            before_input_tokens=event["before_input_tokens"],
+                            after_input_tokens=event["after_input_tokens"],
+                            input_limit=budget.input_limit,
+                            summary_turns=event["summarized_turns"],
+                            omitted_turns=event["omitted_turns"],
+                            duration_ms=event["duration_ms"],
+                        )
+                    if on_context_event is not None:
+                        on_context_event(event)
+
+                try:
+                    prepared = await prepare_context(
+                        state, input_text, snapshot.system_prompt, provider,
+                        snapshot.registry.definitions if snapshot.registry is not None else (),
+                        budget, self._memory_summarizer, request_id=request_id,
+                        retry_allowed=retry_allowed, on_context_event=report_context,
+                        clock=self._clock,
+                    )
+                except ValueError as exc:
+                    log_context_management(
+                        request_id=request_id, phase="budget", outcome="rejected",
+                        reason="irreducible", input_limit=budget.input_limit,
+                    )
+                    raise ChatRuntimeError(
+                        ChatErrorCode.CONTEXT_LIMIT,
+                        "当前输入超过模型上下文上限，请减少内容、清理记忆或切换更大窗口的模型。",
+                    ) from exc
+                finally:
+                    self._active_summary_provider = None
+                if prepared.failure_reason is not None:
+                    self._retry_model = model_key
+                    self._retry_after = self._clock() + budget.summary_cooldown_seconds
                 log_context_management(
-                    request_id=request_id, phase="budget", outcome="rejected",
-                    reason="irreducible", input_limit=budget.input_limit,
+                    request_id=request_id, phase="business", outcome=prepared.outcome,
+                    reason=prepared.failure_reason,
+                    before_input_tokens=prepared.input_tokens,
+                    after_input_tokens=prepared.input_tokens, input_limit=budget.input_limit,
+                    summary_turns=prepared.summarized_turns,
+                    omitted_turns=prepared.omitted_turns,
                 )
-                raise ChatRuntimeError(
-                    ChatErrorCode.CONTEXT_LIMIT,
-                    "当前输入超过模型上下文上限，请减少内容、清理记忆或切换更大窗口的模型。",
-                ) from exc
-            finally:
-                self._active_summary_provider = None
-            if prepared.failure_reason is not None:
-                self._retry_model = model_key
-                self._retry_after = self._clock() + budget.summary_cooldown_seconds
-            log_context_management(
-                request_id=request_id, phase="business", outcome=prepared.outcome,
-                reason=prepared.failure_reason,
-                before_input_tokens=prepared.input_tokens,
-                after_input_tokens=prepared.input_tokens, input_limit=budget.input_limit,
-                summary_turns=prepared.summarized_turns,
-                omitted_turns=prepared.omitted_turns,
-            )
-            self._ensure_not_cancelled()
-            user_message = ChatMessage(ChatRole.USER, input_text)
-            candidate_request = prepared.context_messages + (user_message,)
+                self._ensure_not_cancelled()
+                user_message = ChatMessage(ChatRole.USER, input_text)
+                candidate_request = prepared.context_messages + (user_message,)
 
-            def on_estimate(estimate) -> None:
-                payload = self._context_payload(
-                    estimate.input_tokens, budget_snapshot, scope="request",
+                def on_estimate(estimate) -> None:
+                    payload = self._context_payload(
+                        estimate.input_tokens, budget_snapshot, scope="request",
+                    )
+                    if on_context_event is not None:
+                        on_context_event({"type": "context_updated", "request_id": request_id, **payload})
+
+                result = await run_chat_messages(
+                    candidate_request, provider=provider, registry=snapshot.registry,
+                    system_prompt=prepared.system_prompt,
+                    on_text_delta=on_text_delta, on_text_reset=on_text_reset,
+                    on_tool_approval=on_tool_approval, on_tool_result=on_tool_result,
+                    tool_loop_limits=self._tool_loop_limits, trace_observer=trace_observer,
+                    budget=budget, request_id=request_id, on_context_estimate=on_estimate,
+                )
+                if prepared.summary_attempted:
+                    usage = (
+                        prepared.summary_usage + result.token_usage
+                        if prepared.summary_usage is not None and result.token_usage is not None
+                        else None
+                    )
+                    result = ChatResult(
+                        result.output_text, result.provider, result.model, usage,
+                        result.finish_reason,
+                    )
+                self._ensure_not_cancelled()
+                committed = ConversationState(
+                    self._messages + (user_message, ChatMessage(ChatRole.ASSISTANT, result.output_text)),
+                    prepared.summary, prepared.summary_through_message_count,
+                    prepared.context_start_message_count, prepared.preferences,
+                )
+                next_input_tokens, _ = _estimate_business(
+                    provider, snapshot.registry.definitions if snapshot.registry is not None else (),
+                    budget, committed, "", snapshot.system_prompt, committed.summary,
+                    committed.preferences, committed.summary_through_message_count,
+                    committed.context_start_message_count,
+                )
+                try:
+                    self._store.save_state(committed)
+                except SessionStoreError as exc:
+                    raise _storage_error(exc) from exc
+                self._messages = committed.messages
+                self._summary = committed.summary
+                self._summary_through = committed.summary_through_message_count
+                self._context_start = committed.context_start_message_count
+                self._preferences = committed.preferences
+                self._last_context = self._context_payload(
+                    next_input_tokens, budget_snapshot, scope="committed",
                 )
                 if on_context_event is not None:
-                    on_context_event({"type": "context_updated", "request_id": request_id, **payload})
-
-            result = await run_chat_messages(
-                candidate_request, provider=provider, registry=snapshot.registry,
-                system_prompt=prepared.system_prompt,
-                on_text_delta=on_text_delta, on_text_reset=on_text_reset,
-                on_tool_approval=on_tool_approval, on_tool_result=on_tool_result,
-                tool_loop_limits=self._tool_loop_limits, trace_observer=trace_observer,
-                budget=budget, request_id=request_id, on_context_estimate=on_estimate,
-            )
-            if prepared.summary_attempted:
-                usage = (
-                    prepared.summary_usage + result.token_usage
-                    if prepared.summary_usage is not None and result.token_usage is not None
-                    else None
-                )
-                result = ChatResult(
-                    result.output_text, result.provider, result.model, usage,
-                    result.finish_reason,
-                )
-            self._ensure_not_cancelled()
-            committed = ConversationState(
-                self._messages + (user_message, ChatMessage(ChatRole.ASSISTANT, result.output_text)),
-                prepared.summary, prepared.summary_through_message_count,
-                prepared.context_start_message_count, prepared.preferences,
-            )
-            next_input_tokens, _ = _estimate_business(
-                provider, snapshot.registry.definitions if snapshot.registry is not None else (),
-                budget, committed, "", snapshot.system_prompt, committed.summary,
-                committed.preferences, committed.summary_through_message_count,
-                committed.context_start_message_count,
-            )
-            try:
-                self._store.save_state(committed)
-            except SessionStoreError as exc:
-                raise _storage_error(exc) from exc
-            self._messages = committed.messages
-            self._summary = committed.summary
-            self._summary_through = committed.summary_through_message_count
-            self._context_start = committed.context_start_message_count
-            self._preferences = committed.preferences
-            self._last_context = self._context_payload(
-                next_input_tokens, budget_snapshot, scope="committed",
-            )
-            if on_context_event is not None:
-                on_context_event({"type": "context_updated", "request_id": request_id, **self._last_context})
-            return result
+                    on_context_event({"type": "context_updated", "request_id": request_id, **self._last_context})
+                return result
 
     def clear(self) -> None:
         try:

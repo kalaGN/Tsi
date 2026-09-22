@@ -945,7 +945,7 @@ def test_aliyun_maps_failed_free_quota_event_to_actionable_error(monkeypatch):
         asyncio.run(turn.next())
 
     assert captured.value.user_message == (
-        "阿里云模型额度已用尽，请充值或关闭控制台中的“仅使用免费额度”模式。"
+        "模型额度已用尽，请充值或关闭控制台中的“仅使用免费额度”模式。"
     )
     assert captured.value.status_code is None
     assert "response.failed" in (captured.value.raw_response or "")

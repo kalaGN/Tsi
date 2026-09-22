@@ -1,5 +1,6 @@
 import asyncio
 import json
+from pathlib import Path
 
 import httpx
 import pytest
@@ -11,9 +12,12 @@ from app.runtime.chat import ChatErrorCode, ChatRuntimeError, ChatRuntimeInfo
 from app.runtime.model_selection import ModelSelectionService
 from app.runtime.session import ChatExecutionSnapshot, ChatSession
 from app.runtime.session_store import SessionStore
+from app.runtime.system_prompt import load_system_prompt
+from app.services.llm.contracts import ChatRole
 from app.services.llm.contracts import ModelStep, TokenUsage
 from app.webui.router import create_webui_router
 from app.webui.approvals import WebApprovalConflict, WebApprovalNotFound
+from app.webui.projects import DEFAULT_PROJECT_ID, WebProjectCatalog, WebProjectRecord
 from app.webui.service import WebUiBusyError, WebUiService, _runtime_budget_snapshot
 from app.webui.sessions import WebSessionCatalog, WebSessionStoreError
 from app.webui.statistics import WebStatisticsStore, WebStatisticsStoreError
@@ -115,17 +119,23 @@ class WorkspaceWriteTurn:
 
 def create_service(tmp_path, provider=None):
     catalog = WebSessionCatalog(tmp_path / "web-sessions")
+    projects = WebProjectCatalog(tmp_path / "web-projects.json", tmp_path)
     active_provider = provider or WebProvider()
     policy = WorkspacePolicy(tmp_path)
 
     def session_factory(store):
+        def snapshot(_input):
+            project = projects.require(catalog.current.project_id)
+            current_policy = WorkspacePolicy(Path(project.path))
+            return ChatExecutionSnapshot(
+                system_prompt=load_system_prompt(current_policy.root),
+                registry=create_web_intent_workspace_registry(current_policy),
+            )
+
         return ChatSession.load(
             store,
             provider=active_provider,
-            execution_snapshot_provider=lambda _input: ChatExecutionSnapshot(
-                system_prompt=None,
-                registry=create_web_intent_workspace_registry(policy)
-            ),
+            execution_snapshot_provider=snapshot,
         )
 
     return WebUiService(
@@ -138,6 +148,7 @@ def create_service(tmp_path, provider=None):
         tmp_path,
         policy,
         context_window_tokens=1_000,
+        projects=projects,
     )
 
 
@@ -146,6 +157,103 @@ def settings_client(tmp_path):
     application = FastAPI()
     application.include_router(create_webui_router(service))
     return TestClient(application), service
+
+
+def test_project_api_groups_sessions_and_switches_workspace(tmp_path):
+    client, service = settings_client(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    (other / "other.txt").write_text("第二项目", encoding="utf-8")
+    first_session_id = service.catalog.current.id
+
+    created = client.post("/ui/api/projects", json={"name": "第二项目", "path": str(other)})
+    assert created.status_code == 200
+    payload = created.json()
+    project_id = payload["current_project_id"]
+    assert len(payload["projects"]) == 2
+    assert payload["current_session"]["project_id"] == project_id
+    assert payload["workspace_path"] == str(other)
+    assert any(item["path"] == "other.txt" for item in client.get("/ui/api/files").json()["items"])
+
+    previous = client.post(f"/ui/api/sessions/{first_session_id}/select")
+    assert previous.status_code == 200
+    assert previous.json()["workspace_path"] == str(tmp_path)
+    selected = client.post(f"/ui/api/projects/{project_id}/select", json={})
+    assert selected.status_code == 200
+    assert selected.json()["current_session"]["project_id"] == project_id
+
+
+def test_project_path_edit_affects_next_request_and_keeps_history(tmp_path):
+    class RecordingProvider(WebProvider):
+        def __init__(self):
+            super().__init__()
+            self.prompts = []
+
+        def create_turn(self, messages, tools, *, request_id, **budget):
+            self.prompts.append([message.content for message in messages if message.role is ChatRole.SYSTEM])
+            return super().create_turn(messages, tools, request_id=request_id, **budget)
+
+    provider = RecordingProvider()
+    service = create_service(tmp_path, provider)
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    (first / "AGENTS.md").write_text("第一项目规则", encoding="utf-8")
+    (second / "AGENTS.md").write_text("第二项目规则", encoding="utf-8")
+    project_id = service.create_project(name="工作区", path=str(first))["current_project_id"]
+    session_id = service.catalog.current.id
+
+    async def send(text):
+        return [event async for event in service.stream_message(text)]
+
+    assert asyncio.run(send("第一次"))[-1]["type"] == "completed"
+    updated = service.update_project(project_id, name="重命名", path=str(second))
+    assert updated["current_session_id"] == session_id
+    assert any(message["content"] == "第一次" for message in updated["messages"])
+    assert asyncio.run(send("第二次"))[-1]["type"] == "completed"
+    assert provider.prompts == [["第一项目规则"], ["第二项目规则"]]
+    assert updated["workspace_name"] == "重命名"
+
+
+def test_project_api_rejects_cross_origin_invalid_path_busy_and_missing_dir(tmp_path):
+    client, service = settings_client(tmp_path)
+    other = tmp_path / "other"
+    other.mkdir()
+    payload = {"name": "第二项目", "path": str(other)}
+    assert client.post("/ui/api/projects", json=payload, headers={"Origin": "https://example.com"}).status_code == 403
+    assert client.post("/ui/api/projects", json={**payload, "unexpected": True}).status_code == 422
+    broad = client.post("/ui/api/projects", json={**payload, "path": "/"})
+    assert broad.status_code == 422
+    assert "根目录" in broad.json()["detail"]
+    assert client.post("/ui/api/projects", content='{"name":"a","name":"b","path":"/"}', headers={"Content-Type": "application/json"}).status_code == 422
+    asyncio.run(service._request_lock.acquire())
+    try:
+        assert client.post("/ui/api/projects", json=payload).status_code == 409
+    finally:
+        service._request_lock.release()
+    created = client.post("/ui/api/projects", json=payload)
+    project_id = created.json()["current_project_id"]
+    other.rmdir()
+    assert client.get("/ui/api/files").status_code == 422
+    assert client.post(f"/ui/api/projects/{project_id}/select", json={}).status_code == 422
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (outside / "private.txt").write_text("不能越界", encoding="utf-8")
+    other.symlink_to(outside, target_is_directory=True)
+    assert client.get("/ui/api/files").status_code == 422
+    assert client.get("/ui/api/files/preview", params={"path": "private.txt"}).status_code == 404
+    with pytest.raises(ValueError):
+        service._validate_project(WebProjectRecord(DEFAULT_PROJECT_ID, "宽范围", "/"))
+
+
+def test_project_menu_is_present_in_web_page(tmp_path):
+    client, _ = settings_client(tmp_path)
+    page = client.get("/ui").text
+    script = client.get("/ui/app.js").text
+    assert 'id="new-project"' in page
+    assert 'id="project-dialog-path"' in page
+    assert 'project-group-heading' in script
 
 
 def test_context_settings_api_saves_and_resets_scope_with_revision(tmp_path):

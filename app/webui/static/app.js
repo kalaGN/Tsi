@@ -7,9 +7,12 @@ const state = {
   streamNode: null,
   models: [],
   sessions: [],
+  projects: [],
+  currentProjectId: null,
   currentSessionId: null,
   pendingApproval: null,
   sessionDialogResolve: null,
+  projectDialogResolve: null,
   modalReturnFocus: null,
   settingsRoute: null,
   statistics: {
@@ -452,38 +455,89 @@ function requestSessionDialog({ title, message, inputValue = null, confirmLabel,
   return new Promise((resolve) => { state.sessionDialogResolve = resolve; });
 }
 
+function closeProjectDialog(result = null) {
+  const resolve = state.projectDialogResolve;
+  state.projectDialogResolve = null;
+  $("#project-dialog").hidden = true;
+  restoreModalFocus();
+  if (resolve) resolve(result);
+}
+
+function requestProjectDialog(project = null) {
+  rememberModalFocus();
+  $("#project-dialog-title").textContent = project ? "编辑项目" : "新增项目";
+  $("#project-dialog-message").textContent = project
+    ? "修改路径后，该项目已有会话的下一轮请求将使用新目录，旧消息保留。"
+    : "选择本机已有目录；文件工具只在该目录内工作。";
+  $("#project-dialog-name").value = project?.name || "";
+  $("#project-dialog-path").value = project?.path || "";
+  $("#project-dialog").hidden = false;
+  window.requestAnimationFrame(() => $("#project-dialog-name").focus());
+  return new Promise((resolve) => { state.projectDialogResolve = resolve; });
+}
+
 function renderSessions() {
   const list = $("#conversation-list");
   list.replaceChildren();
-  for (const item of state.sessions) {
-    const row = document.createElement("div");
-    row.className = `conversation-item${item.id === state.currentSessionId ? " active" : ""}`;
+  const sessionsByProject = new Map(state.projects.map((project) => [project.id, []]));
+  for (const session of state.sessions) sessionsByProject.get(session.project_id)?.push(session);
+  for (const project of state.projects) {
+    const group = document.createElement("section");
+    group.className = `project-group${project.id === state.currentProjectId ? " active" : ""}`;
+    const heading = document.createElement("div");
+    heading.className = "project-group-heading";
+    const choose = document.createElement("button");
+    choose.type = "button";
+    choose.className = "project-select";
+    choose.disabled = state.busy;
+    choose.title = project.path;
+    choose.append(createIcon("folder"));
+    const label = document.createElement("strong");
+    label.textContent = project.name;
+    choose.append(label);
+    choose.addEventListener("click", () => selectProject(project.id));
+    heading.append(choose, sessionAction(`编辑项目 ${project.name}`, "edit", () => editProject(project)));
+    group.append(heading);
+    const projectSessions = document.createElement("div");
+    projectSessions.className = "project-sessions";
+    for (const item of sessionsByProject.get(project.id)) {
+      const row = document.createElement("div");
+      row.className = `conversation-item${item.id === state.currentSessionId ? " active" : ""}`;
 
-    const select = document.createElement("button");
-    select.type = "button";
-    select.className = "conversation-select";
-    select.disabled = state.busy;
-    select.addEventListener("click", () => selectSession(item.id));
-    const dot = document.createElement("span");
-    dot.className = "status-dot";
-    const copy = document.createElement("span");
-    copy.className = "conversation-copy";
-    const title = document.createElement("strong");
-    title.textContent = item.title;
-    const updated = document.createElement("small");
-    updated.textContent = formatSessionTime(item.updated_at);
-    copy.append(title, updated);
-    select.append(dot, copy);
+      const select = document.createElement("button");
+      select.type = "button";
+      select.className = "conversation-select";
+      select.disabled = state.busy;
+      select.addEventListener("click", () => selectSession(item.id));
+      const dot = document.createElement("span");
+      dot.className = "status-dot";
+      const copy = document.createElement("span");
+      copy.className = "conversation-copy";
+      const title = document.createElement("strong");
+      title.textContent = item.title;
+      const updated = document.createElement("small");
+      updated.textContent = formatSessionTime(item.updated_at);
+      copy.append(title, updated);
+      select.append(dot, copy);
 
-    const actions = document.createElement("span");
-    actions.className = "conversation-actions";
-    actions.append(
-      sessionAction(`重命名 ${item.title}`, "edit", () => renameSession(item)),
-      sessionAction(`清空 ${item.title}`, "clear", () => clearSession(item)),
-      sessionAction(`删除 ${item.title}`, "delete", () => deleteSession(item), { danger: true }),
-    );
-    row.append(select, actions);
-    list.append(row);
+      const actions = document.createElement("span");
+      actions.className = "conversation-actions";
+      actions.append(
+        sessionAction(`重命名 ${item.title}`, "edit", () => renameSession(item)),
+        sessionAction(`清空 ${item.title}`, "clear", () => clearSession(item)),
+        sessionAction(`删除 ${item.title}`, "delete", () => deleteSession(item), { danger: true }),
+      );
+      row.append(select, actions);
+      projectSessions.append(row);
+    }
+    if (!projectSessions.childElementCount) {
+      const empty = document.createElement("span");
+      empty.className = "project-empty";
+      empty.textContent = "暂无会话";
+      projectSessions.append(empty);
+    }
+    group.append(projectSessions);
+    list.append(group);
   }
 }
 
@@ -518,9 +572,21 @@ function renderWelcome() {
 }
 
 function applyConversation(data, { closeSidebar = true } = {}) {
+  const previousProjectId = state.currentProjectId;
+  const previousPath = $("#workspace-path").textContent;
   state.sessions = data.sessions;
+  state.projects = data.projects;
+  state.currentProjectId = data.current_project_id;
   state.currentSessionId = data.current_session_id;
   renderSessions();
+  $("#workspace-name").textContent = data.workspace_name;
+  $("#workspace-path").textContent = data.workspace_path;
+  $("#agents-state").textContent = data.workspace_warning ? "警告" : data.system_prompt_loaded ? "已加载" : "无";
+  if (data.workspace_warning) showToast(data.workspace_warning);
+  if (previousProjectId !== state.currentProjectId || previousPath !== data.workspace_path) {
+    $("#file-preview").hidden = true;
+    loadFiles();
+  }
   $("#session-title").textContent = data.current_session.title;
   $("#context-text").textContent = `上下文 ${data.context_percent}%`;
   $("#usage-text").textContent = "Token：—";
@@ -544,6 +610,39 @@ async function createSession() {
     const response = await api("/sessions", { method: "POST", body: "{}" });
     applyConversation(await response.json());
     prompt.focus();
+  } catch (error) { showToast(error.message); }
+}
+
+async function createProject() {
+  if (state.busy) return;
+  const values = await requestProjectDialog();
+  if (!values) return;
+  try {
+    const response = await api("/projects", { method: "POST", body: JSON.stringify(values) });
+    applyConversation(await response.json());
+    prompt.focus();
+  } catch (error) { showToast(error.message); }
+}
+
+async function selectProject(projectId) {
+  if (state.busy || projectId === state.currentProjectId) return;
+  try {
+    const response = await api(`/projects/${encodeURIComponent(projectId)}/select`, { method: "POST", body: "{}" });
+    applyConversation(await response.json());
+    prompt.focus();
+  } catch (error) { showToast(error.message); }
+}
+
+async function editProject(project) {
+  if (state.busy) return;
+  const values = await requestProjectDialog(project);
+  if (!values || (values.name === project.name && values.path === project.path)) return;
+  try {
+    const response = await api(`/projects/${encodeURIComponent(project.id)}`, {
+      method: "PATCH", body: JSON.stringify(values),
+    });
+    applyConversation(await response.json(), { closeSidebar: false });
+    if (values.path !== project.path) showToast("项目路径已更新；旧消息保留，下一轮请求使用新目录。");
   } catch (error) { showToast(error.message); }
 }
 
@@ -612,6 +711,7 @@ function setBusy(busy) {
   state.busy = busy;
   prompt.disabled = busy;
   $("#new-chat").disabled = busy;
+  $("#new-project").disabled = busy;
   $("#model-select").disabled = busy;
   $("#settings-model-select").disabled = busy;
   contextSettings.setBusy(busy);
@@ -975,17 +1075,13 @@ async function bootstrap() {
   try {
     const response = await api("/bootstrap");
     const data = await response.json();
-    $("#workspace-name").textContent = data.workspace_name;
-    $("#workspace-path").textContent = data.workspace_path;
     $("#workspace-access").textContent = data.capabilities.workspace_write ? "审批写入" : "只读";
-    $("#agents-state").textContent = data.startup_warning ? "警告" : data.system_prompt_loaded ? "已加载" : "无";
     $("#context-text").textContent = `上下文 ${data.context_percent}%`;
     populateModels(data.models, data.runtime);
     applyConversation(data, { closeSidebar: false });
     setConnected(data.runtime.api_key_configured, data.runtime.api_key_configured ? "本地服务已连接" : "API Key 未配置");
     sendButton.disabled = !data.runtime.api_key_configured;
     if (data.startup_warning) showToast(data.startup_warning);
-    await loadFiles();
   } catch (error) {
     setConnected(false, "连接失败");
     sendButton.disabled = true;
@@ -1029,15 +1125,29 @@ $("#session-dialog-form").addEventListener("submit", (event) => {
   }
   closeSessionDialog(title);
 });
+$("#cancel-project-dialog").addEventListener("click", () => closeProjectDialog(null));
+$("#project-dialog").addEventListener("click", (event) => {
+  if (event.target === event.currentTarget) closeProjectDialog(null);
+});
+$("#project-dialog-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const name = $("#project-dialog-name").value.trim();
+  const path = $("#project-dialog-path").value.trim();
+  if (!name || !path) return;
+  closeProjectDialog({ name, path });
+});
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") return;
   if (!$("#session-dialog").hidden) {
     closeSessionDialog(null);
+  } else if (!$("#project-dialog").hidden) {
+    closeProjectDialog(null);
   } else if (!$("#tool-approval-dialog").hidden) {
     submitToolApproval(false);
   }
 });
 $("#new-chat").addEventListener("click", createSession);
+$("#new-project").addEventListener("click", createProject);
 $("#model-select").addEventListener("change", selectModel);
 $("#settings-model-select").addEventListener("change", selectModel);
 $("#toggle-inspector").addEventListener("click", () => $(".app-shell").classList.toggle("inspector-closed"));

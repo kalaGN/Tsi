@@ -41,7 +41,12 @@
         </section>
 
         <section class="nav-section conversation-section">
-          <p class="section-label">会话</p>
+          <div class="project-section-heading">
+            <p class="section-label">项目</p>
+            <button class="icon-button" id="new-project" aria-label="新增项目" title="新增项目">
+              <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14" /></svg>
+            </button>
+          </div>
           <div class="conversation-list" id="conversation-list"></div>
         </section>
 
@@ -348,6 +353,20 @@
         <footer class="session-dialog-actions">
           <button type="button" class="secondary-button" id="cancel-session-dialog">取消</button>
           <button type="submit" class="primary-action-button" id="confirm-session-dialog">确认</button>
+        </footer>
+      </form>
+    </div>
+    <div class="modal-layer" id="project-dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title" hidden>
+      <form class="session-dialog-card" id="project-dialog-form">
+        <header><strong id="project-dialog-title">新增项目</strong></header>
+        <div class="session-dialog-content">
+          <p id="project-dialog-message">设置项目名称和已有的本地目录。</p>
+          <label class="session-dialog-input">项目名称<input id="project-dialog-name" type="text" maxlength="80" autocomplete="off" required /></label>
+          <label class="session-dialog-input">项目路径<input id="project-dialog-path" type="text" maxlength="1024" autocomplete="off" spellcheck="false" placeholder="/Users/you/projects/example" required /></label>
+        </div>
+        <footer class="session-dialog-actions">
+          <button type="button" class="secondary-button" id="cancel-project-dialog">取消</button>
+          <button type="submit" class="primary-action-button">保存</button>
         </footer>
       </form>
     </div>

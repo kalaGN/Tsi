@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from app.observability.model_logging import log_web_statistics_error
-from app.runtime.chat import ChatRuntimeError, ChatRuntimeInfo, get_chat_runtime_info
+from app.runtime.chat import ChatErrorCode, ChatRuntimeError, ChatRuntimeInfo, get_chat_runtime_info
 from app.runtime.context_settings import ContextSettings
 from app.runtime.context_settings_store import ContextSettingsConflict, ContextSettingsStore
 from app.runtime.model_budget import ModelBudgetCatalog
@@ -25,6 +25,7 @@ from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS
 from app.services.llm.contracts import LlmProvider, ModelOption, TokenUsage
 from app.services.llm.factory import resolve_model_options
 from app.webui.approvals import WebApprovalCoordinator
+from app.webui.projects import WebProjectCatalog, WebProjectRecord, normalize_project_path
 from app.webui.sessions import WebSessionCatalog, WebSessionStoreError
 from app.webui.statistics import (
     WebRequestStatistic,
@@ -44,6 +45,7 @@ DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
 DEFAULT_WEB_SESSION_PATH = DATA_ROOT / "web-session.json"
 DEFAULT_WEB_SESSIONS_ROOT = DATA_ROOT / "web-sessions"
 DEFAULT_WEB_STATISTICS_PATH = DATA_ROOT / "web-statistics.json"
+DEFAULT_WEB_PROJECTS_PATH = DATA_ROOT / "web-projects.json"
 SessionFactory = Callable[[SessionStore], ChatSession]
 
 
@@ -69,6 +71,7 @@ class WebUiService:
         startup_warning: str | None = None,
         system_prompt_loaded: bool = False,
         context_settings: ContextSettings | None = None,
+        projects: WebProjectCatalog | None = None,
     ) -> None:
         self.catalog = catalog
         self._session_factory = session_factory
@@ -80,6 +83,7 @@ class WebUiService:
         self.statistics = statistics
         self.workspace = workspace
         self.workspace_policy = workspace_policy
+        self.projects = projects or WebProjectCatalog(workspace / "data" / "web-projects.json", workspace)
         self.context_window_tokens = context_window_tokens
         self.startup_warning = startup_warning
         self.system_prompt_loaded = system_prompt_loaded
@@ -90,6 +94,7 @@ class WebUiService:
         self._active_task: asyncio.Task[None] | None = None
         self._active_request_id: str | None = None
         self._approvals = WebApprovalCoordinator()
+        self._activate_project(self.projects.require(self.catalog.current.project_id), validate=False)
 
     @property
     def session(self) -> ChatSession:
@@ -116,6 +121,10 @@ class WebUiService:
         root = (workspace or Path.cwd()).resolve()
         values = os.environ if environ is None else environ
         policy = WorkspacePolicy(root)
+        projects = WebProjectCatalog(DEFAULT_WEB_PROJECTS_PATH, root)
+        catalog = WebSessionCatalog(DEFAULT_WEB_SESSIONS_ROOT, legacy_path=DEFAULT_WEB_SESSION_PATH)
+        for project_id in catalog.project_ids():
+            projects.require(project_id)
         context_settings = ContextSettings(ModelBudgetCatalog(values), ContextSettingsStore())
         try:
             system_prompt = load_system_prompt(root)
@@ -143,10 +152,19 @@ class WebUiService:
                 warning = warning or exc.user_message
 
         def execution_snapshot(_input_text: str) -> ChatExecutionSnapshot:
+            project = projects.require(catalog.current.project_id)
+            try:
+                active_policy = _project_workspace_policy(project)
+            except (OSError, ValueError) as exc:
+                raise ChatRuntimeError(ChatErrorCode.INVALID_INPUT, "项目路径不可用，请修改项目配置。") from exc
+            try:
+                system_prompt = load_system_prompt(active_policy.root)
+            except SystemPromptLoadError:
+                system_prompt = None
             return ChatExecutionSnapshot(
                 system_prompt=system_prompt,
                 registry=create_web_intent_workspace_registry(
-                    policy,
+                    active_policy,
                     web_search_environ=values,
                 ),
             )
@@ -164,10 +182,7 @@ class WebUiService:
             )
 
         return cls(
-            WebSessionCatalog(
-                DEFAULT_WEB_SESSIONS_ROOT,
-                legacy_path=DEFAULT_WEB_SESSION_PATH,
-            ),
+            catalog,
             session_factory,
             runtime_info,
             options,
@@ -182,6 +197,7 @@ class WebUiService:
             startup_warning=warning,
             system_prompt_loaded=system_prompt is not None,
             context_settings=context_settings,
+            projects=projects,
         )
 
     def context_settings_payload(self) -> dict:
@@ -203,13 +219,10 @@ class WebUiService:
 
         return {
             "project_name": "Tsi 助手",
-            "workspace_name": self.workspace.name or str(self.workspace),
-            "workspace_path": str(self.workspace),
             **self._conversation_payload(),
             "runtime": self._runtime_payload(),
             "models": [self._model_payload(option) for option in self.model_options],
             "startup_warning": self.startup_warning,
-            "system_prompt_loaded": self.system_prompt_loaded,
             "capabilities": {
                 "streaming": True,
                 "web_search": True,
@@ -417,15 +430,79 @@ class WebUiService:
         """创建并选中一个独立空会话。"""
 
         self._require_idle("创建")
-        self.catalog.create()
+        self.catalog.create(self.catalog.current.project_id)
         return self._conversation_payload()
 
     def select_session(self, session_id: str) -> dict[str, object]:
         """切换到已存在的会话并恢复其完整页面状态。"""
 
         self._require_idle("切换")
+        project = self.projects.require(self.catalog.record(session_id).project_id)
+        self._validate_project(project)
         self.catalog.select(session_id)
+        self._activate_project(project)
         return self._conversation_payload()
+
+    def create_project(self, *, name: str, path: str) -> dict[str, object]:
+        """新增项目并为其创建一个空会话，保留原项目所有历史。"""
+
+        self._require_idle("新增")
+        self.catalog.ensure_capacity()
+        project = self.projects.create(name, path)
+        self.catalog.create(project.id)
+        self._activate_project(project)
+        return self._conversation_payload()
+
+    def select_project(self, project_id: str) -> dict[str, object]:
+        """选择项目内最近会话；空项目首次选择时创建会话。"""
+
+        self._require_idle("切换")
+        project = self.projects.require(project_id)
+        self._validate_project(project)
+        recent = self.catalog.latest_in_project(project_id)
+        if recent is None:
+            self.catalog.create(project_id)
+        else:
+            self.catalog.select(recent.id)
+        self._activate_project(project)
+        return self._conversation_payload()
+
+    def update_project(self, project_id: str, *, name: str, path: str) -> dict[str, object]:
+        """路径更改只作用于下一轮请求，不改写历史消息。"""
+
+        self._require_idle("修改")
+        project = self.projects.update(project_id, name=name, path=path)
+        if project.id == self.catalog.current.project_id:
+            self._activate_project(project)
+        return self._conversation_payload()
+
+    def _validate_project(self, project: WebProjectRecord) -> WorkspacePolicy:
+        try:
+            return _project_workspace_policy(project)
+        except (OSError, ValueError) as exc:
+            raise ValueError("项目路径不可用，请修改项目配置。") from exc
+
+    def _activate_project(self, project: WebProjectRecord, *, validate: bool = True) -> None:
+        """切换文件浏览和规则状态；失效项目仅在启动恢复时容忍。"""
+
+        try:
+            policy = self._validate_project(project)
+        except ValueError:
+            if validate:
+                raise
+            self.workspace = Path(project.path)
+            self.workspace_policy = None
+            self.system_prompt_loaded = False
+            self._project_warning = "项目路径不可用，请修改项目配置。"
+            return
+        self.workspace = policy.root
+        self.workspace_policy = policy
+        try:
+            self.system_prompt_loaded = load_system_prompt(policy.root) is not None
+            self._project_warning = None
+        except SystemPromptLoadError:
+            self.system_prompt_loaded = False
+            self._project_warning = "AGENTS.md 无法加载，本项目暂未使用项目规则。"
 
     def rename_session(self, session_id: str, title: str) -> dict[str, object]:
         """重命名指定会话并返回当前页面状态。"""
@@ -440,6 +517,7 @@ class WebUiService:
         self._require_idle("删除")
         self.catalog.delete(session_id)
         self._sessions.pop(session_id, None)
+        self._activate_project(self.projects.require(self.catalog.current.project_id), validate=False)
         return {**self._conversation_payload(), "warning": self.catalog.last_cleanup_warning}
 
     def select_model(self, provider: str, model: str) -> dict[str, object]:
@@ -476,20 +554,28 @@ class WebUiService:
     async def list_files(self) -> dict[str, object]:
         """使用现有 Workspace Policy 返回浅层安全文件树。"""
 
-        return await ListWorkspaceFilesTool(self.workspace_policy).invoke(
+        policy = self._validate_project(self.projects.require(self.catalog.current.project_id))
+        return await ListWorkspaceFilesTool(policy).invoke(
             {"path": ".", "depth": 4, "cursor": 0, "limit": 200}
         )
 
     async def preview_file(self, path: str) -> dict[str, object]:
         """使用现有只读工具预览有界 UTF-8 文本。"""
 
-        return await ReadWorkspaceFileTool(self.workspace_policy).invoke(
+        policy = self._validate_project(self.projects.require(self.catalog.current.project_id))
+        return await ReadWorkspaceFileTool(policy).invoke(
             {"path": path, "start_line": 1, "max_lines": 400}
         )
 
     def _conversation_payload(self) -> dict[str, object]:
         active_session = self.session
         return {
+            "projects": [project.to_payload() for project in self.projects.list_records()],
+            "current_project_id": self.catalog.current.project_id,
+            "workspace_name": self.projects.require(self.catalog.current.project_id).name,
+            "workspace_path": str(self.workspace),
+            "system_prompt_loaded": self.system_prompt_loaded,
+            "workspace_warning": self._project_warning,
             "sessions": self._sessions_payload(),
             "current_session_id": self.catalog.current.id,
             "current_session": self.catalog.current.to_payload(),
@@ -526,7 +612,10 @@ class WebUiService:
         active_session = session or self.session
         if self.runtime_info.provider not in {"deepseek", "aliyun"}:
             return 0.0
-        return active_session.preview_context_snapshot()["percent"]
+        try:
+            return active_session.preview_context_snapshot()["percent"]
+        except ChatRuntimeError:
+            return 0.0
 
 
 def _runtime_budget_snapshot(settings: ContextSettings, provider: LlmProvider) -> RuntimeBudgetSnapshot:
@@ -536,3 +625,12 @@ def _runtime_budget_snapshot(settings: ContextSettings, provider: LlmProvider) -
         ",".join(sorted(set(snapshot.sources.values()))),
         snapshot.warning,
     )
+
+
+def _project_workspace_policy(project: WebProjectRecord) -> WorkspacePolicy:
+    """每次请求重新验证持久化路径，防止目录后来被替换或改为宽范围。"""
+
+    normalized = normalize_project_path(project.path)
+    if normalized != project.path:
+        raise ValueError("project path changed")
+    return WorkspacePolicy(Path(normalized))

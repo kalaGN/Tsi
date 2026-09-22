@@ -18,6 +18,10 @@ GIT_APPROVAL_WARNING_TEXT = (
     "Git 写操作会改变暂存区、本地提交或远程分支。请核对预览；"
     "已创建的提交和已推送的远端状态不会自动回滚。"
 )
+MCP_APPROVAL_WARNING_TEXT = (
+    "外部 MCP Server 会收到这些参数，并可能访问网络、读取或修改本机数据。"
+    "请核对服务器、工具和参数后再执行。"
+)
 
 
 class ToolEffect(str, Enum):
@@ -52,6 +56,7 @@ class ToolErrorCode(str, Enum):
     GIT_NOTHING_TO_PUSH = "git_nothing_to_push"
     GIT_REMOTE_UNSAFE = "git_remote_unsafe"
     GIT_FAILED = "git_failed"
+    MCP_FAILED = "mcp_failed"
 
 
 @dataclass(frozen=True)
@@ -140,11 +145,27 @@ class GitApprovalRequest:
     fingerprint: str
 
 
+@dataclass(frozen=True)
+class McpApprovalRequest:
+    """外部 MCP 工具的逐次执行预览。"""
+
+    call_id: str
+    tool_name: str
+    title: str
+    server_name: str
+    remote_tool_name: str
+    arguments_text: str
+    network_access: bool
+    warning_text: str
+    fingerprint: str
+
+
 AnyToolApprovalRequest = (
     ToolApprovalRequest
     | ScriptApprovalRequest
     | SkillInstallApprovalRequest
     | GitApprovalRequest
+    | McpApprovalRequest
 )
 ToolApprovalHandler = Callable[[AnyToolApprovalRequest], Awaitable[bool]]
 ToolResultHandler = Callable[[ToolCall, ToolResult], None]

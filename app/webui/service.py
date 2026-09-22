@@ -41,6 +41,7 @@ from tools.workspace import (
     WorkspacePolicy,
     create_web_intent_workspace_registry,
 )
+from tools.mcp_client import McpRegistry, load_mcp_config
 
 
 DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
@@ -168,12 +169,26 @@ class WebUiService:
                 system_prompt = load_system_prompt(active_policy.root)
             except SystemPromptLoadError:
                 system_prompt = None
+            registry = create_web_intent_workspace_registry(
+                active_policy,
+                web_search_environ=values,
+            )
+            try:
+                configs = load_mcp_config()
+            except ValueError as exc:
+                raise ChatRuntimeError(ChatErrorCode.CONFIGURATION, "MCP 配置无效，请检查 data/mcp-servers.json。") from exc
+            if configs:
+                registry = McpRegistry(
+                    lambda mcp_tools: create_web_intent_workspace_registry(
+                        active_policy,
+                        web_search_environ=values,
+                        mcp_tools=mcp_tools,
+                    ),
+                    configs,
+                )
             return ChatExecutionSnapshot(
                 system_prompt=compose_system_prompt(system_prompt, personalization_store.current_prompt),
-                registry=create_web_intent_workspace_registry(
-                    active_policy,
-                    web_search_environ=values,
-                ),
+                registry=registry,
             )
 
         def session_factory(store: SessionStore) -> ChatSession:

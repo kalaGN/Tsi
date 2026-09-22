@@ -7,7 +7,7 @@ import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from tools.contracts import AnyToolApprovalRequest, ToolApprovalRequest
+from tools.contracts import AnyToolApprovalRequest, McpApprovalRequest, ToolApprovalRequest
 
 
 class WebApprovalNotFound(Exception):
@@ -46,7 +46,7 @@ class WebApprovalCoordinator:
     ) -> bool:
         """注册一个已经过 Registry 校验的文件审批并等待一次性决定。"""
 
-        if not isinstance(request, ToolApprovalRequest):
+        if not isinstance(request, (ToolApprovalRequest, McpApprovalRequest)):
             raise ValueError("unsupported web approval type")
         if self._pending is not None:
             raise WebApprovalConflict("another approval is pending")
@@ -59,15 +59,16 @@ class WebApprovalCoordinator:
         )
         self._pending = pending
         try:
-            emit(
-                {
-                    "approval_id": pending.approval_id,
-                    "tool": request.tool_name,
-                    "title": request.title,
-                    "paths": list(request.paths),
-                    "diff": request.diff_text,
-                }
-            )
+            payload = {
+                "approval_id": pending.approval_id,
+                "tool": request.tool_name,
+                "title": request.title,
+            }
+            if isinstance(request, McpApprovalRequest):
+                payload.update(paths=[f"Server：{request.server_name} · Tool：{request.remote_tool_name}"], diff=f"{request.warning_text}\n\n参数：\n{request.arguments_text}")
+            else:
+                payload.update(paths=list(request.paths), diff=request.diff_text)
+            emit(payload)
             return await future
         finally:
             if self._pending is pending:

@@ -217,7 +217,7 @@ TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默�
 
 - Web 与 TUI 都只接触统一文本，原始 Provider JSON 只存在于 Provider 调用栈。
 - 所有请求统一通过 Provider Turn，不保留旧 `generate()` 或原始 ProviderResult 路径。
-- `create_default_registry` 注册 `get_current_time(timezone)` 和 `web_search(query, limit)`，当前只作为 Runtime 与评测的默认值；Web 的请求级 Registry 提供 `general`、`web_search`、`workspace_read`、`workspace_write`；TUI 再增加 Skill、安装和 `git_write`，但不包含搜索组。两者均使用显式白名单，不支持反射、动态 import、任意命令或 MCP。
+- `create_default_registry` 注册 `get_current_time(timezone)` 和 `web_search(query, limit)`，当前只作为 Runtime 与评测的默认值；Web 的请求级 Registry 提供 `general`、`web_search`、`workspace_read`、`workspace_write`；TUI 再增加 Skill、安装和 `git_write`，但不包含搜索组。配置 MCP Server 时，两者可在请求开始时发现并冻结 `mcp` 组，外部工具逐次审批。内置工具仍使用显式白名单，不支持反射、动态 import 或模型指定任意命令。
 - Runtime 默认循环预算为 5 步、每步 4 次、总计 16 次；Web/TUI 最多 41 步、每步 4 次、总计 40 次，激活调用计入相同预算。普通参数/结果上限为 8/32 KiB，编辑参数为 64 KiB。
 - 写 Tool 必须先生成完整有界 Diff；Registry 没有审批回调、用户拒绝或内容并发变化时均不会执行。Web 决策只接受当前请求的随机审批 ID，取消、断流和结束都会使其失效。
 - Workspace 拒绝越界、符号链接、保护路径、二进制和超限文件；编辑只支持 create/replace。唯一删除入口 `delete_workspace_file` 仅处理一个经当前哈希确认、逐次审批且可撤销的文本文件；固定检查不接受额外 argv、cwd 或环境。

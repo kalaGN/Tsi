@@ -11,6 +11,8 @@ from tools.contracts import (
     ApprovalTool,
     GIT_APPROVAL_WARNING_TEXT,
     GitApprovalRequest,
+    McpApprovalRequest,
+    MCP_APPROVAL_WARNING_TEXT,
     SCRIPT_APPROVAL_WARNING_TEXT,
     SKILL_INSTALL_APPROVAL_WARNING_TEXT,
     ScriptApprovalRequest,
@@ -65,6 +67,7 @@ _SAFE_ERROR_MESSAGES = {
     "git_nothing_to_push": "Current branch has no commits to push",
     "git_remote_unsafe": "Configured Git remote is not allowed",
     "git_failed": "Git operation failed",
+    "mcp_failed": "MCP server call failed",
 }
 
 
@@ -188,7 +191,7 @@ class ToolRegistry:
         if context is None or context.approval_handler is None:
             return tool_error_result(call.call_id, "approval_unavailable")
         if (
-            isinstance(request, ToolApprovalRequest)
+            isinstance(request, (ToolApprovalRequest, McpApprovalRequest))
             and request.fingerprint in context.denied_fingerprints
         ):
             return tool_error_result(call.call_id, "approval_denied")
@@ -198,7 +201,7 @@ class ToolRegistry:
         except Exception:
             return tool_error_result(call.call_id, "approval_unavailable")
         if approved is not True:
-            if approved is False and isinstance(request, ToolApprovalRequest):
+            if approved is False and isinstance(request, (ToolApprovalRequest, McpApprovalRequest)):
                 context.denied_fingerprints.add(request.fingerprint)
             if approved is False:
                 return tool_error_result(call.call_id, "approval_denied")
@@ -259,6 +262,20 @@ def _valid_approval_request(
         return _valid_skill_install_approval_request(request, call)
     if isinstance(request, GitApprovalRequest):
         return _valid_git_approval_request(request, call)
+    if isinstance(request, McpApprovalRequest):
+        return (
+            request.call_id == call.call_id
+            and request.tool_name == call.name
+            and isinstance(request.title, str) and 0 < len(request.title) <= 1024
+            and isinstance(request.server_name, str) and bool(request.server_name)
+            and isinstance(request.remote_tool_name, str) and bool(request.remote_tool_name)
+            and isinstance(request.arguments_text, str)
+            and len(request.arguments_text.encode("utf-8")) <= MAX_APPROVAL_DIFF_BYTES
+            and type(request.network_access) is bool
+            and request.warning_text == MCP_APPROVAL_WARNING_TEXT
+            and isinstance(request.fingerprint, str)
+            and bool(_FINGERPRINT_PATTERN.fullmatch(request.fingerprint))
+        )
     if not isinstance(request, ToolApprovalRequest):
         return False
     if request.call_id != call.call_id or request.tool_name != call.name:

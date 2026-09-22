@@ -15,6 +15,7 @@ const state = {
   projectDialogResolve: null,
   modalReturnFocus: null,
   settingsRoute: null,
+  personalization: { data: null, draft: "", loading: false, saving: false, message: "" },
   statistics: {
     data: null,
     loading: false,
@@ -30,8 +31,8 @@ const state = {
 
 const PREFERENCES_KEY = "tsi-web-preferences";
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
-const SETTINGS_ROUTES = new Set(["general", "model", "context", "statistics"]);
-const SETTINGS_TITLES = { general: "通用", model: "模型", context: "上下文", statistics: "统计" };
+const SETTINGS_ROUTES = new Set(["general", "model", "context", "personalization", "statistics"]);
+const SETTINGS_TITLES = { general: "通用", model: "模型", context: "上下文", personalization: "个性化", statistics: "统计" };
 const STATISTIC_METRICS = {
   requests: { label: "请求数", unit: "次" },
   total_tokens: { label: "Token", unit: "" },
@@ -84,7 +85,7 @@ async function api(path, options = {}) {
 
 function currentRoute() {
   const hash = window.location.hash || "#/chat";
-  const match = hash.match(/^#\/settings\/(general|model|context|statistics)$/);
+  const match = hash.match(/^#\/settings\/(general|model|context|personalization|statistics)$/);
   if (match) return { page: "settings", section: match[1] };
   if (hash === "#/chat" || hash === "") return { page: "chat", section: null };
   window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#/chat`);
@@ -115,6 +116,68 @@ function renderRoute() {
   });
   if (route.section === "statistics" && previous !== "statistics") loadStatistics();
   if (["model", "context"].includes(route.section)) contextSettings.load();
+  if (route.section === "personalization" && previous !== "personalization") loadPersonalization();
+}
+
+function renderPersonalization() {
+  const current = state.personalization;
+  const field = $("#personalization-prompt");
+  if (field.value !== current.draft) field.value = current.draft;
+  const dirty = current.data && current.draft !== current.data.prompt;
+  const bytes = new TextEncoder().encode(current.draft).length;
+  $("#personalization-status").textContent = current.loading ? "正在加载…" : current.saving ? "正在保存…" : current.message || `${bytes} / 16384 字节${dirty ? " · 尚未保存" : ""}`;
+  field.disabled = current.loading || current.saving || !current.data;
+  $("#personalization-save").disabled = !dirty || current.loading || current.saving || bytes > 16384;
+  $("#personalization-clear").disabled = current.loading || current.saving || !current.draft;
+  $("#personalization-reload").disabled = current.loading || current.saving;
+}
+
+async function loadPersonalization(force = false) {
+  const current = state.personalization;
+  // 切换设置菜单时保留未保存草稿；显式重新加载才放弃草稿。
+  if (!force && current.data && current.draft !== current.data.prompt) return;
+  current.loading = true;
+  current.message = "";
+  renderPersonalization();
+  try {
+    const data = await (await api("/personalization")).json();
+    current.data = data;
+    current.draft = data.prompt;
+  } catch (error) {
+    current.message = error.message;
+  } finally {
+    current.loading = false;
+    renderPersonalization();
+  }
+}
+
+async function savePersonalization(event) {
+  event.preventDefault();
+  const current = state.personalization;
+  if (!current.data || current.saving) return;
+  const bytes = new TextEncoder().encode(current.draft).length;
+  if (bytes > 16384) {
+    current.message = "提示词不能超过 16 KiB。";
+    renderPersonalization();
+    return;
+  }
+  current.saving = true;
+  current.message = "";
+  renderPersonalization();
+  try {
+    const data = await (await api("/personalization", {
+      method: "PUT",
+      body: JSON.stringify({ expected_revision: current.data.revision, prompt: current.draft }),
+    })).json();
+    current.data = data;
+    current.draft = data.prompt;
+    current.message = "已保存，下一次发送消息时生效。";
+  } catch (error) {
+    current.message = error.message;
+  } finally {
+    current.saving = false;
+    renderPersonalization();
+  }
 }
 
 function finiteNumber(value) {
@@ -1174,6 +1237,19 @@ $("#reset-settings").addEventListener("click", () => {
   applyPreferences();
   showToast("已恢复默认设置");
 });
+$("#personalization-prompt").addEventListener("input", (event) => {
+  state.personalization.draft = event.target.value;
+  state.personalization.message = "";
+  renderPersonalization();
+});
+$("#personalization-form").addEventListener("submit", savePersonalization);
+$("#personalization-clear").addEventListener("click", () => {
+  state.personalization.draft = "";
+  state.personalization.message = "";
+  renderPersonalization();
+  $("#personalization-prompt").focus();
+});
+$("#personalization-reload").addEventListener("click", () => loadPersonalization(true));
 $("#retry-statistics").addEventListener("click", loadStatistics);
 document.querySelectorAll("[data-stat-range]").forEach((button) => {
   button.addEventListener("click", () => {

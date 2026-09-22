@@ -250,6 +250,9 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .setting-control select:focus { border-color: var(--accent); }
 .settings-reset { justify-self: start; }
 .settings-note { margin: 0; color: var(--muted); font-size: 12px; }
+.settings-card textarea { width: 100%; min-height: 210px; padding: 12px; resize: vertical; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); color: var(--text); line-height: 1.6; }
+.settings-card textarea:focus { border-color: var(--accent); }
+.personalization-status { margin: 0; color: var(--muted); font-size: 12px; }
 
 .statistics-state { padding: 28px; border: 1px dashed var(--border-strong); border-radius: 14px; color: var(--muted); text-align: center; }
 .statistics-cards { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }

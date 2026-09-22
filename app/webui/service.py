@@ -13,14 +13,15 @@ from typing import Literal
 from app.observability.model_logging import log_web_statistics_error
 from app.runtime.chat import ChatErrorCode, ChatRuntimeError, ChatRuntimeInfo, get_chat_runtime_info
 from app.runtime.context_settings import ContextSettings
-from app.runtime.context_settings_store import ContextSettingsConflict, ContextSettingsStore
+from app.runtime.context_settings_store import ContextSettingsConflict, ContextSettingsError, ContextSettingsStore
 from app.runtime.model_budget import ModelBudgetCatalog
 from app.runtime.model_selection import ModelSelectionError, ModelSelectionService
 from app.runtime.model_selection_store import ModelSelectionStore
+from app.runtime.personalization_store import PersonalizationError, PersonalizationStore
 from app.runtime.session import ChatExecutionSnapshot, ChatSession, RuntimeBudgetSnapshot
 from app.runtime.session_store import SessionStore
 from app.runtime.workspace_changes import AppliedChangeTracker
-from app.runtime.system_prompt import SystemPromptLoadError, load_system_prompt
+from app.runtime.system_prompt import SystemPromptLoadError, compose_system_prompt, load_system_prompt
 from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS
 from app.services.llm.contracts import LlmProvider, ModelOption, TokenUsage
 from app.services.llm.factory import resolve_model_options
@@ -71,6 +72,7 @@ class WebUiService:
         startup_warning: str | None = None,
         system_prompt_loaded: bool = False,
         context_settings: ContextSettings | None = None,
+        personalization_store: PersonalizationStore | None = None,
         projects: WebProjectCatalog | None = None,
     ) -> None:
         self.catalog = catalog
@@ -89,6 +91,9 @@ class WebUiService:
         self.system_prompt_loaded = system_prompt_loaded
         self.context_settings = context_settings or ContextSettings(
             ModelBudgetCatalog({}), ContextSettingsStore(workspace / "data" / "context-settings.json"),
+        )
+        self.personalization_store = personalization_store or PersonalizationStore(
+            workspace / "data" / "personalization.json",
         )
         self._request_lock = asyncio.Lock()
         self._active_task: asyncio.Task[None] | None = None
@@ -126,12 +131,13 @@ class WebUiService:
         for project_id in catalog.project_ids():
             projects.require(project_id)
         context_settings = ContextSettings(ModelBudgetCatalog(values), ContextSettingsStore())
+        startup_warning = None
+
+        personalization_store = PersonalizationStore()
         try:
-            system_prompt = load_system_prompt(root)
-            startup_warning = None
-        except SystemPromptLoadError:
-            system_prompt = None
-            startup_warning = "AGENTS.md 无法加载，Web 会话未使用项目规则。"
+            personalization_store.load()
+        except PersonalizationError:
+            startup_warning = startup_warning or "个性化设置无法加载，Web 会话暂未使用自定义提示词。"
 
         options = resolve_model_options(values)
         selection = ModelSelectionService(options, ModelSelectionStore())
@@ -162,7 +168,7 @@ class WebUiService:
             except SystemPromptLoadError:
                 system_prompt = None
             return ChatExecutionSnapshot(
-                system_prompt=system_prompt,
+                system_prompt=compose_system_prompt(system_prompt, personalization_store.current_prompt),
                 registry=create_web_intent_workspace_registry(
                     active_policy,
                     web_search_environ=values,
@@ -195,10 +201,21 @@ class WebUiService:
                 if runtime_info.provider in {"deepseek", "aliyun"} else 128_000
             ),
             startup_warning=warning,
-            system_prompt_loaded=system_prompt is not None,
+            system_prompt_loaded=False,
             context_settings=context_settings,
+            personalization_store=personalization_store,
             projects=projects,
         )
+
+    def personalization_payload(self) -> dict[str, object]:
+        """显式读取最新个性化设置，供页面发现其他标签页的变更。"""
+
+        return self.personalization_store.load()
+
+    def save_personalization(self, *, expected_revision: int, prompt: str) -> dict[str, object]:
+        """保存后仅影响下一次模型请求的执行快照。"""
+
+        return self.personalization_store.save(expected_revision=expected_revision, prompt=prompt)
 
     def context_settings_payload(self) -> dict:
         return self.context_settings.payload(self.runtime_info.provider, self.runtime_info.model)

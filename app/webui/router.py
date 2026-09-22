@@ -15,6 +15,11 @@ from app.runtime.chat import ChatRuntimeError
 from app.runtime.context_settings_store import ContextSettingsConflict, ContextSettingsError
 from app.runtime.model_budget import strict_json
 from app.runtime.model_selection import ModelSelectionError
+from app.runtime.personalization_store import (
+    MAX_PERSONAL_PROMPT_BYTES,
+    PersonalizationConflict,
+    PersonalizationError,
+)
 from app.webui.approvals import WebApprovalConflict, WebApprovalNotFound
 from app.webui.projects import WebProjectError, WebProjectNotFound
 from app.webui.service import WebUiBusyError, WebUiService
@@ -139,6 +144,44 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
         try:
             return current_service().context_settings_payload()
         except ContextSettingsError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @router.get("/ui/api/personalization")
+    async def personalization(request: Request):
+        """读取本机 Web 会话共用的自定义系统提示词。"""
+
+        _require_loopback(request)
+        try:
+            return current_service().personalization_payload()
+        except PersonalizationError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @router.put("/ui/api/personalization")
+    async def save_personalization(request: Request):
+        """严格校验正文与来源，避免覆盖其他标签页的修改。"""
+
+        _require_loopback(request)
+        _require_same_origin_json(request)
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 20 * 1024:
+                raise HTTPException(status_code=422, detail="个性化设置请求过大。")
+            raw.extend(chunk)
+        try:
+            payload = strict_json(raw.decode("utf-8"))
+            if not isinstance(payload, dict) or set(payload) != {"expected_revision", "prompt"}:
+                raise ValueError("个性化设置字段无效。")
+            revision, prompt = payload["expected_revision"], payload["prompt"]
+            if type(revision) is not int or revision < 0 or not isinstance(prompt, str):
+                raise ValueError("个性化设置值无效。")
+            if len(prompt.encode("utf-8")) > MAX_PERSONAL_PROMPT_BYTES:
+                raise ValueError("自定义系统提示词过长。")
+            return current_service().save_personalization(expected_revision=revision, prompt=prompt)
+        except (UnicodeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail="个性化设置无效，请检查内容长度。") from exc
+        except PersonalizationConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except PersonalizationError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     @router.put("/ui/api/context-settings")

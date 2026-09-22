@@ -178,6 +178,10 @@
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM8 9h8M8 13h5M8 16h3" /></svg>
             <span>上下文</span>
           </button>
+          <button type="button" data-settings-route="personalization">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 20h16M6 16l10-10 3 3-10 10H6zM14 8l3 3" /></svg>
+            <span>个性化</span>
+          </button>
           <button type="button" data-settings-route="statistics">
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 19V9M10 19V5M16 19v-7M22 19V3" /></svg>
             <span>统计</span>
@@ -247,6 +251,26 @@
               <p>控制何时整理历史以及保留多少轮原文。适用于本项目全部 Web 会话和 TUI。</p>
             </div>
             <div class="settings-card budget-card" data-budget-form="compaction"></div>
+          </section>
+
+          <section class="settings-panel" id="settings-personalization-panel" data-settings-panel="personalization" hidden>
+            <div class="settings-panel-copy">
+              <h2>自定义系统提示词</h2>
+              <p>用于后续所有 Web 会话，追加在当前工作区的 AGENTS.md 之后；留空则关闭。</p>
+            </div>
+            <form class="settings-card" id="personalization-form">
+              <label class="setting-control" for="personalization-prompt">
+                <span>提示词内容</span>
+                <textarea id="personalization-prompt" rows="12" placeholder="例如：回答时优先使用中文，解释关键设计取舍。" spellcheck="false"></textarea>
+              </label>
+              <p class="settings-note">内容保存在本机，会发送给当前模型服务，也可能记录在本机模型请求日志中。请勿填写密钥。</p>
+              <p class="personalization-status" id="personalization-status" role="status">正在加载…</p>
+              <div class="budget-actions">
+                <button type="button" class="secondary-button" id="personalization-clear">清空文本</button>
+                <button type="button" class="secondary-button" id="personalization-reload">重新加载</button>
+                <button type="submit" class="primary-action-button" id="personalization-save">保存</button>
+              </div>
+            </form>
           </section>
 
           <section class="settings-panel statistics-panel" id="settings-statistics-panel" data-settings-panel="statistics" hidden>

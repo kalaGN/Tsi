@@ -10,9 +10,10 @@ from fastapi.testclient import TestClient
 
 from app.runtime.chat import ChatErrorCode, ChatRuntimeError, ChatRuntimeInfo
 from app.runtime.model_selection import ModelSelectionService
+from app.runtime.personalization_store import PersonalizationStore
 from app.runtime.session import ChatExecutionSnapshot, ChatSession
 from app.runtime.session_store import SessionStore
-from app.runtime.system_prompt import load_system_prompt
+from app.runtime.system_prompt import compose_system_prompt, load_system_prompt
 from app.services.llm.contracts import ChatRole
 from app.services.llm.contracts import ModelStep, TokenUsage
 from app.webui.router import create_webui_router
@@ -254,6 +255,49 @@ def test_project_menu_is_present_in_web_page(tmp_path):
     assert 'id="new-project"' in page
     assert 'id="project-dialog-path"' in page
     assert 'project-group-heading' in script
+
+
+def test_personalization_api_is_versioned_and_same_origin(tmp_path):
+    client, service = settings_client(tmp_path)
+    page = client.get("/ui").text
+    script = client.get("/ui/app.js").text
+    assert 'data-settings-route="personalization"' in page
+    assert 'id="personalization-prompt"' in page
+    assert 'personalization-form").addEventListener("submit", savePersonalization)' in script
+
+    initial = client.get("/ui/api/personalization").json()
+    assert initial == {"version": 1, "revision": 0, "prompt": ""}
+    payload = {"expected_revision": 0, "prompt": "始终用中文回答。"}
+    assert client.put("/ui/api/personalization", json=payload, headers={"Origin": "https://example.com"}).status_code == 403
+    saved = client.put("/ui/api/personalization", json=payload)
+    assert saved.status_code == 200
+    assert saved.json()["revision"] == 1
+    assert service.personalization_store.current_prompt == payload["prompt"]
+    assert client.put("/ui/api/personalization", json=payload).status_code == 409
+    assert client.put("/ui/api/personalization", json={**payload, "extra": True}).status_code == 422
+    assert client.put("/ui/api/personalization", json={"expected_revision": 1, "prompt": "中" * 6000}).status_code == 422
+    assert PersonalizationStore(tmp_path / "data" / "personalization.json").load()["prompt"] == payload["prompt"]
+
+
+def test_personalization_save_only_changes_following_snapshots(tmp_path):
+    client, service = settings_client(tmp_path)
+    (tmp_path / "AGENTS.md").write_text("项目规则", encoding="utf-8")
+
+    # 测试装配与生产代码一样，在每轮请求开始时读取项目规则和当前个性化快照。
+    service.session._execution_snapshot_provider = lambda _input: ChatExecutionSnapshot(
+        system_prompt=compose_system_prompt(
+            load_system_prompt(tmp_path), service.personalization_store.current_prompt,
+        ),
+        registry=None,
+    )
+    first = service.session._execution_snapshot_provider("")
+    assert first.system_prompt == "项目规则"
+    client.put("/ui/api/personalization", json={"expected_revision": 0, "prompt": "个人偏好"})
+    second = service.session._execution_snapshot_provider("")
+    assert first.system_prompt == "项目规则"
+    assert second.system_prompt == "项目规则\n\n---\n\n个人偏好"
+    client.put("/ui/api/personalization", json={"expected_revision": 1, "prompt": ""})
+    assert service.session._execution_snapshot_provider("").system_prompt == "项目规则"
 
 
 def test_context_settings_api_saves_and_resets_scope_with_revision(tmp_path):

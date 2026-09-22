@@ -12,9 +12,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from app.runtime.session_store import SessionStore, SessionStoreError
+from app.webui.projects import DEFAULT_PROJECT_ID
 
 
-INDEX_VERSION = 1
+INDEX_VERSION = 2
 MAX_SESSIONS = 1_000
 MAX_VISIBLE_SESSIONS = 50
 MAX_TITLE_LENGTH = 80
@@ -38,6 +39,7 @@ class WebSessionRecord:
     created_at: str
     updated_at: str
     auto_title: bool
+    project_id: str = DEFAULT_PROJECT_ID
 
     def to_payload(self) -> dict[str, object]:
         return {
@@ -45,6 +47,7 @@ class WebSessionRecord:
             "title": self.title,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "project_id": self.project_id,
         }
 
 
@@ -58,6 +61,7 @@ class WebSessionCatalog:
         legacy_path: Path | None = None,
         id_factory: Callable[[], str] | None = None,
         now: Callable[[], datetime] | None = None,
+        default_project_id: str = DEFAULT_PROJECT_ID,
     ) -> None:
         self.root = Path(root)
         self.index_path = self.root / "index.json"
@@ -65,6 +69,9 @@ class WebSessionCatalog:
         self.legacy_path = Path(legacy_path) if legacy_path is not None else None
         self._id_factory = id_factory or (lambda: uuid.uuid4().hex)
         self._now = now or (lambda: datetime.now(timezone.utc))
+        if not _is_session_id(default_project_id):
+            raise ValueError("invalid default project id")
+        self.default_project_id = default_project_id
         self._records: tuple[WebSessionRecord, ...] = ()
         self._current_id = ""
         self.last_cleanup_warning: str | None = None
@@ -82,10 +89,31 @@ class WebSessionCatalog:
             key=lambda item: (item.updated_at, item.created_at, item.id),
             reverse=True,
         )
-        visible = ordered[:MAX_VISIBLE_SESSIONS]
+        counts: dict[str, int] = {}
+        visible = []
+        for item in ordered:
+            if counts.get(item.project_id, 0) >= MAX_VISIBLE_SESSIONS:
+                continue
+            visible.append(item)
+            counts[item.project_id] = counts.get(item.project_id, 0) + 1
         if all(item.id != self._current_id for item in visible):
-            visible = [self.current, *visible[: MAX_VISIBLE_SESSIONS - 1]]
+            for index in range(len(visible) - 1, -1, -1):
+                if visible[index].project_id == self.current.project_id:
+                    visible.pop(index)
+                    break
+            visible = [self.current, *visible]
         return tuple(visible)
+
+    def latest_in_project(self, project_id: str) -> WebSessionRecord | None:
+        """返回项目内最近使用的会话；空项目由调用方决定是否创建。"""
+
+        records = (item for item in self._records if item.project_id == project_id)
+        return max(records, key=lambda item: (item.updated_at, item.created_at, item.id), default=None)
+
+    def project_ids(self) -> frozenset[str]:
+        """检查全部会话的项目引用，不受侧栏可见数量截断。"""
+
+        return frozenset(item.project_id for item in self._records)
 
     def session_store(self, session_id: str) -> SessionStore:
         """只为索引内的安全 ID 创建内容 Store。"""
@@ -93,14 +121,24 @@ class WebSessionCatalog:
         record = self._record(session_id)
         return SessionStore(self.sessions_path / f"{record.id}.json")
 
-    def create(self) -> WebSessionRecord:
+    def record(self, session_id: str) -> WebSessionRecord:
+        """读取会话归属，供跨项目切换前校验 Workspace。"""
+
+        return self._record(session_id)
+
+    def create(self, project_id: str | None = None) -> WebSessionRecord:
         """创建新元数据并原子切换当前会话。"""
+
+        self.ensure_capacity()
+        record = self._new_record(DEFAULT_TITLE, auto_title=True, project_id=project_id)
+        self._save(self._records + (record,), record.id)
+        return record
+
+    def ensure_capacity(self) -> None:
+        """跨索引操作前先检查会话上限，避免制造不可选中的新项目。"""
 
         if len(self._records) >= MAX_SESSIONS:
             raise WebSessionStoreError("Web session limit reached")
-        record = self._new_record(DEFAULT_TITLE, auto_title=True)
-        self._save(self._records + (record,), record.id)
-        return record
 
     def select(self, session_id: str) -> WebSessionRecord:
         """持久化当前会话选择。"""
@@ -160,12 +198,13 @@ class WebSessionCatalog:
             raise WebSessionStoreError("Unable to delete conversation backup") from exc
         remaining = tuple(item for item in self._records if item.id != target.id)
         if not remaining:
-            replacement = self._new_record(DEFAULT_TITLE, auto_title=True)
+            replacement = self._new_record(DEFAULT_TITLE, auto_title=True, project_id=target.project_id)
             remaining = (replacement,)
             current_id = replacement.id
         elif target.id == self._current_id:
+            same_project = tuple(item for item in remaining if item.project_id == target.project_id)
             current_id = max(
-                remaining,
+                same_project or remaining,
                 key=lambda item: (item.updated_at, item.created_at, item.id),
             ).id
         else:
@@ -191,11 +230,39 @@ class WebSessionCatalog:
     def _load_index(self) -> None:
         try:
             payload = json.loads(self.index_path.read_text(encoding="utf-8"))
-            records, current_id = _decode_index(payload)
+            records, current_id = _decode_index(payload, self.default_project_id)
         except (OSError, UnicodeError, json.JSONDecodeError, ValueError) as exc:
             raise WebSessionStoreError("Unable to load web session index") from exc
-        self._records = records
-        self._current_id = current_id
+        if payload["version"] == 1:
+            self._backup_legacy_index()
+            self._save(records, current_id)
+        else:
+            self._records = records
+            self._current_id = current_id
+
+    def _backup_legacy_index(self) -> None:
+        """首次迁移时保留原始 v1 索引，正文文件保持原位。"""
+
+        backup = self.root / "index.v1.json"
+        if backup.is_symlink():
+            raise WebSessionStoreError("Unable to back up web session index")
+        if backup.exists():
+            return
+        temporary: Path | None = None
+        try:
+            descriptor, name = tempfile.mkstemp(dir=self.root, prefix=".index-v1.", suffix=".tmp")
+            temporary = Path(name)
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(self.index_path.read_bytes())
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.chmod(temporary, 0o600)
+            os.replace(temporary, backup)
+        except OSError as exc:
+            raise WebSessionStoreError("Unable to back up web session index") from exc
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def _migrate_legacy(self) -> None:
         assert self.legacy_path is not None
@@ -273,7 +340,7 @@ class WebSessionCatalog:
             raise WebSessionNotFound("Web session not found")
         return record
 
-    def _new_record(self, title: str, *, auto_title: bool) -> WebSessionRecord:
+    def _new_record(self, title: str, *, auto_title: bool, project_id: str | None = None) -> WebSessionRecord:
         existing = {item.id for item in self._records}
         for _ in range(10):
             session_id = self._id_factory()
@@ -285,6 +352,7 @@ class WebSessionCatalog:
                     timestamp,
                     timestamp,
                     auto_title,
+                    project_id or self.default_project_id,
                 )
         raise WebSessionStoreError("Unable to allocate web session id")
 
@@ -295,8 +363,8 @@ class WebSessionCatalog:
         return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _decode_index(payload: object) -> tuple[tuple[WebSessionRecord, ...], str]:
-    if not isinstance(payload, dict) or payload.get("version") != INDEX_VERSION:
+def _decode_index(payload: object, default_project_id: str = DEFAULT_PROJECT_ID) -> tuple[tuple[WebSessionRecord, ...], str]:
+    if not isinstance(payload, dict) or payload.get("version") not in {1, INDEX_VERSION}:
         raise ValueError("unsupported web session index")
     raw_records = payload.get("sessions")
     current_id = payload.get("current_session_id")
@@ -307,14 +375,14 @@ def _decode_index(payload: object) -> tuple[tuple[WebSessionRecord, ...], str]:
         or not _is_session_id(current_id)
     ):
         raise ValueError("invalid web session index")
-    records = tuple(_decode_record(item) for item in raw_records)
+    records = tuple(_decode_record(item, payload["version"], default_project_id) for item in raw_records)
     ids = {item.id for item in records}
     if len(ids) != len(records) or current_id not in ids:
         raise ValueError("invalid web session references")
     return records, current_id
 
 
-def _decode_record(payload: object) -> WebSessionRecord:
+def _decode_record(payload: object, version: int, default_project_id: str) -> WebSessionRecord:
     if not isinstance(payload, dict):
         raise ValueError("invalid web session record")
     session_id = payload.get("id")
@@ -322,11 +390,13 @@ def _decode_record(payload: object) -> WebSessionRecord:
     created_at = payload.get("created_at")
     updated_at = payload.get("updated_at")
     auto_title = payload.get("auto_title")
+    project_id = payload.get("project_id", default_project_id) if version == 1 else payload.get("project_id")
     if (
         not _is_session_id(session_id)
         or type(auto_title) is not bool
         or not _is_timestamp(created_at)
         or not _is_timestamp(updated_at)
+        or not _is_session_id(project_id)
     ):
         raise ValueError("invalid web session record")
     return WebSessionRecord(
@@ -335,6 +405,7 @@ def _decode_record(payload: object) -> WebSessionRecord:
         created_at,
         updated_at,
         auto_title,
+        project_id,
     )
 
 

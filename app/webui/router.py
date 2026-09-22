@@ -16,6 +16,7 @@ from app.runtime.context_settings_store import ContextSettingsConflict, ContextS
 from app.runtime.model_budget import strict_json
 from app.runtime.model_selection import ModelSelectionError
 from app.webui.approvals import WebApprovalConflict, WebApprovalNotFound
+from app.webui.projects import WebProjectError, WebProjectNotFound
 from app.webui.service import WebUiBusyError, WebUiService
 from app.webui.sessions import WebSessionNotFound, WebSessionStoreError
 from tools import ToolArgumentError
@@ -80,6 +81,8 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
                 ChatRuntimeError,
                 ContextSettingsError,
                 WebSessionStoreError,
+                WebProjectError,
+                WebProjectNotFound,
             ) as exc:
                 raise HTTPException(
                     status_code=503,
@@ -223,6 +226,26 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
         _require_loopback(request)
         return _run_session_action(current_service().create_session)
 
+    @router.post("/ui/api/projects")
+    async def create_project(request: Request):
+        _require_loopback(request)
+        _require_same_origin_json(request)
+        payload = await _project_request(request)
+        return _run_session_action(current_service().create_project, project_action=True, **payload)
+
+    @router.patch("/ui/api/projects/{project_id}")
+    async def update_project(request: Request, project_id: str):
+        _require_loopback(request)
+        _require_same_origin_json(request)
+        payload = await _project_request(request)
+        return _run_session_action(current_service().update_project, project_id, project_action=True, **payload)
+
+    @router.post("/ui/api/projects/{project_id}/select")
+    async def select_project(request: Request, project_id: str):
+        _require_loopback(request)
+        _require_same_origin_json(request)
+        return _run_session_action(current_service().select_project, project_id, project_action=True)
+
     @router.post("/ui/api/sessions/{session_id}/select")
     async def select_session(request: Request, session_id: str):
         _require_loopback(request)
@@ -261,7 +284,7 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
         _require_loopback(request)
         try:
             return await current_service().list_files()
-        except ToolArgumentError as exc:
+        except (ToolArgumentError, ValueError) as exc:
             raise HTTPException(status_code=422, detail="工作区文件不可用。") from exc
 
     @router.get("/ui/api/files/preview")
@@ -269,7 +292,7 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
         _require_loopback(request)
         try:
             return await current_service().preview_file(path)
-        except ToolArgumentError as exc:
+        except (ToolArgumentError, ValueError) as exc:
             raise HTTPException(status_code=404, detail="文件不可读取。") from exc
 
     return router
@@ -293,7 +316,7 @@ def _require_same_origin_json(request: Request) -> None:
     """本机地址不等于同源；浏览器跨站写入和不透明 Origin 一律拒绝。"""
 
     if request.headers.get("content-type", "").split(";", 1)[0].strip().lower() != "application/json":
-        raise HTTPException(status_code=422, detail="上下文设置只接受 JSON。")
+        raise HTTPException(status_code=422, detail="设置只接受 JSON。")
     site = request.headers.get("sec-fetch-site")
     if site is not None and site not in {"same-origin", "none"}:
         raise HTTPException(status_code=403, detail="不允许跨站修改设置。")
@@ -313,16 +336,38 @@ def _require_same_origin_json(request: Request) -> None:
         raise HTTPException(status_code=403, detail="不允许跨站修改设置。")
 
 
-def _run_session_action(action, *args):
+async def _project_request(request: Request) -> dict[str, str]:
+    """限制项目配置请求大小和字段，不让浏览器提交任意路径参数。"""
+
+    raw = bytearray()
+    async for chunk in request.stream():
+        if len(raw) + len(chunk) > 4 * 1024:
+            raise HTTPException(status_code=422, detail="项目配置请求过大。")
+        raw.extend(chunk)
+    try:
+        payload = strict_json(raw.decode("utf-8"))
+        if not isinstance(payload, dict) or set(payload) != {"name", "path"}:
+            raise ValueError("invalid project fields")
+        if not isinstance(payload["name"], str) or not isinstance(payload["path"], str):
+            raise ValueError("invalid project values")
+    except (UnicodeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="项目配置无效。") from exc
+    return payload
+
+
+def _run_session_action(action, *args, project_action: bool = False, **kwargs):
     """把内部会话异常映射为稳定且不泄露路径的 HTTP 错误。"""
 
     try:
-        return action(*args)
+        return action(*args, **kwargs)
     except WebUiBusyError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     except WebSessionNotFound as exc:
         raise HTTPException(status_code=404, detail="会话不存在。") from exc
+    except WebProjectNotFound as exc:
+        raise HTTPException(status_code=404, detail="项目不存在。") from exc
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail="会话参数无效。") from exc
-    except (WebSessionStoreError, ChatRuntimeError) as exc:
+        detail = str(exc) if project_action else "会话参数无效。"
+        raise HTTPException(status_code=422, detail=detail) from exc
+    except (WebSessionStoreError, WebProjectError, ChatRuntimeError) as exc:
         raise HTTPException(status_code=503, detail="会话存储不可用。") from exc

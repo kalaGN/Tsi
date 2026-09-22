@@ -281,11 +281,18 @@ class ListWorkspaceFilesTool:
 class SearchWorkspaceTextTool:
     definition = ToolDefinition(
         "search_workspace_text",
-        "在启动工作区允许读取的 UTF-8 文件中按字面量搜索",
+        "一次扫描工作区搜索 1 至 4 个字面量；已知多个相关关键词时合并搜索，返回命中的文件和行号，再批量读取相关片段",
         {
             "type": "object",
             "properties": {
-                "query": {"type": "string"},
+                "query": {"type": "string", "description": "首个字面量关键词"},
+                "additional_queries": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "description": "可选的其他相关关键词，一次搜索，避免逐个调用",
+                },
                 "path": {"type": "string"},
                 "glob": {"type": "string"},
                 "cursor": {"type": "integer"},
@@ -300,11 +307,26 @@ class SearchWorkspaceTextTool:
         self.policy = policy
 
     async def invoke(self, arguments: Mapping[str, object]) -> object:
-        _arguments(arguments, {"query", "path", "glob", "cursor", "limit"})
+        _arguments(
+            arguments,
+            {"query", "additional_queries", "path", "glob", "cursor", "limit"},
+        )
         query = arguments.get("query")
+        additional_queries = arguments.get("additional_queries", [])
         pattern = arguments.get("glob")
         if not isinstance(query, str) or not 1 <= len(query) <= 256:
             raise ToolArgumentError()
+        if (
+            not isinstance(additional_queries, list)
+            or len(additional_queries) > 3
+            or ("additional_queries" in arguments and not additional_queries)
+            or any(
+                not isinstance(item, str) or not 1 <= len(item) <= 256
+                for item in additional_queries
+            )
+        ):
+            raise ToolArgumentError()
+        queries = tuple(dict.fromkeys((query, *additional_queries)))
         if pattern is not None and (not isinstance(pattern, str) or not pattern):
             raise ToolArgumentError()
         try:
@@ -329,16 +351,18 @@ class SearchWorkspaceTextTool:
             except ToolArgumentError:
                 continue
             for line_number, line in enumerate(text.splitlines(), 1):
-                if query in line:
+                matched_queries = [item for item in queries if item in line]
+                if matched_queries:
                     truncated = len(line) > 500
-                    matches.append(
-                        {
-                            "path": relative,
-                            "line": line_number,
-                            "text": line[:500],
-                            "truncated": truncated,
-                        }
-                    )
+                    match = {
+                        "path": relative,
+                        "line": line_number,
+                        "text": line[:500],
+                        "truncated": truncated,
+                    }
+                    if len(queries) > 1:
+                        match["matched_queries"] = matched_queries
+                    matches.append(match)
         page = _bounded_page(matches, cursor, limit)
         next_cursor = cursor + len(page) if cursor + len(page) < len(matches) else None
         return {"matches": page, "next_cursor": next_cursor, "scanned_files": scanned}
@@ -364,7 +388,7 @@ def _bounded_page(items: list[dict[str, object]], cursor: int, limit: int):
 class ReadWorkspaceFileTool:
     definition = ToolDefinition(
         "read_workspace_file",
-        "按行读取启动工作区内允许的 UTF-8 文本文件并返回哈希",
+        "按行读取一个 UTF-8 文件并返回完整文件哈希；只读一个文件时使用，多个文件优先用 read_workspace_files",
         {
             "type": "object",
             "properties": {
@@ -391,7 +415,7 @@ class ReadWorkspaceFileTool:
 class ReadWorkspaceFilesTool:
     definition = ToolDefinition(
         "read_workspace_files",
-        "一次读取 1 至 4 个工作区 UTF-8 文本片段，适合批量检查独立文件",
+        "一次读取 1 至 4 个 UTF-8 文件片段并返回各文件完整哈希；搜索定位多个目标后优先批量调用，省去逐文件模型往返",
         {
             "type": "object",
             "properties": {
@@ -1242,8 +1266,8 @@ def _create_grouped_workspace_registry(
     read_names = (
         "list_workspace_files",
         "search_workspace_text",
-        "read_workspace_file",
         "read_workspace_files",
+        "read_workspace_file",
         "get_workspace_git_status",
         "get_workspace_git_diff",
     )
@@ -1255,7 +1279,7 @@ def _create_grouped_workspace_registry(
         ),
         ToolGroupDefinition(
             ToolGroup.WORKSPACE_READ,
-            "浏览、搜索、优先批量读取工作区并查看 Git 状态或差异",
+            "浏览工作区；已知多个关键词时一次搜索，多个文件时一次批量读取；也可查看 Git 状态或差异",
             read_names,
         ),
         ToolGroupDefinition(
@@ -1320,8 +1344,8 @@ def create_readonly_intent_workspace_registry(policy: WorkspacePolicy):
         GetCurrentTimeTool(),
         ListWorkspaceFilesTool(policy),
         SearchWorkspaceTextTool(policy),
-        ReadWorkspaceFileTool(policy),
         ReadWorkspaceFilesTool(policy),
+        ReadWorkspaceFileTool(policy),
         GetWorkspaceGitStatusTool(policy),
         GetWorkspaceGitDiffTool(policy),
     )
@@ -1335,12 +1359,12 @@ def create_readonly_intent_workspace_registry(policy: WorkspacePolicy):
             ),
             ToolGroupDefinition(
                 ToolGroup.WORKSPACE_READ,
-                "浏览、搜索、优先批量读取工作区并查看 Git 状态或差异",
+                "浏览工作区；已知多个关键词时一次搜索，多个文件时一次批量读取；也可查看 Git 状态或差异",
                 (
                     "list_workspace_files",
                     "search_workspace_text",
-                    "read_workspace_file",
                     "read_workspace_files",
+                    "read_workspace_file",
                     "get_workspace_git_status",
                     "get_workspace_git_diff",
                 ),
@@ -1370,8 +1394,8 @@ def _create_workspace_tools(
         GetCurrentTimeTool(),
         ListWorkspaceFilesTool(policy),
         SearchWorkspaceTextTool(policy),
-        ReadWorkspaceFileTool(policy),
         ReadWorkspaceFilesTool(policy),
+        ReadWorkspaceFileTool(policy),
         GetWorkspaceGitStatusTool(policy),
         GetWorkspaceGitDiffTool(policy),
         ApplyWorkspaceEditsTool(policy, active_journal),

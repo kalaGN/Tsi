@@ -63,9 +63,9 @@ Web UI 与 TUI 使用不同的显式工具白名单。Web UI 可按需激活时�
 | Web UI、TUI | `get_current_time(timezone)` | 获取指定 IANA 时区（例如 `Asia/Shanghai`）的当前 ISO 8601 时间 | 自动执行 |
 | Web UI | `web_search(query, limit)` | 搜索公开网络并返回有界标题、HTTP(S) 链接和摘要 | 自动执行；需要 `SERPER_API_KEY` |
 | Web UI、TUI | `list_workspace_files` | 分页列举允许读取的文件和目录 | 自动执行 |
-| Web UI、TUI | `search_workspace_text` | 按字面量搜索 UTF-8 文本 | 自动执行 |
-| Web UI、TUI | `read_workspace_file` | 按行读取文本并返回 SHA-256 | 自动执行 |
-| Web UI、TUI | `read_workspace_files` | 一次读取最多 4 个独立文本片段，减少模型往返 | 自动执行 |
+| Web UI、TUI | `search_workspace_text` | 一次扫描搜索 1～4 个字面量关键词，返回命中的文件和行号 | 自动执行 |
+| Web UI、TUI | `read_workspace_files` | 一次读取最多 4 个独立文本片段及各文件 SHA-256，减少模型往返 | 自动执行 |
+| Web UI、TUI | `read_workspace_file` | 按行读取单个文件并返回 SHA-256 | 自动执行 |
 | Web UI、TUI | `get_workspace_git_status` | 查看 Git 状态 | 自动执行 |
 | Web UI、TUI | `get_workspace_git_diff` | 查看分页 Diff | 自动执行 |
 | Web UI、TUI | `apply_workspace_edits` | 创建文件或执行带哈希前置条件的精确替换 | 本地审批后执行 |
@@ -79,6 +79,8 @@ Web UI 与 TUI 使用不同的显式工具白名单。Web UI 可按需激活时�
 | 仅 TUI | `git_stage` | 暂存 1 至 20 个明确指定的普通文件 | 每次本地审批后执行 |
 | 仅 TUI | `git_commit` | 以 `type: 中文描述` 提交当前暂存内容 | 每次本地审批后执行 |
 | 仅 TUI | `git_push` | 非强制推送当前分支到既有上游 | 每次本地审批后执行并访问网络 |
+
+工作区搜索在已知多个相关关键词时可传 `query` 加最多 3 个 `additional_queries`，只扫描一次。读取默认最多返回 400 行；需要定位片段时可显式传 `start_line`、`max_lines`。多个目标文件优先使用 `read_workspace_files`。
 
 典型流程为：模型先列举、搜索、读取和检查现有差异，再提出结构化修改或单文件删除；Web UI/TUI 显示相对路径和完整有界 Diff，默认焦点为拒绝。确认后模型可运行检查并继续修正。每个写入、删除和撤销都独立审批；Web Journal 只存在单次请求，TUI Journal 最多保存 10 个批次且只存在当前进程，重启后不能撤销旧批次。
 

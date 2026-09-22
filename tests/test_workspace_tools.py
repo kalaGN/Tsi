@@ -117,8 +117,8 @@ def test_intent_workspace_write_group_contains_read_and_write_tools(tmp_path):
         "activate_tool_groups",
         "list_workspace_files",
         "search_workspace_text",
-        "read_workspace_file",
         "read_workspace_files",
+        "read_workspace_file",
         "get_workspace_git_status",
         "get_workspace_git_diff",
         "apply_workspace_edits",
@@ -225,6 +225,42 @@ def test_list_search_and_read_support_chinese_and_hash(tmp_path):
     assert searched["data"]["matches"][0]["path"] == "docs/说明.md"
     assert read["data"]["content"] == "包含中文关键字\n"
     assert read["data"]["sha256"] == hashlib.sha256(content.encode()).hexdigest()
+
+
+def test_search_multiple_keywords_scans_each_file_once(tmp_path, monkeypatch):
+    (tmp_path / "code.py").write_text(
+        "def load_save():\n    return save()\n", encoding="utf-8"
+    )
+    read_paths = []
+    original_read_text = workspace_module._read_text
+
+    def recording_read_text(path, **kwargs):
+        read_paths.append(path)
+        return original_read_text(path, **kwargs)
+
+    monkeypatch.setattr(workspace_module, "_read_text", recording_read_text)
+    output, result = execute(
+        SearchWorkspaceTextTool(WorkspacePolicy(tmp_path)),
+        {"query": "load", "additional_queries": ["save", "load"]},
+    )
+
+    assert result.is_error is False
+    assert read_paths == [tmp_path / "code.py"]
+    assert [match["matched_queries"] for match in output["data"]["matches"]] == [
+        ["load", "save"],
+        ["save"],
+    ]
+
+
+@pytest.mark.parametrize("extra", [[], ["a", "b", "c", "d"], [""], [1]])
+def test_search_rejects_invalid_additional_queries(tmp_path, extra):
+    output, result = execute(
+        SearchWorkspaceTextTool(WorkspacePolicy(tmp_path)),
+        {"query": "valid", "additional_queries": extra},
+    )
+
+    assert result.is_error is True
+    assert output["error"]["code"] == "invalid_arguments"
 
 
 def test_batch_read_returns_up_to_four_bounded_file_slices(tmp_path):

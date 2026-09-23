@@ -1,5 +1,7 @@
 """Textual 多轮对话界面、事件分发与状态投影。"""
 
+import hashlib
+
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.reactive import reactive
@@ -8,6 +10,8 @@ from textual.widgets import Button, RichLog, Static, TextArea
 from app.runtime.chat import ChatRuntimeError
 from app.runtime.context_settings_store import ContextSettingsError
 from app.runtime.model_selection import ModelSelectionError
+from app.runtime.task_runs import TaskRun, TaskRunError
+from app.runtime.task_verify import verify_task
 from app.services.llm.contracts import (
     ChatRole,
     LlmProviderError,
@@ -85,6 +89,13 @@ class ChatTuiApp(App[None]):
         self._workspace_enabled = dependencies.workspace_enabled
         self._skills_count = dependencies.skills_count
         self._last_escape_at: float | None = None
+        self._task_store = dependencies.task_store
+        self._task_policy = dependencies.task_policy
+        self._task_project_id = (
+            hashlib.sha256(str(self._task_policy.root).encode("utf-8")).hexdigest()[:32]
+            if self._task_policy is not None else None
+        )
+        self._active_task: TaskRun | None = None
         self._request = RequestCoordinator(
             self,
             dependencies.chat_runner,
@@ -226,6 +237,9 @@ class ChatTuiApp(App[None]):
             return
         if self._request.is_active:
             return
+        if input_text.strip().startswith("/task "):
+            self._handle_task_command(input_text.strip(), prompt_widget)
+            return
         if self._handle_local_command(command, prompt_widget):
             return
         if not self._can_start_prompt(input_text):
@@ -264,7 +278,108 @@ class ChatTuiApp(App[None]):
             prompt.load_text("")
             self._write_available_skills()
             return True
+        if command is LocalCommand.TASK:
+            prompt.load_text("")
+            self._show_tasks()
+            return True
         return False
+
+    def _show_tasks(self) -> None:
+        """只显示当前启动目录的任务状态，不展示可能含敏感数据的目标。"""
+
+        if self._task_store is None:
+            self._write_message("System", "任务功能不可用。")
+            return
+        try:
+            tasks = [item for item in self._task_store.list() if item.project_id == self._task_project_id]
+        except TaskRunError as exc:
+            self._write_message("Error", str(exc))
+            return
+        lines = [f"任务（{len(tasks)}）："]
+        lines.extend(f"- {item.id} · {item.state} · 第 {item.attempts}/{item.max_attempts} 轮" for item in tasks)
+        lines.append("用法：/task new 目标 | file_exists:相对路径；/task resume 任务ID")
+        self._write_message("System", "\n".join(lines))
+
+    def _handle_task_command(self, command: str, prompt: TextArea) -> None:
+        """创建或继续一个可验收任务；每轮仍走现有审批和聊天请求。"""
+
+        prompt.load_text("")
+        if self._task_store is None or self._task_policy is None or self._task_project_id is None:
+            self._write_message("Error", "任务功能不可用。")
+            return
+        if not self._can_start_prompt(command):
+            return
+        try:
+            if command.startswith("/task new "):
+                body = command[len("/task new "):]
+                goal, separator, criterion = body.rpartition(" | ")
+                kind, colon, target = criterion.partition(":")
+                if not separator or not colon or kind not in {"file_exists", "file_absent", "project_check"}:
+                    raise TaskRunError("格式：/task new 目标 | file_exists:相对路径")
+                if kind != "project_check":
+                    self._task_policy.normalize(target)
+                task = self._task_store.create("tui-default", self._task_project_id, goal, [
+                    {"kind": kind, "target": target, "expected_sha256": None},
+                ])
+            elif command.startswith("/task resume "):
+                task = self._task_store.load(command[len("/task resume "):].strip())
+                if task.project_id != self._task_project_id or task.session_id != "tui-default":
+                    raise TaskRunError("任务不属于当前启动目录。")
+            else:
+                raise TaskRunError("格式：/task new 目标 | file_exists:相对路径；/task resume 任务ID")
+            if task.state not in {"ready", "needs_review"}:
+                raise TaskRunError("任务当前不可继续。")
+            running = self._task_store.transition(task.id, task.revision, "running")
+            self._active_task = running
+            text = task.goal if task.attempts == 0 else (
+                f"继续完成此前任务：{task.goal}\n先检查工作区状态，不要假设上次写入未生效。"
+            )
+            self._write_message("System", f"任务 {task.id[:8]} 开始第 {running.attempts} 轮。")
+            self._start_prompt_request(text, prompt)
+        except (TaskRunError, ValueError) as exc:
+            self._write_message("Error", str(exc))
+
+    async def task_request_completed(self) -> None:
+        """模型返回后用确定性证据决定完成，不信任自然语言宣称。"""
+
+        task = self._active_task
+        if task is None or self._task_store is None or self._task_policy is None:
+            return
+        try:
+            verifying = self._task_store.transition(task.id, task.revision, "verifying")
+            evidence = await verify_task(verifying.conditions, self._task_policy)
+            state = "completed" if evidence.status == "passed" else "needs_review"
+            self._task_store.transition(verifying.id, verifying.revision, state,
+                                        last_result="验收通过。" if state == "completed" else "验收未通过，请检查工作区。")
+            self._write_message("System", f"任务 {task.id[:8]}：{state}（验收 {evidence.status}）")
+        except (TaskRunError, ValueError, OSError):
+            try:
+                latest = self._task_store.load(task.id)
+                if latest.state in {"running", "awaiting_approval", "verifying"}:
+                    self._task_store.transition(latest.id, latest.revision, "needs_review",
+                                                last_result="验收中断，请先检查工作区。")
+            except TaskRunError:
+                pass
+            self._write_message("Error", "任务验收失败，请检查任务记录与工作区。")
+        finally:
+            self._active_task = None
+
+    def task_request_interrupted(self, cancelled: bool = False) -> None:
+        """异常或取消后的副作用不确定，除明确取消外均需人工核查。"""
+
+        task = self._active_task
+        self._active_task = None
+        if task is None or self._task_store is None:
+            return
+        try:
+            latest = self._task_store.load(task.id)
+            if latest.state in {"running", "awaiting_approval", "verifying"}:
+                self._task_store.transition(latest.id, latest.revision,
+                                            "cancelled" if cancelled else "needs_review",
+                                            last_result="已取消。" if cancelled else "执行中断，请先检查工作区。")
+            self._write_message("System", f"任务 {task.id[:8]} 已{'取消' if cancelled else '中断，需人工检查'}。")
+        except TaskRunError:
+            self._write_message("Error", "无法更新任务状态，请重新启动并检查。")
 
     def _write_memory_preferences(self) -> None:
         """显示长期偏好摘要，不展示滚动会话摘要。"""

@@ -10,6 +10,7 @@ const state = {
   projects: [],
   currentProjectId: null,
   currentSessionId: null,
+  currentTask: null,
   pendingApproval: null,
   sessionDialogResolve: null,
   projectDialogResolve: null,
@@ -671,6 +672,7 @@ function applyConversation(data, { closeSidebar = true } = {}) {
   state.projects = data.projects;
   state.currentProjectId = data.current_project_id;
   state.currentSessionId = data.current_session_id;
+  loadTasks();
   renderSessions();
   $("#workspace-name").textContent = data.workspace_name;
   $("#workspace-path").textContent = data.workspace_path;
@@ -803,6 +805,8 @@ async function deleteSession(item) {
 function setBusy(busy) {
   state.busy = busy;
   prompt.disabled = busy;
+  $("#toggle-task").disabled = busy;
+  $("#task-resume").disabled = busy;
   $("#new-chat").disabled = busy;
   $("#new-project").disabled = busy;
   $("#model-select").disabled = busy;
@@ -1023,8 +1027,73 @@ async function sendMessage() {
   }
 }
 
+function renderTask(task) {
+  state.currentTask = task;
+  $("#task-strip").hidden = !task;
+  if (!task) return;
+  const labels = { ready: "待执行", running: "执行中", awaiting_approval: "等待批准", verifying: "验收中", completed: "已完成", needs_review: "需人工检查", failed: "失败", cancelled: "已取消" };
+  $("#task-status").textContent = `任务 ${task.id.slice(0, 8)} · ${labels[task.state] || task.state}${task.last_result ? ` · ${task.last_result}` : ""}`;
+  $("#task-resume").hidden = !["ready", "needs_review"].includes(task.state) || task.session_id !== state.currentSessionId || task.attempts >= task.max_attempts;
+}
+
+async function loadTasks() {
+  try {
+    const project = state.currentProjectId;
+    const response = await api("/tasks");
+    if (project !== state.currentProjectId) return;
+    const data = await response.json();
+    renderTask(data.tasks.find((item) => item.session_id === state.currentSessionId && ["ready", "needs_review", "running", "awaiting_approval", "verifying"].includes(item.state)) || data.tasks.find((item) => item.session_id === state.currentSessionId) || null);
+  } catch (_) { renderTask(null); }
+}
+
+async function runTask(task) {
+  if (state.busy) return;
+  renderTask(task);
+  state.streamNode = addMessage("assistant", "", { streaming: true });
+  $("#activity-list").replaceChildren();
+  addActivity("任务执行", "进行中");
+  $("#activity-text").textContent = "任务执行中";
+  setBusy(true);
+  try {
+    const response = await api(`/tasks/${encodeURIComponent(task.id)}/run`, { method: "POST", body: "{}" });
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      let terminal = false;
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        if (handleEvent(JSON.parse(line))) { terminal = true; break; }
+      }
+      if (terminal) { await reader.cancel(); break; }
+      if (done) break;
+    }
+    if (buffer.trim()) handleEvent(JSON.parse(buffer));
+    if (state.streamNode) {
+      state.streamNode.closest(".message")?.remove();
+      state.streamNode = null;
+    }
+  } catch (error) {
+    state.streamNode?.closest(".message")?.remove();
+    state.streamNode = null;
+    addMessage("assistant", error.message, { error: true });
+  } finally {
+    closeToolApproval();
+    setBusy(false);
+    await loadTasks();
+  }
+}
+
 function handleEvent(event) {
-  if (event.type === "text_delta" && state.streamNode) {
+  if (event.type === "task_state") {
+    renderTask(event.task);
+  } else if (event.type === "task_verification") {
+    addActivity("任务验收", event.result.status === "passed" ? "已通过" : "需检查");
+  } else if (event.type === "text_delta" && state.streamNode) {
     // 收到正文增量说明模型已经开始作答，不能继续显示“思考中”。
     $("#activity-text").textContent = "正在回答";
     state.streamNode.textContent += event.text;
@@ -1194,6 +1263,42 @@ prompt.addEventListener("keydown", (event) => {
   }
 });
 sendButton.addEventListener("click", sendMessage);
+$("#toggle-task").addEventListener("click", () => {
+  $("#task-form").hidden = !$("#task-form").hidden;
+  if (!$("#task-form").hidden) $("#task-goal").focus();
+});
+$("#task-condition-kind").addEventListener("change", (event) => {
+  const target = $("#task-condition-target");
+  if (event.target.value === "project_check") {
+    const select = document.createElement("select");
+    select.id = "task-condition-target";
+    select.setAttribute("aria-label", "项目检查");
+    for (const [value, label] of [["compile", "编译"], ["test_all", "全部测试"], ["pip_check", "依赖检查"], ["diff_check", "差异检查"]]) {
+      const option = document.createElement("option"); option.value = value; option.textContent = label; select.append(option);
+    }
+    target.replaceWith(select);
+  } else if (target.tagName === "SELECT") {
+    const input = document.createElement("input"); input.id = "task-condition-target"; input.maxLength = 512; input.placeholder = "相对路径"; input.required = true; input.setAttribute("aria-label", "验收目标");
+    target.replaceWith(input);
+  }
+});
+$("#task-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (state.busy) return;
+  try {
+    const goal = $("#task-goal").value.trim();
+    const kind = $("#task-condition-kind").value;
+    const target = $("#task-condition-target").value.trim();
+    const response = await api("/tasks", { method: "POST", body: JSON.stringify({ goal, conditions: [{ kind, target, expected_sha256: null }] }) });
+    const task = await response.json();
+    $("#task-form").hidden = true;
+    addMessage("user", goal);
+    await runTask(task);
+  } catch (error) { showToast(error.message); }
+});
+$("#task-resume").addEventListener("click", () => {
+  if (state.currentTask) runTask(state.currentTask);
+});
 stopButton.addEventListener("click", async () => {
   try {
     await api("/cancel", { method: "POST", body: "{}" });

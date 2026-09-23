@@ -154,6 +154,9 @@ class RequestCoordinator:
         self.finish_stream(generation)
         self._stop_activity(generation)
         worker.cancel()
+        interrupted = getattr(self._host, "task_request_interrupted", None)
+        if interrupted is not None:
+            interrupted(cancelled=True)
         self._host.run_status = RunStatus.READY
         if show_message:
             self._host.write_request_message("System", "Request cancelled")
@@ -208,6 +211,9 @@ class RequestCoordinator:
             result = await self._runner(input_text, **runner_arguments)
             if worker.is_cancelled or generation != self._generation:
                 return
+            task_completed = getattr(self._host, "task_request_completed", None)
+            if task_completed is not None:
+                await task_completed()
             self._flush_stream(generation)
             self.finish_stream(generation)
             self._host.write_request_message("Assistant", result.output_text)
@@ -218,6 +224,9 @@ class RequestCoordinator:
         except ChatRuntimeError as exc:
             if worker.is_cancelled or generation != self._generation:
                 return
+            interrupted = getattr(self._host, "task_request_interrupted", None)
+            if interrupted is not None:
+                interrupted()
             self._host.write_request_message("Error", exc.user_message)
             self._write_applied_change_warning(applied_changes.paths())
             self._write_elapsed_time(started_at)
@@ -225,6 +234,9 @@ class RequestCoordinator:
         except Exception:
             if worker.is_cancelled or generation != self._generation:
                 return
+            interrupted = getattr(self._host, "task_request_interrupted", None)
+            if interrupted is not None:
+                interrupted()
             self._host.write_request_message("Error", "Unexpected internal error")
             self._write_applied_change_warning(applied_changes.paths())
             self._write_elapsed_time(started_at)

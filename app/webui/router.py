@@ -15,6 +15,7 @@ from app.runtime.chat import ChatRuntimeError
 from app.runtime.context_settings_store import ContextSettingsConflict, ContextSettingsError
 from app.runtime.model_budget import strict_json
 from app.runtime.model_config_store import ModelConfigConflict, ModelConfigError, ModelConfigValidation
+from app.runtime.task_runs import TaskRunConflict, TaskRunError
 from app.runtime.model_selection import ModelSelectionError
 from app.runtime.personalization_store import (
     MAX_PERSONAL_PROMPT_BYTES,
@@ -32,6 +33,7 @@ from app.webui.projects import WebProjectError, WebProjectNotFound
 from app.webui.service import WebUiBusyError, WebUiService
 from app.webui.sessions import WebSessionNotFound, WebSessionStoreError
 from tools import ToolArgumentError
+from tools.workspace import WorkspacePathError
 
 
 STATIC_ROOT = Path(__file__).resolve().parent / "static"
@@ -284,6 +286,72 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
                 ) + "\n"
 
         return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+    @router.get("/ui/api/tasks")
+    async def list_tasks(request: Request):
+        _require_loopback(request)
+        try:
+            return {"tasks": current_service().task_payloads()}
+        except TaskRunError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @router.post("/ui/api/tasks")
+    async def create_task(request: Request):
+        _require_loopback(request)
+        _require_same_origin_json(request)
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 8 * 1024:
+                raise HTTPException(status_code=422, detail="任务请求过大。")
+            raw.extend(chunk)
+        try:
+            payload = strict_json(raw.decode("utf-8"))
+            if not isinstance(payload, dict) or set(payload) != {"goal", "conditions"} or not isinstance(payload["conditions"], list):
+                raise ValueError("invalid task payload")
+            return current_service().create_task(payload["goal"], payload["conditions"])
+        except (UnicodeError, ValueError, TypeError, TaskRunError, WorkspacePathError) as exc:
+            raise HTTPException(status_code=422, detail="任务目标或验收条件无效。") from exc
+        except WebUiBusyError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.get("/ui/api/tasks/{task_id}")
+    async def get_task(request: Request, task_id: str):
+        _require_loopback(request)
+        try:
+            return current_service().task_payload(task_id)
+        except TaskRunError as exc:
+            raise HTTPException(status_code=404, detail="任务不存在或当前项目不可见。") from exc
+
+    @router.post("/ui/api/tasks/{task_id}/run")
+    async def run_task(request: Request, task_id: str):
+        _require_loopback(request)
+        _require_same_origin_json(request)
+        active_service = current_service()
+        if not active_service.runtime_info.api_key_configured:
+            raise HTTPException(status_code=503, detail="API Key 未配置。")
+        if active_service.is_busy:
+            raise HTTPException(status_code=409, detail="已有请求正在运行。")
+        try:
+            task = active_service.task_payload(task_id)
+            if task["state"] not in {"ready", "needs_review"}:
+                raise HTTPException(status_code=409, detail="任务当前不可执行。")
+        except TaskRunError as exc:
+            raise HTTPException(status_code=404, detail="任务不存在或当前项目不可见。") from exc
+
+        async def stream():
+            try:
+                async for event in active_service.stream_task(task_id):
+                    yield json.dumps(event, ensure_ascii=False) + "\n"
+            except (TaskRunError, TaskRunConflict, WebUiBusyError, ValueError) as exc:
+                yield json.dumps({"type": "failed", "message": str(exc)}, ensure_ascii=False) + "\n"
+
+        return StreamingResponse(stream(), media_type="application/x-ndjson")
+
+    @router.post("/ui/api/tasks/{task_id}/cancel")
+    async def cancel_task(request: Request, task_id: str):
+        _require_loopback(request)
+        _require_same_origin_json(request)
+        return {"cancelled": current_service().cancel_task(task_id)}
 
     @router.post("/ui/api/cancel")
     async def cancel(request: Request):

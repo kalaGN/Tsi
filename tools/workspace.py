@@ -1256,7 +1256,8 @@ def _create_grouped_workspace_registry(
 ):
     """按宿主允许的能力构造渐进披露 Registry。"""
 
-    from tools.groups import GroupedToolRegistry, ToolGroup, ToolGroupDefinition
+    from tools.groups import GroupedToolRegistry
+    from tools.policy import allowed_tool_groups
 
     tools = _create_workspace_tools(
         policy,
@@ -1268,79 +1269,11 @@ def _create_grouped_workspace_registry(
         web_search_environ=web_search_environ,
     )
     tools = (*tools, *mcp_tools)
-    names = {tool.definition.name for tool in tools}
-    read_names = (
-        "list_workspace_files",
-        "search_workspace_text",
-        "read_workspace_files",
-        "read_workspace_file",
-        "get_workspace_git_status",
-        "get_workspace_git_diff",
+    groups = allowed_tool_groups(
+        {tool.definition.name for tool in tools},
+        entry="tui" if include_git_write else "web",
+        mcp_names=tuple(tool.definition.name for tool in mcp_tools),
     )
-    groups = [
-        ToolGroupDefinition(
-            ToolGroup.GENERAL,
-            "读取指定时区的当前时间",
-            ("get_current_time",),
-        ),
-        ToolGroupDefinition(
-            ToolGroup.WORKSPACE_READ,
-            "浏览工作区；已知多个关键词时一次搜索，多个文件时一次批量读取；也可查看 Git 状态或差异",
-            read_names,
-        ),
-        ToolGroupDefinition(
-            ToolGroup.WORKSPACE_WRITE,
-            "读取并修改工作区、运行检查和撤销本轮修改",
-            read_names
-            + (
-                "apply_workspace_edits",
-                "delete_workspace_file",
-                "run_project_check",
-                "undo_workspace_change",
-            ),
-        ),
-    ]
-    if "web_search" in names:
-        groups.insert(
-            1,
-            ToolGroupDefinition(
-                ToolGroup.WEB_SEARCH,
-                "搜索需要实时或项目外部信息的公开网络内容",
-                ("web_search",),
-            ),
-        )
-    if "load_skill" in names:
-        groups.append(
-            ToolGroupDefinition(
-                ToolGroup.SKILLS,
-                "加载 Skill 指令、读取资源并按审批运行脚本",
-                ("load_skill", "read_skill_resource", "run_skill_script"),
-            )
-        )
-    if "install_skill" in names:
-        groups.append(
-            ToolGroupDefinition(
-                ToolGroup.SKILL_INSTALL,
-                "从受支持来源安装 Skill",
-                ("install_skill",),
-            )
-        )
-    if include_git_write:
-        groups.append(
-            ToolGroupDefinition(
-                ToolGroup.GIT_WRITE,
-                "经逐次审批暂存文件、创建中文提交并推送既有上游",
-                ("git_stage", "git_commit", "git_push"),
-            )
-        )
-    if mcp_tools:
-        groups.append(
-            ToolGroupDefinition(
-                ToolGroup.MCP,
-                "调用用户配置的外部 MCP Server 工具，每次调用需本地审批",
-                tuple(tool.definition.name for tool in mcp_tools),
-            )
-        )
     return GroupedToolRegistry(
         tools,
         groups,
@@ -1352,7 +1285,8 @@ def create_readonly_intent_workspace_registry(policy: WorkspacePolicy):
     """为无审批界面创建只暴露时间和 Workspace 读取能力的请求级 Registry。"""
 
     from tools.builtin import GetCurrentTimeTool
-    from tools.groups import GroupedToolRegistry, ToolGroup, ToolGroupDefinition
+    from tools.groups import GroupedToolRegistry
+    from tools.policy import allowed_tool_groups
 
     tools = (
         GetCurrentTimeTool(),
@@ -1365,25 +1299,7 @@ def create_readonly_intent_workspace_registry(policy: WorkspacePolicy):
     )
     return GroupedToolRegistry(
         tools,
-        (
-            ToolGroupDefinition(
-                ToolGroup.GENERAL,
-                "读取指定时区的当前时间",
-                ("get_current_time",),
-            ),
-            ToolGroupDefinition(
-                ToolGroup.WORKSPACE_READ,
-                "浏览工作区；已知多个关键词时一次搜索，多个文件时一次批量读取；也可查看 Git 状态或差异",
-                (
-                    "list_workspace_files",
-                    "search_workspace_text",
-                    "read_workspace_files",
-                    "read_workspace_file",
-                    "get_workspace_git_status",
-                    "get_workspace_git_diff",
-                ),
-            ),
-        ),
+        allowed_tool_groups({tool.definition.name for tool in tools}, entry="readonly"),
     )
 
 

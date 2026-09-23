@@ -12,6 +12,7 @@ class LocalCommand(str, Enum):
     MEMORY_CLEAR = "/memory clear"
     MODEL = "/model"
     SKILLS = "/skills"
+    TASK = "/task"
     QUIT = "/quit"
 
 
@@ -26,6 +27,7 @@ class CommandSpec:
 COMMAND_SPECS = (
     CommandSpec(LocalCommand.CLEAR, "清空对话、上下文和历史"),
     CommandSpec(LocalCommand.SKILLS, "查看可用技能"),
+    CommandSpec(LocalCommand.TASK, "查看长任务与用法"),
     CommandSpec(LocalCommand.MODEL, "切换模型供应商和模型"),
     CommandSpec(LocalCommand.MEMORY, "查看长期用户偏好"),
     CommandSpec(LocalCommand.MEMORY_CLEAR, "清除长期用户偏好"),

@@ -61,6 +61,7 @@ _REDACTED_REQUEST_HEADERS = {
     "Authorization": "Bearer [REDACTED]",
 }
 _EVENT_FIELDS = {
+    "task_state_change": ("request_id", "task_id", "state", "attempts", "revision"),
     "mcp_server": ("request_id", "server_name", "status", "duration_ms"),
     "llm_request": (
         "request_id",
@@ -438,6 +439,15 @@ def new_request_id() -> str:
     """为本地日志条目生成不受客户端控制的标识。"""
 
     return uuid4().hex
+
+
+def log_task_state_change(*, task_id: str, state: str, attempts: int, revision: int) -> None:
+    """仅记任务状态与有界计数，不复制任务目标或验收路径。"""
+
+    logging.getLogger(LOGGER_NAME).info("task_state_change", extra={
+        "event": "task_state_change", "request_id": task_id, "task_id": task_id,
+        "state": state, "attempts": attempts, "revision": revision,
+    })
 
 
 def log_context_management(

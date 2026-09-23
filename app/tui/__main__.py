@@ -101,6 +101,7 @@ def main() -> None:
         initial_provider=create_provider(model_values),
         model_config_error=model_config_error,
         environ=effective_values,
+        task_policy=workspace_policy if workspace_registry is not None else None,
     )
     _create_app(dependencies=dependencies).run()
 

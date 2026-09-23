@@ -24,6 +24,7 @@ from app.runtime.model_selection import (
 from app.runtime.model_selection_store import ModelSelectionStore
 from app.runtime.session import ChatSession, RuntimeBudgetSnapshot
 from app.runtime.session_store import SessionStore
+from app.runtime.task_runs import TaskRunStore, TaskRunError
 from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.tool_loop import (
     DEFAULT_TOOL_LOOP_LIMITS,
@@ -40,6 +41,7 @@ from app.tui.state import (
     TuiHealthState,
 )
 from tools import ToolRuntime
+from tools.workspace import WorkspacePolicy
 
 if TYPE_CHECKING:
     from app.tui.request import ChatRunner, Clock
@@ -59,6 +61,8 @@ class TuiDependencies:
     workspace_enabled: bool
     skills_count: int
     clock: Clock
+    task_policy: WorkspacePolicy | None = None
+    task_store: TaskRunStore | None = None
 
 
 def build_tui_dependencies(
@@ -81,6 +85,7 @@ def build_tui_dependencies(
     memory_policy: MemoryPolicy | None = None,
     environ: Mapping[str, str] | None = None,
     clock: Clock = time.monotonic,
+    task_policy: WorkspacePolicy | None = None,
 ) -> TuiDependencies:
     """构造生产 TUI 依赖，同时把可恢复启动失败转换为诊断。"""
 
@@ -203,6 +208,15 @@ def build_tui_dependencies(
             _issue("skills", skills_error, blocks_prompt=False)
         )
 
+    task_store = None
+    if task_policy is not None:
+        try:
+            task_store = TaskRunStore()
+            task_store.recover_interrupted()
+        except TaskRunError:
+            issues.append(StartupIssue("tasks", "任务记录不可用，长任务已关闭。", IssueSeverity.WARNING, blocks_prompt=False))
+            task_store = None
+
     return TuiDependencies(
         chat_session=chat_session,
         chat_runner=chat_session.send,
@@ -216,6 +230,8 @@ def build_tui_dependencies(
         ),
         skills_count=skills_count,
         clock=clock,
+        task_policy=task_policy,
+        task_store=task_store,
     )
 
 

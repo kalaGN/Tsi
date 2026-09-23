@@ -10,6 +10,7 @@
 - [领域术语](domain-glossary.md)：项目领域术语和固定配置。
 - [故障排查](troubleshooting.md)：常见启动、测试和调用问题。
 - [仓库审计](repository-audit.md)：文档、工程、安全、可靠性和性能缺口审计。
+- [长任务模式](task-runs.md)：Web/TUI 的创建、验收、恢复与安全边界。
 
 ## 维护
 

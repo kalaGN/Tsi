@@ -93,6 +93,22 @@
         </section>
 
         <section class="composer-zone">
+          <div class="task-strip" id="task-strip" hidden>
+            <span id="task-status" aria-live="polite"></span>
+            <button class="secondary-button" id="task-resume" type="button" hidden>继续</button>
+          </div>
+          <form class="task-form" id="task-form" hidden>
+            <textarea id="task-goal" rows="2" maxlength="4096" placeholder="任务目标" aria-label="任务目标" required></textarea>
+            <div class="task-form-row">
+              <select id="task-condition-kind" aria-label="验收方式">
+                <option value="file_exists">文件存在</option>
+                <option value="file_absent">文件不存在</option>
+                <option value="project_check">项目检查</option>
+              </select>
+              <input id="task-condition-target" maxlength="512" placeholder="相对路径" aria-label="验收目标" required />
+              <button class="secondary-button" type="submit">创建并运行</button>
+            </div>
+          </form>
           <div class="activity-strip" id="activity-strip" hidden>
             <span class="spinner"></span>
             <span id="activity-text">思考中</span>
@@ -102,6 +118,7 @@
             <textarea id="prompt" rows="1" placeholder="给 Tsi 助手发送消息" maxlength="65536"></textarea>
             <div class="composer-footer">
               <span id="send-hint">Enter 发送 · Shift+Enter 换行</span>
+              <button class="icon-button" id="toggle-task" type="button" aria-label="创建任务" title="创建任务">任务</button>
               <button class="send-button" id="send" aria-label="发送" title="发送">
                 <svg aria-hidden="true" viewBox="0 0 24 24"><path d="m5 12 14-7-5 14-2.5-5.5z" /><path d="m11.5 13.5 3.5-3.5" /></svg>
               </button>

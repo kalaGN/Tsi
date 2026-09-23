@@ -175,6 +175,13 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 @keyframes blink { 50% { opacity: 0; } }
 
 .composer-zone { padding: 7px max(18px, calc((100% - 800px) / 2)) 10px; background: linear-gradient(transparent, var(--surface) 15%); }
+.task-strip { display: flex; align-items: center; gap: 8px; padding: 0 7px 7px; color: var(--muted); font-size: 12px; }
+.task-strip span { margin-right: auto; }
+.task-form { display: grid; gap: 8px; margin-bottom: 8px; padding: 10px; border: 1px solid var(--border-strong); border-radius: 12px; background: var(--surface-raised); }
+.task-form textarea, .task-form input, .task-form select { min-width: 0; padding: 8px; border: 1px solid var(--border-strong); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; }
+.task-form textarea { resize: vertical; }
+.task-form-row { display: flex; gap: 7px; }
+.task-form-row input { flex: 1; }
 .activity-strip { display: flex; align-items: center; gap: 7px; padding: 0 7px 6px; color: var(--muted); font-size: 11px; }
 .activity-strip time { margin-left: auto; }
 .spinner { width: 11px; height: 11px; border: 2px solid var(--border); border-top-color: var(--accent); border-radius: 50%; animation: spin .8s linear infinite; }

@@ -16,6 +16,8 @@ from app.runtime.context_settings import ContextSettings
 from app.runtime.context_settings_store import ContextSettingsConflict, ContextSettingsError, ContextSettingsStore
 from app.runtime.model_budget import ModelBudgetCatalog
 from app.runtime.model_config_store import ModelConfigStore
+from app.runtime.task_runner import run_task_step
+from app.runtime.task_runs import TaskRunError, TaskRunStore
 from app.runtime.model_selection import ModelSelectionError, ModelSelectionService
 from app.runtime.model_selection_store import ModelSelectionStore
 from app.runtime.personalization_store import PersonalizationError, PersonalizationStore
@@ -79,6 +81,7 @@ class WebUiService:
         personalization_store: PersonalizationStore | None = None,
         projects: WebProjectCatalog | None = None,
         model_config_store: ModelConfigStore | None = None,
+        task_store: TaskRunStore | None = None,
     ) -> None:
         self.catalog = catalog
         self._session_factory = session_factory
@@ -101,6 +104,8 @@ class WebUiService:
             workspace / "data" / "personalization.json",
         )
         self.model_config_store = model_config_store
+        self.task_store = task_store
+        self._active_task_id: str | None = None
         self._request_lock = asyncio.Lock()
         self._active_task: asyncio.Task[None] | None = None
         self._active_request_id: str | None = None
@@ -146,6 +151,14 @@ class WebUiService:
             startup_warning = startup_warning or "个性化设置无法加载，Web 会话暂未使用自定义提示词。"
 
         model_config_store = ModelConfigStore() if environ is None else None
+        task_store = TaskRunStore(
+            data_root() / "task-runs" if environ is None else root / "data" / "task-runs"
+        )
+        try:
+            task_store.recover_interrupted()
+        except TaskRunError:
+            task_store = None
+            startup_warning = startup_warning or "任务记录无法读取，长任务功能暂不可用。"
         model_config = model_config_store.load() if model_config_store is not None else None
         model_values = model_config.environment() if model_config is not None else values
         options = model_config.options() if model_config is not None else resolve_model_options(model_values)
@@ -221,7 +234,61 @@ class WebUiService:
             personalization_store=personalization_store,
             projects=projects,
             model_config_store=model_config_store,
+            task_store=task_store,
         )
+
+    def _task_store(self) -> TaskRunStore:
+        if self.task_store is None:
+            raise TaskRunError("长任务功能暂不可用。")
+        return self.task_store
+
+    def create_task(self, goal: str, conditions: list[dict[str, object]]) -> dict[str, object]:
+        """任务固定绑定当前会话与项目，不接受客户端指定工作区。"""
+
+        self._require_idle("创建任务")
+        project = self.projects.require(self.catalog.current.project_id)
+        policy = _project_workspace_policy(project)
+        for item in conditions:
+            if isinstance(item, dict) and item.get("kind") != "project_check":
+                policy.normalize(item.get("target"))
+        record = self.catalog.current
+        return self._task_store().create(record.id, record.project_id, goal, conditions).public_payload()
+
+    def task_payloads(self) -> list[dict[str, object]]:
+        """只列出当前项目的任务，不回显原始目标或模型输入。"""
+
+        project_id = self.catalog.current.project_id
+        return [task.public_payload() for task in self._task_store().list() if task.project_id == project_id]
+
+    def task_payload(self, task_id: str) -> dict[str, object]:
+        task = self._task_store().load(task_id)
+        if task.project_id != self.catalog.current.project_id:
+            raise TaskRunError("任务不属于当前项目。")
+        return task.public_payload()
+
+    async def stream_task(self, task_id: str) -> AsyncIterator[dict[str, object]]:
+        """复用现有流式聊天与审批，把完成结果交给确定性验收。"""
+
+        if self.is_busy:
+            raise WebUiBusyError("已有请求正在运行。")
+        store = self._task_store()
+        task = store.load(task_id)
+        current = self.catalog.current
+        if task.session_id != current.id or task.project_id != current.project_id:
+            raise TaskRunError("请先切换到任务所属的会话和项目。")
+        project = self.projects.require(current.project_id)
+        policy = _project_workspace_policy(project)
+        self._active_task_id = task.id
+        try:
+            async for event in run_task_step(task, store, self.stream_message, policy):
+                yield event
+        finally:
+            self._active_task_id = None
+
+    def cancel_task(self, task_id: str) -> bool:
+        if self._active_task_id != task_id:
+            return False
+        return self.cancel_current()
 
     def model_config_payload(self) -> dict[str, object]:
         """只向设置页提供脱敏配置，测试注入的旧模式不可编辑。"""

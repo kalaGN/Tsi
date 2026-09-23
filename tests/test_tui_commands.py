@@ -14,6 +14,7 @@ def test_command_catalog_contains_each_supported_command_once() -> None:
     assert commands == (
         LocalCommand.CLEAR,
         LocalCommand.SKILLS,
+        LocalCommand.TASK,
         LocalCommand.MODEL,
         LocalCommand.MEMORY,
         LocalCommand.MEMORY_CLEAR,

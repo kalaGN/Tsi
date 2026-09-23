@@ -15,6 +15,7 @@ from app.runtime.chat import ChatErrorCode, ChatRuntimeError, ChatRuntimeInfo, g
 from app.runtime.context_settings import ContextSettings
 from app.runtime.context_settings_store import ContextSettingsConflict, ContextSettingsError, ContextSettingsStore
 from app.runtime.model_budget import ModelBudgetCatalog
+from app.runtime.model_config_store import ModelConfigStore
 from app.runtime.model_selection import ModelSelectionError, ModelSelectionService
 from app.runtime.model_selection_store import ModelSelectionStore
 from app.runtime.personalization_store import PersonalizationError, PersonalizationStore
@@ -24,7 +25,7 @@ from app.runtime.workspace_changes import AppliedChangeTracker
 from app.runtime.system_prompt import SystemPromptLoadError, compose_system_prompt, load_system_prompt
 from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS
 from app.services.llm.contracts import LlmProvider, ModelOption, TokenUsage
-from app.services.llm.factory import resolve_model_options
+from app.services.llm.factory import create_provider, create_provider_for_model, resolve_model_options
 from app.webui.approvals import WebApprovalCoordinator
 from app.webui.directory_picker import directory_picker_available
 from app.webui.projects import WebProjectCatalog, WebProjectRecord, normalize_project_path
@@ -77,6 +78,7 @@ class WebUiService:
         context_settings: ContextSettings | None = None,
         personalization_store: PersonalizationStore | None = None,
         projects: WebProjectCatalog | None = None,
+        model_config_store: ModelConfigStore | None = None,
     ) -> None:
         self.catalog = catalog
         self._session_factory = session_factory
@@ -98,6 +100,7 @@ class WebUiService:
         self.personalization_store = personalization_store or PersonalizationStore(
             workspace / "data" / "personalization.json",
         )
+        self.model_config_store = model_config_store
         self._request_lock = asyncio.Lock()
         self._active_task: asyncio.Task[None] | None = None
         self._active_request_id: str | None = None
@@ -142,23 +145,18 @@ class WebUiService:
         except PersonalizationError:
             startup_warning = startup_warning or "个性化设置无法加载，Web 会话暂未使用自定义提示词。"
 
-        options = resolve_model_options(values)
-        selection = ModelSelectionService(options, ModelSelectionStore())
+        model_config_store = ModelConfigStore() if environ is None else None
+        model_config = model_config_store.load() if model_config_store is not None else None
+        model_values = model_config.environment() if model_config is not None else values
+        options = model_config.options() if model_config is not None else resolve_model_options(model_values)
+        selection = ModelSelectionService(
+            options, ModelSelectionStore(),
+            provider_factory=lambda name, model: create_provider_for_model(name, model, model_values),
+        )
         restored = selection.restore()
-        provider = restored.provider
+        provider = restored.provider or create_provider(model_values)
         warning = restored.warning or startup_warning
-        if provider is not None:
-            runtime_info = ChatRuntimeInfo(
-                provider.name,
-                provider.model,
-                provider.api_key_configured,
-            )
-        else:
-            try:
-                runtime_info = get_chat_runtime_info()
-            except ChatRuntimeError as exc:
-                runtime_info = ChatRuntimeInfo("unknown", "-", False)
-                warning = warning or exc.user_message
+        runtime_info = ChatRuntimeInfo(provider.name, provider.model, provider.api_key_configured)
 
         def execution_snapshot(_input_text: str) -> ChatExecutionSnapshot:
             project = projects.require(catalog.current.project_id)
@@ -222,7 +220,43 @@ class WebUiService:
             context_settings=context_settings,
             personalization_store=personalization_store,
             projects=projects,
+            model_config_store=model_config_store,
         )
+
+    def model_config_payload(self) -> dict[str, object]:
+        """只向设置页提供脱敏配置，测试注入的旧模式不可编辑。"""
+
+        if self.model_config_store is None:
+            raise ValueError("模型配置设置不可用。")
+        return self.model_config_store.load().public_payload()
+
+    def save_model_config(self, payload: dict) -> dict[str, object]:
+        """写盘成功后重建模型候选，使下一轮请求立即读取新密钥。"""
+
+        self._require_idle("保存模型配置")
+        if self.model_config_store is None:
+            raise ValueError("模型配置设置不可用。")
+        updated = self.model_config_store.save(**payload)
+        model_values = updated.environment()
+        options = updated.options()
+        selection = ModelSelectionService(
+            options, ModelSelectionStore(),
+            provider_factory=lambda name, model: create_provider_for_model(name, model, model_values),
+        )
+        current = (self.runtime_info.provider, self.runtime_info.model)
+        valid = {(item.provider, item.model) for item in options}
+        if current in valid:
+            provider = create_provider_for_model(*current, model_values)
+        else:
+            provider = selection.restore().provider or create_provider(model_values)
+        self.model_options = options
+        self.model_selection = selection
+        self.runtime_info = ChatRuntimeInfo(provider.name, provider.model, provider.api_key_configured)
+        self._provider_override = provider
+        for session in self._sessions.values():
+            session.replace_provider(provider)
+        return {**updated.public_payload(), "runtime": self._runtime_payload(),
+                "models": [self._model_payload(item) for item in options]}
 
     def personalization_payload(self) -> dict[str, object]:
         """显式读取最新个性化设置，供页面发现其他标签页的变更。"""

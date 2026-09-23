@@ -128,7 +128,7 @@ git diff --check
 
 已确认机制：
 
-- `DASHSCOPE_API_KEY`、`DEEPSEEK_API_KEY` 从环境变量读取，`LLM_PROVIDER` 只接受 `aliyun` 或 `deepseek`。
+- 模型 API Key 与候选模型由本机私有 `data/model-config.json` 管理；页面与日志不得回传密钥正文，只支持 DeepSeek 和阿里云。
 - `.env` 被 `.gitignore` 排除。
 - 请求输入使用 Pydantic 校验。
 - 上游错误体不直接返回客户端，测试检查假密钥不泄露。

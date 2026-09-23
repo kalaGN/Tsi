@@ -19,7 +19,7 @@ from app.services.llm.factory import create_provider_for_model
 
 
 MODEL_SELECTION_FALLBACK_WARNING = (
-    "已忽略无法恢复的模型选择，当前使用环境默认模型。"
+    "已忽略无法恢复的模型选择，当前使用本机默认模型。"
 )
 MODEL_SELECTION_SAVE_WARNING = "模型已切换，但无法保存启动选择。"
 

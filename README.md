@@ -14,27 +14,9 @@ cd /Users/wangfei/study/fastapi/demo
 
 ## 配置模型
 
-配置写入项目根目录 `.env`。该文件已被 Git 忽略，真实密钥不得写入代码、文档或提交记录。
+先启动 Web UI（源码运行可用 `ti`，桌面版直接打开 `.app`），进入左下角「设置 → 模型」，选择 DeepSeek 或阿里云百炼，填写候选模型（每行一个）和 API Key，点击「保存配置」。保存后下一次请求立即使用新配置；TUI 重启后读取源码 Web UI 保存的同一份配置，再用 `/model` 切换候选。
 
-DeepSeek 是默认 Provider；`LLM_PROVIDER` 可以省略：
-
-```dotenv
-LLM_PROVIDER=deepseek
-DEEPSEEK_API_KEY=replace-with-real-api-key
-DEEPSEEK_MODEL=deepseek-v4-flash
-DEEPSEEK_MODELS=deepseek-v4-flash,deepseek-v4-pro
-```
-
-使用阿里云时必须显式选择：
-
-```dotenv
-LLM_PROVIDER=aliyun
-DASHSCOPE_API_KEY=replace-with-real-api-key
-ALIYUN_MODEL=qwen3-max
-ALIYUN_MODELS=qwen3-max,qwen-plus
-```
-
-`ALIYUN_MODEL`、`DEEPSEEK_MODEL` 是尚未保存 TUI 选择时的初始模型，空白或未设置时使用示例中的默认值。`ALIYUN_MODELS`、`DEEPSEEK_MODELS` 是 TUI `/model` 的可选候选，使用英文逗号分隔；示例只说明配置格式，不承诺对应模型在上游可用。Provider 只能为 `aliyun` 或 `deepseek`；显式空白或其他值会返回配置错误。TUI 每次成功切换后会记住供应商和模型，下次启动优先恢复；Web UI 复用同一持久化机制。
+模型配置保存在本机私有的 `data/model-config.json`，API Key **以明文存储**，父目录权限 `0700`、文件权限 `0600`；页面不会回显已保存的 Key，也不会把它写入浏览器本地存储或模型日志。源码 Web UI 与 TUI 共用项目 `data/`；独立桌面版使用 `~/Library/Application Support/Tsi/data/`。模型字段不再读取 `.env`。如果旧 `.env` 中有模型密钥，请手动复制到设置页并确认可用，再自行删除旧条目；应用不会自动导入或删除它们。模型选择仍在 `model-selection.json` 中恢复。
 
 Web UI 的网络搜索使用固定 Serper.dev Google Search API；需要在 `.env` 增加：
 
@@ -198,7 +180,7 @@ Web UI 复用现有 FastAPI 服务。启动后访问 <http://127.0.0.1:8000/ui>�
 
 左侧会话按本地项目分组。点击“项目”旁的 `+`，输入项目名称和已有目录的绝对路径，即可创建项目；在 macOS 上也可点击“选择目录”调用系统目录选择器，选中后路径会回填输入框，仍需点击“保存”。其他系统可继续手动输入。项目行可切换或编辑名称/路径，顶部 `+` 在当前项目内新建会话。切换会话会同步切换文件浏览、工具 Workspace 根目录和该目录直属 `AGENTS.md`；修改项目路径后，已有消息保留，下一轮请求使用新目录。项目配置保存在 `data/web-projects.json`，旧 Web 会话自动归入首次启动目录对应的默认项目。首版不删除项目；文件写操作仍需逐次审批，模型等设置仍由所有项目共用。
 
-上下文参数在左下角“设置”中配置：**模型**页设置当前模型的窗口、最大回复长度及高级摘要输出上限和安全余量；**上下文**页设置全局触发比例、目标比例、保留轮数，以及高级摘要超时与失败冷却。修改先留在页面草稿，点击“保存”后写入 `data/context-settings.json`，下一次 Web/TUI 请求生效；“恢复继承/恢复默认”只重置草稿，仍需保存。模型页参数按供应商和模型分别保存；环境变量 `LLM_MODEL_BUDGETS` 可提供部署默认，旧 `TUI_CONTEXT_WINDOW_TOKENS` 仅作为窗口的兼容默认。配置来源会逐字段显示，保存期间或请求运行期间不允许冲突操作；不会在页面设置中保存 API Key 或聊天正文。
+上下文参数在左下角“设置”中配置：**模型**页设置当前模型的窗口、最大回复长度及高级摘要输出上限和安全余量；**上下文**页设置全局触发比例、目标比例、保留轮数，以及高级摘要超时与失败冷却。修改先留在页面草稿，点击“保存”后写入 `data/context-settings.json`，下一次 Web/TUI 请求生效；“恢复继承/恢复默认”只重置草稿，仍需保存。模型页参数按供应商和模型分别保存；环境变量 `LLM_MODEL_BUDGETS` 可提供部署默认，旧 `TUI_CONTEXT_WINDOW_TOKENS` 仅作为窗口的兼容默认。配置来源会逐字段显示，保存期间或请求运行期间不允许冲突操作；API Key 单独保存在本机私有模型配置文件，不进入上下文预算文件或聊天正文。
 
 Web UI 只允许本机 loopback 客户端访问。模型可按需激活时间、受限网络搜索及 Workspace 读写工具；搜索和读取自动执行，创建、精确替换、单文件删除和撤销会展示完整有界 Diff，只有当前请求的逐次批准才能执行。取消、断流或请求结束会使待审批操作失效。Web 不提供 Skill、Git 写、脚本或任意命令能力。左下角“设置”进入带左侧菜单的独立页面：通用页调整主题、界面密度和发送快捷键，模型页切换当前模型并设置模型预算，上下文页设置自动压缩策略，统计页展示累计请求、成功率、Token、耗时和模型分布，并以波形图切换最近 7 天或 30 天的请求数、Token 与平均耗时。界面偏好仅保存在当前浏览器，模型选择继续复用项目已有的持久化机制；Web 聚合统计从功能启用后开始保存在 `data/web-statistics.json`，不包含对话正文、会话 ID、工具参数、文件路径或密钥。静态页面不加载远程脚本、样式、图片、字体或图表库。
 
@@ -215,7 +197,7 @@ bash scripts/build_macos_tauri.sh
 
 构建产物位于 `src-tauri/target/release/bundle/macos/Tsi.app`。也可以把 Cargo CLI 装在项目本地的 `build/tauri-cli`，构建脚本会自动识别。构建产物与中间文件不受 Git 跟踪。当前产物仅供本机验证，未配置 Apple Developer ID 签名与公证；分发给其他 Mac 前仍需完成签名和公证。
 
-桌面版第一次运行前，将模型密钥写入 `~/Library/Application Support/Tsi/.env`；格式与上文 `.env` 相同。桌面数据、日志和默认工作区分别保存在该目录的 `data/`、`logs/`、`workspace/`，与源码运行模式隔离。桌面后端只绑定随机本机端口；桌面 API 还需启动时生成的临时令牌。旧 Pake 方案仅是依赖外部 Uvicorn 的网页壳，不属于独立打包方案。
+桌面版首次运行后，在应用内「设置 → 模型」配置 API Key。桌面数据、日志和默认工作区分别保存在 `~/Library/Application Support/Tsi/` 的 `data/`、`logs/`、`workspace/`，与源码运行模式隔离。桌面后端只绑定随机本机端口；桌面 API 还需启动时生成的临时令牌。旧 Pake 方案仅是依赖外部 Uvicorn 的网页壳，不属于独立打包方案。
 
 ## 服务端点
 
@@ -243,7 +225,7 @@ data/chat-session.json
 data/model-selection.json
 ```
 
-`chat-session.json` 保存完整界面消息、滚动摘要和长期偏好；`model-selection.json` 独立保存最近一次成功切换的供应商与模型。重新启动 TUI 会恢复两者。模型选择仍在当前候选中且对应 Key 可用时优先于 `.env`，否则显示安全提示并回退环境默认模型。无效选择文件不会在启动时自动覆盖，之后成功切换可原子替换它。
+`chat-session.json` 保存完整界面消息、滚动摘要和长期偏好；`model-selection.json` 独立保存最近一次成功切换的供应商与模型。重新启动 TUI 会恢复两者。模型选择仍在当前候选中且对应 Key 可用时优先于 `model-config.json` 的首个模型，否则显示安全提示并回退默认模型。无效选择文件不会在启动时自动覆盖，之后成功切换可原子替换它。
 
 `/clear` 可清理损坏的会话文件并重置会话，但不会删除模型选择；`/memory clear` 同样不影响模型选择。两个文件均使用标准库原子写入和 `0600` 权限，模型选择文件不包含 API Key、聊天内容或其他环境配置。
 

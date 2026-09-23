@@ -118,41 +118,13 @@ python3 -c 'import fastapi'
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 ```
 
-## 启动时未读取 `.env`
+## 模型配置未生效
 
-应用使用 `os.getenv` 读取配置。Web 服务由 Uvicorn 显式加载环境文件：
-
-```bash
-.venv/bin/python -m uvicorn main:app --reload --env-file .env
-```
-
-也可以先在 Shell 中设置所需配置。阿里云示例：
-
-```bash
-export DASHSCOPE_API_KEY='replace-with-real-api-key'
-```
-
-DeepSeek 示例：
-
-```bash
-export LLM_PROVIDER=deepseek
-export DEEPSEEK_API_KEY='replace-with-real-api-key'
-```
-
-TUI 入口会自动加载项目根目录 `.env`，且不会覆盖 Shell 中已存在的变量：
-
-```bash
-.venv/bin/python -m app.tui
-```
+生产 Web/TUI 不再从 `.env` 读取模型字段。启动 Web UI 后到「设置 → 模型」填写对应 Provider 的候选模型与 API Key 并保存；源码 Web 与 TUI 共用项目 `data/model-config.json`，TUI 需重新启动。独立桌面版使用 `~/Library/Application Support/Tsi/data/model-config.json`，与源码目录不共享。其他非模型环境变量仍可由 `.env` 加载。
 
 ## Web UI 对话返回 503
 
-先确认 `LLM_PROVIDER` 是 `aliyun`、`deepseek` 或未设置；未设置时按 DeepSeek 处理。然后检查所选 Provider 的密钥：
-
-- 阿里云：`DASHSCOPE_API_KEY`。
-- DeepSeek：`DEEPSEEK_API_KEY`。
-
-显式空白或未知 `LLM_PROVIDER` 也会返回 503。使用 `.env` 启动 Web 服务时必须包含 `--env-file .env`。
+打开「设置 → 模型」，检查当前 Provider 是否已保存 API Key；保存后再选择该模型。模型配置文件损坏或权限不正确也会返回 503，不应通过放宽文件权限修复。
 
 ## Web 网络搜索返回 `api_key_missing`
 
@@ -163,18 +135,17 @@ TUI 入口会自动加载项目根目录 `.env`，且不会覆盖 Shell 中已�
 
 ## TUI 显示 `Key: missing`
 
-- 确认项目根目录存在 `.env`，而不是放在 `app/` 或 `app/tui/`。
-- 确认所选 Provider 对应的 Key 不是空字符串。
-- 如果 Shell 中已经导出了同名空值，先取消或重新设置；TUI 不会用 `.env` 覆盖显式环境变量。
+- 在源码 Web UI 的「设置 → 模型」保存对应供应商的 Key，再重新启动 TUI。
+- 检查项目 `data/model-config.json` 是否仅当前用户可读写，且不是符号链接。
 - 状态栏只显示配置状态，不会显示密钥内容。
 
 ## `/model` 中缺少候选或无法切换
 
-- `DEEPSEEK_MODELS`、`ALIYUN_MODELS` 使用英文逗号分隔；空项、控制字符、超过 128 个字符的名称会被安全忽略，整个列表超过 8 KiB 时只保留当前/默认候选。
-- 每家最多展示 50 个候选，当前合法模型和项目默认模型会自动补入。
-- 标记“Key 缺失”的候选可以浏览但不能确认；分别检查 `DEEPSEEK_API_KEY` 或 `DASHSCOPE_API_KEY`。
+- 在 Web 设置中每行填写一个候选模型；控制字符、重复项和超长名称会被拒绝。
+- 每家最多展示 50 个保存的候选，不会自动补入已删除的旧模型。
+- 标记“Key 缺失”的候选可以浏览但不能确认；在设置页保存对应供应商的 API Key 后重启 TUI。
 - 切换不会联网验证模型是否存在。若下一次请求返回上游错误，请核对该供应商实际开放的模型名和账号权限。
-- 选择仅在当前 TUI 进程生效，不写入 `.env`；重启后恢复 `LLM_PROVIDER` 和对应 `*_MODEL` 配置。
+- 成功选择会写入 `data/model-selection.json`；重启后仅在该模型仍在候选列表且 Key 可用时恢复。
 
 ## TUI 无法启动或终端显示异常
 

@@ -130,7 +130,7 @@ class ChatTuiApp(App[None]):
         configuration_issue = self._issue_message("configuration")
         if configuration_issue is None and not self.runtime_info.api_key_configured:
             self.run_status = RunStatus.ERROR
-            self._write_message("Error", "Upstream API key is not configured")
+            self._write_message("Error", "模型 API Key 未配置，请先在 Web UI 的「设置 → 模型」中保存。")
         for issue in self._health.issues:
             if issue.severity is IssueSeverity.ERROR:
                 self.run_status = RunStatus.ERROR

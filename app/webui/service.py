@@ -42,9 +42,10 @@ from tools.workspace import (
     create_web_intent_workspace_registry,
 )
 from tools.mcp_client import McpRegistry, load_mcp_config
+from local_paths import data_root
 
 
-DATA_ROOT = Path(__file__).resolve().parents[2] / "data"
+DATA_ROOT = data_root()
 DEFAULT_WEB_SESSION_PATH = DATA_ROOT / "web-session.json"
 DEFAULT_WEB_SESSIONS_ROOT = DATA_ROOT / "web-sessions"
 DEFAULT_WEB_STATISTICS_PATH = DATA_ROOT / "web-statistics.json"

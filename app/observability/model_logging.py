@@ -13,6 +13,7 @@ from uuid import uuid4
 from zoneinfo import ZoneInfo
 
 from tools.mcp_context import MCP_REDACT_LOGS
+from local_paths import log_root
 
 
 LOGGER_NAME = "app.model_calls"
@@ -34,7 +35,7 @@ logging.getLogger(LOGGER_NAME).addFilter(_McpContentFilter())
 logging.getLogger(LOGGER_NAME).addHandler(logging.NullHandler())
 MAX_LOG_BYTES = 10 * 1024 * 1024
 BACKUP_COUNT = 5
-LOG_ROOT = Path(__file__).resolve().parents[2] / "logs"
+LOG_ROOT = log_root()
 _LOCAL_LOG_TIMEZONE = ZoneInfo("Asia/Shanghai")
 
 

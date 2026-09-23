@@ -8,9 +8,10 @@ import tempfile
 from pathlib import Path
 
 from app.runtime.model_budget import strict_json
+from local_paths import data_root
 
 
-DEFAULT_PERSONALIZATION_PATH = Path(__file__).resolve().parents[2] / "data" / "personalization.json"
+DEFAULT_PERSONALIZATION_PATH = data_root() / "personalization.json"
 MAX_PERSONAL_PROMPT_BYTES = 16 * 1024
 MAX_PERSONALIZATION_FILE_BYTES = 20 * 1024
 

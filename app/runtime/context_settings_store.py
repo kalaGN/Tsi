@@ -9,9 +9,10 @@ import tempfile
 from pathlib import Path
 
 from app.runtime.model_budget import model_identity, strict_json, validate_overrides
+from local_paths import data_root
 
 
-DEFAULT_CONTEXT_SETTINGS_PATH = Path(__file__).resolve().parents[2] / "data" / "context-settings.json"
+DEFAULT_CONTEXT_SETTINGS_PATH = data_root() / "context-settings.json"
 
 
 class ContextSettingsError(Exception):

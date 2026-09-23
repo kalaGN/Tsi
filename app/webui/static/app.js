@@ -71,9 +71,11 @@ function showToast(message) {
 }
 
 async function api(path, options = {}) {
+  const headers = { "Content-Type": "application/json", ...(options.headers || {}) };
+  if (window.__TSI_DESKTOP_TOKEN__) headers["X-Tsi-Desktop-Token"] = window.__TSI_DESKTOP_TOKEN__;
   const response = await fetch(`/ui/api${path}`, {
-    headers: { "Content-Type": "application/json", ...(options.headers || {}) },
     ...options,
+    headers,
   });
   if (!response.ok) {
     let detail = `请求失败（${response.status}）`;

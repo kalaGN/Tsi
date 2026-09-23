@@ -16,10 +16,11 @@ from app.runtime.memory import (
 )
 from app.runtime.model_budget import strict_json
 from app.services.llm.contracts import ChatMessage, ChatRole
+from local_paths import data_root
 
 
 SESSION_SCHEMA_VERSION = 3
-DEFAULT_SESSION_PATH = Path(__file__).resolve().parents[2] / "data" / "chat-session.json"
+DEFAULT_SESSION_PATH = data_root() / "chat-session.json"
 
 
 class SessionStoreError(Exception):

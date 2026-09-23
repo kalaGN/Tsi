@@ -33,9 +33,10 @@ from tools.contracts import (
 )
 from tools.mcp_context import MCP_REDACT_LOGS
 from tools.registry import MAX_ARGUMENT_BYTES, MAX_RESULT_BYTES, ToolRegistry
+from local_paths import data_root
 
 
-DEFAULT_MCP_CONFIG = Path(__file__).resolve().parents[1] / "data" / "mcp-servers.json"
+DEFAULT_MCP_CONFIG = data_root() / "mcp-servers.json"
 _NAME = re.compile(r"^[a-z][a-z0-9_]{0,19}$")
 _TOOL_NAME = re.compile(r"^[A-Za-z0-9_-]{1,32}$")
 _ENV_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")

@@ -8,13 +8,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from app.services.llm.factory import validate_model_name
+from local_paths import data_root
 
 
 MODEL_SELECTION_SCHEMA_VERSION = 1
 MAX_MODEL_SELECTION_BYTES = 4 * 1024
-DEFAULT_MODEL_SELECTION_PATH = (
-    Path(__file__).resolve().parents[2] / "data" / "model-selection.json"
-)
+DEFAULT_MODEL_SELECTION_PATH = data_root() / "model-selection.json"
 _SUPPORTED_PROVIDERS = frozenset({"deepseek", "aliyun"})
 _PAYLOAD_KEYS = frozenset({"version", "provider", "model"})
 

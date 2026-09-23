@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Tsi",
+  "version": "0.1.0",
+  "identifier": "com.tsi.assistant",
+  "build": {
+    "frontendDist": "desktop-shell"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app"],
+    "icon": ["../packaging/Tsi.icns"],
+    "externalBin": ["binaries/tsi-backend"]
+  }
+}

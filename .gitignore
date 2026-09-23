@@ -5,6 +5,11 @@ __pycache__/
 .venv/
 venv/
 env/
+build/
+dist/
+src-tauri/target/
+src-tauri/binaries/
+src-tauri/gen/
 .env
 logs/
 data/

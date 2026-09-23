@@ -204,14 +204,18 @@ Web UI 只允许本机 loopback 客户端访问。模型可按需激活时间、
 
 ## 打包 macOS 桌面应用
 
-使用 Pake 将 Web UI 打包为独立 macOS 桌面应用：
+正式桌面包使用 Tauri 2 容纳现有 Web UI，PyInstaller 内置 FastAPI 后端；双击 `.app` 即可独立运行，不需要另起 Uvicorn，也不需要 Node.js。当前构建脚本面向 Apple Silicon macOS，需要 Rust/Cargo、Python 3.11 和 Xcode Command Line Tools。
 
 ```bash
-pake "http://127.0.0.1:8000/ui#/chat" --name Tsi --icon ./packaging/Tsi.icns
+cd /Users/wangfei/study/fastapi/demo
+.venv/bin/python -m pip install -r requirements-desktop.txt
+cargo install tauri-cli --version '^2.0.0' --locked
+bash scripts/build_macos_tauri.sh
 ```
 
-运行前需确保 Uvicorn 已启动且 `http://127.0.0.1:8000/ui` 可访问。
-构建产物在本地目录下，不会被 Git 跟踪。
+构建产物位于 `src-tauri/target/release/bundle/macos/Tsi.app`。也可以把 Cargo CLI 装在项目本地的 `build/tauri-cli`，构建脚本会自动识别。构建产物与中间文件不受 Git 跟踪。当前产物仅供本机验证，未配置 Apple Developer ID 签名与公证；分发给其他 Mac 前仍需完成签名和公证。
+
+桌面版第一次运行前，将模型密钥写入 `~/Library/Application Support/Tsi/.env`；格式与上文 `.env` 相同。桌面数据、日志和默认工作区分别保存在该目录的 `data/`、`logs/`、`workspace/`，与源码运行模式隔离。桌面后端只绑定随机本机端口；桌面 API 还需启动时生成的临时令牌。旧 Pake 方案仅是依赖外部 Uvicorn 的网页壳，不属于独立打包方案。
 
 ## 服务端点
 

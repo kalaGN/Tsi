@@ -29,7 +29,7 @@ from app.runtime.tool_loop import (
     DEFAULT_TOOL_LOOP_LIMITS,
     WORKSPACE_TOOL_LOOP_LIMITS,
 )
-from app.services.llm.contracts import ModelOption
+from app.services.llm.contracts import LlmProvider, ModelOption
 from app.services.llm.factory import (
     create_provider_for_model,
     resolve_model_options,
@@ -74,6 +74,8 @@ def build_tui_dependencies(
     model_options: tuple[ModelOption, ...] | None = None,
     session_store: SessionStore | None = None,
     runtime_info: ChatRuntimeInfo | None = None,
+    initial_provider: LlmProvider | None = None,
+    model_config_error: str | None = None,
     runtime_info_factory=get_chat_runtime_info,
     provider_factory: ProviderFactory = create_provider_for_model,
     memory_policy: MemoryPolicy | None = None,
@@ -84,6 +86,8 @@ def build_tui_dependencies(
 
     values = os.environ if environ is None else environ
     issues: list[StartupIssue] = []
+    if model_config_error is not None:
+        issues.append(_issue("configuration", model_config_error, blocks_prompt=True))
     options = (
         resolve_model_options(values)
         if model_options is None
@@ -105,6 +109,10 @@ def build_tui_dependencies(
         )
     elif runtime_info is not None:
         current_info = runtime_info
+    elif initial_provider is not None:
+        current_info = ChatRuntimeInfo(
+            initial_provider.name, initial_provider.model, initial_provider.api_key_configured,
+        )
     else:
         try:
             current_info = runtime_info_factory()
@@ -161,7 +169,7 @@ def build_tui_dependencies(
 
     store = session_store or SessionStore()
     session_arguments = {
-        "provider": restored.provider,
+        "provider": restored.provider or initial_provider,
         "system_prompt": system_prompt,
         "registry": workspace_registry,
         "execution_snapshot_provider": (

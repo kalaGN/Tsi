@@ -57,6 +57,12 @@ const contextSettings = new window.ContextSettingsView(api, showToast, (locked) 
   $("#model-select").disabled = state.busy || locked;
   $("#settings-model-select").disabled = state.busy || locked;
 });
+const modelConfig = new window.ModelConfigView(api, async (updated) => {
+  populateModels(updated.models, updated.runtime);
+  setConnected(updated.runtime.api_key_configured, updated.runtime.api_key_configured ? "本地服务已连接" : "API Key 未配置");
+  sendButton.disabled = !updated.runtime.api_key_configured;
+  await contextSettings.load();
+});
 
 if (window.matchMedia("(max-width: 1040px)").matches) {
   $(".app-shell").classList.add("inspector-closed");
@@ -118,6 +124,7 @@ function renderRoute() {
   });
   if (route.section === "statistics" && previous !== "statistics") loadStatistics();
   if (["model", "context"].includes(route.section)) contextSettings.load();
+  if (route.section === "model" && previous !== "model") modelConfig.load();
   if (route.section === "personalization" && previous !== "personalization") loadPersonalization();
 }
 
@@ -801,6 +808,7 @@ function setBusy(busy) {
   $("#model-select").disabled = busy;
   $("#settings-model-select").disabled = busy;
   contextSettings.setBusy(busy);
+  modelConfig.setBusy(busy);
   sendButton.hidden = busy;
   stopButton.hidden = !busy;
   $("#activity-strip").hidden = !busy;

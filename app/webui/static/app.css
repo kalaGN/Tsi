@@ -252,6 +252,9 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .settings-note { margin: 0; color: var(--muted); font-size: 12px; }
 .settings-card textarea { width: 100%; min-height: 210px; padding: 12px; resize: vertical; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); color: var(--text); line-height: 1.6; }
 .settings-card textarea:focus { border-color: var(--accent); }
+#model-config-models { min-height: 110px; }
+#model-config-key { width: min(420px, 100%); padding: 9px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-muted); color: var(--text); }
+#model-config-key:focus { border-color: var(--accent); }
 .personalization-status { margin: 0; color: var(--muted); font-size: 12px; }
 
 .statistics-state { padding: 28px; border: 1px dashed var(--border-strong); border-radius: 14px; color: var(--muted); text-align: center; }

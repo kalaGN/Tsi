@@ -411,7 +411,7 @@ def test_unrestorable_model_selection_warns_and_uses_environment_default(
         )
         async with app.run_test():
             transcript = transcript_text(app)
-            assert "已忽略无法恢复的模型选择，当前使用环境默认模型" in transcript
+            assert "已忽略无法恢复的模型选择，当前使用本机默认模型" in transcript
             assert str(tmp_path) not in transcript
             assert "DeepSeek | deepseek-v4-flash" in str(
                 app.query_one("#status-bar", Static).content
@@ -1704,7 +1704,7 @@ def test_tui_missing_key_starts_in_safe_error_state():
 
             assert app.run_status is RunStatus.ERROR
             assert "Key: missing" in str(status_bar.content)
-            assert "Upstream API key is not configured" in transcript_text(app)
+            assert "模型 API Key 未配置" in transcript_text(app)
 
     asyncio.run(scenario())
 

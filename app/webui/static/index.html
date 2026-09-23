@@ -233,15 +233,38 @@
           <section class="settings-panel" id="settings-model-panel" data-settings-panel="model" hidden>
             <div class="settings-panel-copy">
               <h2>模型</h2>
-              <p>选择已在环境变量中配置的 Provider 与模型。</p>
+              <p>在本机配置 DeepSeek 或阿里云模型；保存后下一次请求立即生效。</p>
             </div>
             <div class="settings-card">
               <label class="setting-control">
                 <span>当前模型</span>
                 <select id="settings-model-select" aria-label="设置当前模型"></select>
               </label>
-              <p class="settings-note">页面不会显示、编辑或回传 API Key。</p>
             </div>
+            <form class="settings-card" id="model-config-form">
+              <label class="setting-control">
+                <span>配置供应商</span>
+                <select id="model-config-provider" aria-label="配置供应商">
+                  <option value="deepseek">DeepSeek</option>
+                  <option value="aliyun">阿里云百炼</option>
+                </select>
+              </label>
+              <label class="setting-control" for="model-config-models">
+                <span>候选模型（每行一个）</span>
+                <textarea id="model-config-models" rows="4" spellcheck="false" placeholder="例如：deepseek-v4-flash"></textarea>
+              </label>
+              <label class="setting-control" for="model-config-key">
+                <span>API Key（留空则保留现有密钥）</span>
+                <input id="model-config-key" type="password" autocomplete="new-password" spellcheck="false" placeholder="输入新密钥">
+              </label>
+              <p class="settings-note">Key 保存在本机私有文件中（明文、仅当前用户可读）；页面不会回显已保存的密钥。请勿在共享设备上使用。</p>
+              <p id="model-config-status" class="budget-status" role="status">正在加载…</p>
+              <div class="budget-actions">
+                <button type="button" class="secondary-button" id="model-config-clear-key">删除已保存的 Key</button>
+                <button type="button" class="secondary-button" id="model-config-reload">重新加载</button>
+                <button type="submit" class="primary-action-button" id="model-config-save">保存配置</button>
+              </div>
+            </form>
             <div class="settings-card budget-card" data-budget-form="model"></div>
           </section>
 
@@ -403,6 +426,7 @@
 
     <div class="toast" id="toast" role="status" hidden></div>
     <script src="/ui/context-settings.js" defer></script>
+    <script src="/ui/model-config.js" defer></script>
     <script src="/ui/app.js" defer></script>
   </body>
 </html>

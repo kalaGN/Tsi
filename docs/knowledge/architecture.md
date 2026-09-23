@@ -202,16 +202,16 @@ TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只�
 
 ## 配置
 
-| Provider | Selector | Key | Current model | TUI candidates | Default |
-| --- | --- | --- | --- | --- | --- |
-| Aliyun | `LLM_PROVIDER=aliyun` | `DASHSCOPE_API_KEY` | `ALIYUN_MODEL` | `ALIYUN_MODELS` | `qwen3-max` |
-| DeepSeek | `LLM_PROVIDER=deepseek` 或未设置 | `DEEPSEEK_API_KEY` | `DEEPSEEK_MODEL` | `DEEPSEEK_MODELS` | `deepseek-v4-flash` |
+| Provider | API Key 与候选模型 | 初始候选 |
+| --- | --- | --- |
+| Aliyun | Web「设置 → 模型」保存到本机 `data/model-config.json` | `qwen3-max` |
+| DeepSeek | Web「设置 → 模型」保存到本机 `data/model-config.json` | `deepseek-v4-flash` |
 
-显式空白或未知 `LLM_PROVIDER` 是配置错误，不静默回退。模型变量空白时使用默认值。上游 URL 固定在相应适配器中，不能通过环境变量覆盖。
+模型配置文件为本机明文、仅当前用户可读写；生产 Web/TUI 不再从 `.env` 读取模型字段。上游 URL 固定在相应适配器中，不能通过设置覆盖。桌面版使用其独立的 Application Support 数据目录。
 
 网络搜索由可选 `SERPER_API_KEY` 启用，仅 Web Registry 可见；URL 固定为 Google Serper Search，模型不能覆盖。缺少 Key 时工具返回稳定的不可用原因且不会联网。
 
-TUI 启动后，完整 `/model` 打开由两项 `*_MODELS`、当前模型和默认模型组成的安全候选快照。候选按 DeepSeek、Aliyun 及各自配置顺序展示，每家最多 50 项；缺少 Key 的候选可见但不可确认。切换先创建完整 Provider，再由 Session 在无活动请求时替换，保留消息和存储且不写回环境；成功后将安全的供应商和模型标识原子保存到 `data/model-selection.json`。下次启动只有在保存项仍位于候选且 Key 可用时才把同一 Provider 同时注入 Session 和状态栏，否则保留文件、显示非阻断提示并回退环境默认。
+TUI 启动后，`/model` 只展示 `model-config.json` 中的候选；每家最多 50 项，缺少 Key 的候选可见但不可确认。切换先创建完整 Provider，再由 Session 在无活动请求时替换，保留消息和存储；成功后将安全的供应商和模型标识原子保存到 `data/model-selection.json`。下次启动只有在保存项仍位于候选且 Key 可用时才恢复，否则保留文件、显示非阻断提示并回退本机配置的首个模型。
 
 ## 设计决策
 

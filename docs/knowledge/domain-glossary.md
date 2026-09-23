@@ -18,19 +18,19 @@ DeepSeek 提供的对话接口。本项目调用固定地址 `https://api.deepse
 
 ## qwen3-max
 
-阿里云 Provider 的默认模型。可以通过 `ALIYUN_MODEL` 在部署环境覆盖。
+阿里云 Provider 的初始候选模型；可在 Web「设置 → 模型」修改。
 
 ## deepseek-v4-flash
 
-DeepSeek Provider 的默认模型。可以通过 `DEEPSEEK_MODEL` 在部署环境覆盖。
+DeepSeek Provider 的初始候选模型；可在 Web「设置 → 模型」修改。
 
 ## DASHSCOPE_API_KEY
 
-阿里云 Provider 的 Bearer Token 环境变量。只允许从进程环境读取，不得写入源代码、Git 管理的文档、日志或测试数据。
+旧版阿里云 Provider 的 Bearer Token 环境变量；当前生产 Web/TUI 不再读取它。新密钥在 Web「设置 → 模型」保存到本机私有配置文件，不得写入源码、Git、日志或测试数据。
 
 ## DEEPSEEK_API_KEY
 
-DeepSeek Provider 的 Bearer Token 环境变量，安全规则与 `DASHSCOPE_API_KEY` 相同。
+旧版 DeepSeek Provider 的 Bearer Token 环境变量；当前生产 Web/TUI 不再读取它，安全规则与阿里云密钥相同。
 
 ## Upstream
 

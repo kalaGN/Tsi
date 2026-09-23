@@ -7,6 +7,7 @@ from dotenv import load_dotenv
 
 from app.observability.model_logging import configure_model_logging
 from app.runtime.model_selection_store import ModelSelectionStore
+from app.runtime.model_config_store import MODEL_ENV_KEYS, ModelConfigError, ModelConfigStore
 from app.runtime.chat import ChatRuntimeError
 from app.runtime.system_prompt import (
     SystemPromptLoadError,
@@ -15,6 +16,7 @@ from app.runtime.system_prompt import (
 )
 from app.runtime.skill_runtime import SkillRuntime
 from app.tui.bootstrap import TuiDependencies, build_tui_dependencies
+from app.services.llm.factory import create_provider, create_provider_for_model
 from tools.skills import SkillLoadError, load_skill_catalog
 from tools.workspace import WorkspacePolicy, create_intent_workspace_registry
 
@@ -74,6 +76,17 @@ def main() -> None:
         workspace_error = exc.user_message if isinstance(exc, ChatRuntimeError) else "Workspace tools are unavailable"
         skills_count = 0
         system_prompt = compose_system_prompt(agents_prompt, None)
+    model_store = ModelConfigStore()
+    try:
+        model_config = model_store.load()
+        model_config_error = None
+    except ModelConfigError:
+        model_config = model_store.defaults()
+        model_config_error = "模型配置无法读取，请在 Web 设置中检查本机配置文件。"
+    model_values = model_config.environment()
+    # 其他配置仍可来自环境；模型字段只能由私有配置文件提供。
+    effective_values = {key: value for key, value in os.environ.items() if key not in MODEL_ENV_KEYS}
+    effective_values.update(model_values)
     dependencies = build_tui_dependencies(
         system_prompt=system_prompt,
         system_prompt_error=system_prompt_error,
@@ -83,6 +96,11 @@ def main() -> None:
         skills_error=skills_error,
         skill_runtime=skill_runtime,
         model_selection_store=ModelSelectionStore(),
+        model_options=model_config.options(),
+        provider_factory=lambda name, model: create_provider_for_model(name, model, model_values),
+        initial_provider=create_provider(model_values),
+        model_config_error=model_config_error,
+        environ=effective_values,
     )
     _create_app(dependencies=dependencies).run()
 

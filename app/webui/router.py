@@ -14,6 +14,7 @@ from pydantic import BaseModel, StrictBool, StrictStr, validator
 from app.runtime.chat import ChatRuntimeError
 from app.runtime.context_settings_store import ContextSettingsConflict, ContextSettingsError
 from app.runtime.model_budget import strict_json
+from app.runtime.model_config_store import ModelConfigConflict, ModelConfigError, ModelConfigValidation
 from app.runtime.model_selection import ModelSelectionError
 from app.runtime.personalization_store import (
     MAX_PERSONAL_PROMPT_BYTES,
@@ -91,6 +92,7 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
                 ValueError,
                 ChatRuntimeError,
                 ContextSettingsError,
+                ModelConfigError,
                 WebSessionStoreError,
                 WebProjectError,
                 WebProjectNotFound,
@@ -134,6 +136,11 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
         _require_loopback(request)
         return FileResponse(STATIC_ROOT / "context-settings.js", media_type="application/javascript")
 
+    @router.get("/ui/model-config.js", include_in_schema=False)
+    async def model_config_javascript(request: Request):
+        _require_loopback(request)
+        return FileResponse(STATIC_ROOT / "model-config.js", media_type="application/javascript")
+
     @router.get("/ui/api/bootstrap")
     async def bootstrap(request: Request):
         _require_loopback(request)
@@ -151,6 +158,44 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
             return current_service().context_settings_payload()
         except ContextSettingsError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    @router.get("/ui/api/model-config")
+    async def model_config(request: Request):
+        """仅返回候选模型与 Key 是否配置，绝不回传密钥正文。"""
+
+        _require_loopback(request)
+        try:
+            return current_service().model_config_payload()
+        except (ModelConfigError, ValueError) as exc:
+            raise HTTPException(status_code=503, detail="模型配置无法读取。") from exc
+
+    @router.put("/ui/api/model-config")
+    async def save_model_config(request: Request):
+        """同源有界写入，明确区分保留、替换和删除密钥。"""
+
+        _require_loopback(request)
+        _require_same_origin_json(request)
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 12 * 1024:
+                raise HTTPException(status_code=422, detail="模型配置请求过大。")
+            raw.extend(chunk)
+        try:
+            payload = strict_json(raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("invalid payload")
+            required = {"expected_revision", "provider", "models", "api_key_action"}
+            if payload.get("api_key_action") == "set":
+                required.add("api_key")
+            if set(payload) != required:
+                raise ValueError("invalid fields")
+            return current_service().save_model_config(payload)
+        except (UnicodeError, ValueError, ModelConfigValidation) as exc:
+            raise HTTPException(status_code=422, detail="模型配置无效，请检查输入。") from exc
+        except (ModelConfigConflict, WebUiBusyError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ModelConfigError as exc:
+            raise HTTPException(status_code=503, detail="模型配置保存失败，请检查本机文件。") from exc
 
     @router.get("/ui/api/personalization")
     async def personalization(request: Request):

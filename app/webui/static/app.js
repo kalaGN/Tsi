@@ -5,6 +5,11 @@ const state = {
   startedAt: 0,
   timer: null,
   streamNode: null,
+  feedbackTimer: null,
+  feedbackInput: "",
+  feedbackStartedAt: 0,
+  feedbackPhase: "",
+  feedbackHasModelText: false,
   models: [],
   sessions: [],
   projects: [],
@@ -928,6 +933,83 @@ function closeToolApproval() {
   restoreModalFocus();
 }
 
+function taskFeedbackSummary(input) {
+  const normalized = String(input || "").replace(/\s+/g, " ").trim();
+  if (normalized.length <= 90) return normalized;
+  return `${normalized.slice(0, 89)}…`;
+}
+
+function taskSplitAssessment(input) {
+  const value = String(input || "");
+  const lines = value.split("\n").filter((line) => line.trim()).length;
+  const needsSteps = value.length > 80 || lines > 1
+    || /(?:并且|然后|同时|以及|之后|最后|修改.+测试|实现.+验证)/.test(value);
+  return needsSteps
+    ? "初步判断：需要拆分步骤，将按分析、执行、验证推进。"
+    : "初步判断：任务范围较集中，将直接处理并验证结果。";
+}
+
+function clearFeedbackTimer() {
+  window.clearInterval(state.feedbackTimer);
+  state.feedbackTimer = null;
+}
+
+function renderTaskFeedback() {
+  if (!state.streamNode || state.feedbackHasModelText || !state.feedbackInput) return;
+  const elapsed = Math.max(0, Math.floor((Date.now() - state.feedbackStartedAt) / 1000));
+  let phase = state.feedbackPhase;
+  if (!phase) {
+    if (elapsed < 3) phase = "正在理解目标和约束";
+    else if (elapsed < 6) phase = "正在检查相关上下文";
+    else if (elapsed < 12) phase = "正在规划执行步骤";
+    else phase = "任务仍在执行，正在等待模型或工具返回";
+  }
+  state.streamNode.classList.add("progress-feedback");
+  state.streamNode.textContent = [
+    "已收到任务。",
+    `任务理解：${taskFeedbackSummary(state.feedbackInput)}`,
+    taskSplitAssessment(state.feedbackInput),
+    `${phase} · ${elapsed} 秒`,
+  ].join("\n");
+  scrollToBottom();
+}
+
+function startTaskFeedback(input, phase = "") {
+  clearFeedbackTimer();
+  state.feedbackInput = input;
+  state.feedbackStartedAt = Date.now();
+  state.feedbackPhase = phase;
+  state.feedbackHasModelText = false;
+  renderTaskFeedback();
+  state.feedbackTimer = window.setInterval(renderTaskFeedback, 3000);
+}
+
+function resumeTaskFeedback(phase) {
+  if (!state.feedbackInput || !state.streamNode) return;
+  clearFeedbackTimer();
+  state.feedbackPhase = phase;
+  state.feedbackHasModelText = false;
+  renderTaskFeedback();
+  state.feedbackTimer = window.setInterval(renderTaskFeedback, 3000);
+}
+
+function beginModelOutput() {
+  if (!state.streamNode || state.feedbackHasModelText) return;
+  clearFeedbackTimer();
+  state.feedbackHasModelText = true;
+  state.streamNode.classList.remove("progress-feedback");
+  state.streamNode.textContent = "";
+}
+
+function stopTaskFeedback() {
+  clearFeedbackTimer();
+  state.streamNode?.classList.remove("progress-feedback");
+  state.feedbackInput = "";
+  state.feedbackStartedAt = 0;
+  state.feedbackPhase = "";
+  state.feedbackHasModelText = false;
+}
+
 function showToolApproval(event) {
   closeToolApproval();
   state.pendingApproval = {
@@ -970,6 +1052,7 @@ async function submitToolApproval(approved) {
 
 function finishStreamAsMarkdown(finalText) {
   if (!state.streamNode) return;
+  stopTaskFeedback();
   state.streamNode.classList.remove("stream-caret");
   state.streamNode.replaceChildren(textBlock(finalText));
   state.streamNode = null;
@@ -982,6 +1065,7 @@ async function sendMessage() {
   prompt.value = "";
   autoSizeInput();
   state.streamNode = addMessage("assistant", "", { streaming: true });
+  startTaskFeedback(input);
   $("#activity-list").replaceChildren();
   addActivity("模型请求", "进行中");
   $("#activity-text").textContent = "思考中";
@@ -1014,12 +1098,14 @@ async function sendMessage() {
     }
     if (buffer.trim()) handleEvent(JSON.parse(buffer));
   } catch (error) {
+    stopTaskFeedback();
     if (state.streamNode) state.streamNode.textContent = "";
     addMessage("assistant", error.message, { error: true });
     state.streamNode?.closest(".message")?.remove();
     state.streamNode = null;
     addActivity("模型请求", "失败", error.message);
   } finally {
+    stopTaskFeedback();
     closeToolApproval();
     setBusy(false);
     prompt.disabled = false;
@@ -1050,6 +1136,7 @@ async function runTask(task) {
   if (state.busy) return;
   renderTask(task);
   state.streamNode = addMessage("assistant", "", { streaming: true });
+  startTaskFeedback(task.goal, "正在准备任务执行");
   $("#activity-list").replaceChildren();
   addActivity("任务执行", "进行中");
   $("#activity-text").textContent = "任务执行中";
@@ -1074,14 +1161,17 @@ async function runTask(task) {
     }
     if (buffer.trim()) handleEvent(JSON.parse(buffer));
     if (state.streamNode) {
+      stopTaskFeedback();
       state.streamNode.closest(".message")?.remove();
       state.streamNode = null;
     }
   } catch (error) {
+    stopTaskFeedback();
     state.streamNode?.closest(".message")?.remove();
     state.streamNode = null;
     addMessage("assistant", error.message, { error: true });
   } finally {
+    stopTaskFeedback();
     closeToolApproval();
     setBusy(false);
     await loadTasks();
@@ -1096,22 +1186,27 @@ function handleEvent(event) {
   } else if (event.type === "text_delta" && state.streamNode) {
     // 收到正文增量说明模型已经开始作答，不能继续显示“思考中”。
     $("#activity-text").textContent = "正在回答";
+    beginModelOutput();
     state.streamNode.textContent += event.text;
     scrollToBottom();
   } else if (event.type === "text_reset" && state.streamNode) {
-    state.streamNode.textContent = "";
+    resumeTaskFeedback("模型正在调用工具，等待执行结果");
     $("#activity-text").textContent = "正在调用工具";
   } else if (event.type === "tool_approval_required") {
+    resumeTaskFeedback("等待你确认工作区修改");
     showToolApproval(event);
     addActivity(event.tool, "等待批准", event.paths.join("、"));
     $("#activity-text").textContent = "等待批准";
   } else if (event.type === "tool_finished") {
+    resumeTaskFeedback(`工具 ${event.tool} 已返回，正在继续处理`);
     addActivity(event.tool, event.status === "success" ? "已完成" : "失败");
     $("#activity-text").textContent = `工具：${event.tool}`;
     if (event.status === "success" && ["apply_workspace_edits", "delete_workspace_file", "undo_workspace_change"].includes(event.tool)) loadFiles();
   } else if (event.type === "context_compaction_started") {
+    resumeTaskFeedback("正在整理上下文");
     $("#activity-text").textContent = "正在整理上下文";
   } else if (event.type === "context_compaction_finished") {
+    resumeTaskFeedback("上下文整理完成，正在继续分析");
     $("#activity-text").textContent = "思考中";
   } else if (event.type === "context_updated") {
     $("#context-text").textContent = `上下文 ${event.percent}%`;
@@ -1134,6 +1229,7 @@ function handleEvent(event) {
     if (event.warning) showToast(event.warning);
   } else if (event.type === "failed") {
     closeToolApproval();
+    stopTaskFeedback();
     $("#activity-text").textContent = "请求失败";
     state.streamNode?.closest(".message")?.remove();
     state.streamNode = null;
@@ -1142,6 +1238,7 @@ function handleEvent(event) {
     if (event.applied_changes?.length) showToast(`本轮已有文件变更：${event.applied_changes.join("、")}`);
   } else if (event.type === "cancelled") {
     closeToolApproval();
+    stopTaskFeedback();
     $("#activity-text").textContent = "已取消";
     state.streamNode?.closest(".message")?.remove();
     state.streamNode = null;

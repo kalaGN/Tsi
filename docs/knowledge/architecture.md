@@ -209,7 +209,7 @@ TUI 不解析 Provider JSON，也不逐次确认只读工具。启动入口只�
 
 模型配置文件为本机明文、仅当前用户可读写；生产 Web/TUI 不再从 `.env` 读取模型字段。上游 URL 固定在相应适配器中，不能通过设置覆盖。桌面版使用其独立的 Application Support 数据目录。
 
-网络搜索由可选 `SERPER_API_KEY` 启用，仅 Web Registry 可见；URL 固定为 Google Serper Search，模型不能覆盖。缺少 Key 时工具返回稳定的不可用原因且不会联网。
+网络搜索仅 Web Registry 可见，Serper Key 从本机私有 `service-config.json` 在工具调用时读取，不再从环境变量获取；URL 固定为 Google Serper Search，模型不能覆盖。缺少 Key 时工具返回稳定的不可用原因且不会联网。「设置 → 服务」只展示应用代码登记且实际接入的外部服务，当前只有 Serper。
 
 TUI 启动后，`/model` 只展示 `model-config.json` 中的候选；每家最多 50 项，缺少 Key 的候选可见但不可确认。切换先创建完整 Provider，再由 Session 在无活动请求时替换，保留消息和存储；成功后将安全的供应商和模型标识原子保存到 `data/model-selection.json`。下次启动只有在保存项仍位于候选且 Key 可用时才恢复，否则保留文件、显示非阻断提示并回退本机配置的首个模型。
 
@@ -217,7 +217,7 @@ TUI 启动后，`/model` 只展示 `model-config.json` 中的候选；每家最�
 
 - Web 与 TUI 都只接触统一文本，原始 Provider JSON 只存在于 Provider 调用栈。
 - 所有请求统一通过 Provider Turn，不保留旧 `generate()` 或原始 ProviderResult 路径。
-- `create_default_registry` 注册 `get_current_time(timezone)` 和 `web_search(query, limit)`，当前只作为 Runtime 与评测的默认值；Web 的请求级 Registry 提供 `general`、`web_search`、`workspace_read`、`workspace_write`；TUI 再增加 Skill、安装和 `git_write`，但不包含搜索组。配置 MCP Server 时，两者可在请求开始时发现并冻结 `mcp` 组，外部工具逐次审批。内置工具仍使用显式白名单，不支持反射、动态 import 或模型指定任意命令。
+- `create_default_registry` 注册 `get_current_time(timezone)` 和 `web_search(query, limit)`，当前只作为 Runtime 与评测的默认值；Web 的请求级 Registry 提供 `general`、`web_search`、`workspace_read`、`workspace_write`、`skills` 和 `skill_install`；TUI 提供相同的本地与 Skill 能力并增加 `git_write`，但不包含搜索组。Web 按项目路径缓存 `SkillRuntime`，路径变化时创建新快照；安装成功只发布给下一次请求。配置 MCP Server 时，两者可在请求开始时发现并冻结 `mcp` 组，外部工具逐次审批。内置工具仍使用显式白名单，不支持反射、动态 import 或模型指定任意命令。
 - Runtime 默认循环预算为 5 步、每步 4 次、总计 16 次；Web/TUI 最多 41 步、每步 4 次、总计 40 次，激活调用计入相同预算。普通参数/结果上限为 8/32 KiB，编辑参数为 64 KiB。
 - 写 Tool 必须先生成完整有界 Diff；Registry 没有审批回调、用户拒绝或内容并发变化时均不会执行。Web 决策只接受当前请求的随机审批 ID，取消、断流和结束都会使其失效。
 - Workspace 拒绝越界、符号链接、保护路径、二进制和超限文件；编辑只支持 create/replace。唯一删除入口 `delete_workspace_file` 仅处理一个经当前哈希确认、逐次审批且可撤销的文本文件；固定检查不接受额外 argv、cwd 或环境。

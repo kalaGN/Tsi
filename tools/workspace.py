@@ -13,7 +13,7 @@ import stat
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
-from typing import TYPE_CHECKING, Mapping
+from typing import TYPE_CHECKING, Callable, Mapping
 from uuid import uuid4
 
 from tools.contracts import (
@@ -1224,19 +1224,23 @@ def create_intent_workspace_registry(
 def create_web_intent_workspace_registry(
     policy: WorkspacePolicy,
     journal: WorkspaceChangeJournal | None = None,
+    skill_catalog: "SkillCatalog | None" = None,
+    install_skill_tool: "InstallSkillTool | None" = None,
     *,
-    web_search_environ: Mapping[str, str] | None = None,
+    web_search_api_key_provider: Callable[[], str] | None = None,
     preactivated_groups=(),
     mcp_tools=(),
 ):
-    """创建含网络搜索和工作区读写能力的 Web 请求级 Registry。"""
+    """创建含网络搜索、工作区和可选 Skill 能力的 Web 请求级 Registry。"""
 
     return _create_grouped_workspace_registry(
         policy,
         journal=journal,
+        skill_catalog=skill_catalog,
+        install_skill_tool=install_skill_tool,
         include_git_write=False,
         include_web_search=True,
-        web_search_environ=web_search_environ,
+        web_search_api_key_provider=web_search_api_key_provider,
         preactivated_groups=preactivated_groups,
         mcp_tools=mcp_tools,
     )
@@ -1250,7 +1254,7 @@ def _create_grouped_workspace_registry(
     *,
     include_git_write: bool,
     include_web_search: bool = False,
-    web_search_environ: Mapping[str, str] | None = None,
+    web_search_api_key_provider: Callable[[], str] | None = None,
     preactivated_groups=(),
     mcp_tools=(),
 ):
@@ -1266,7 +1270,7 @@ def _create_grouped_workspace_registry(
         install_skill_tool=install_skill_tool,
         include_git_write=include_git_write,
         include_web_search=include_web_search,
-        web_search_environ=web_search_environ,
+        web_search_api_key_provider=web_search_api_key_provider,
     )
     tools = (*tools, *mcp_tools)
     groups = allowed_tool_groups(
@@ -1311,7 +1315,7 @@ def _create_workspace_tools(
     *,
     include_git_write: bool = False,
     include_web_search: bool = False,
-    web_search_environ: Mapping[str, str] | None = None,
+    web_search_api_key_provider: Callable[[], str] | None = None,
 ):
     """构造静态与分组 Registry 共用的同一套工具对象。"""
 
@@ -1336,7 +1340,7 @@ def _create_workspace_tools(
     if include_web_search:
         from tools.web_search import WebSearchTool
 
-        tools.append(WebSearchTool(environ=web_search_environ))
+        tools.append(WebSearchTool(api_key_provider=web_search_api_key_provider))
     if include_git_write:
         from tools.git import GitCommitTool, GitPushTool, GitStageTool
 

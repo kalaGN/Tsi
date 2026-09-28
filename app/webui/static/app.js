@@ -37,8 +37,8 @@ const state = {
 
 const PREFERENCES_KEY = "tsi-web-preferences";
 const SVG_NAMESPACE = "http://www.w3.org/2000/svg";
-const SETTINGS_ROUTES = new Set(["general", "model", "context", "personalization", "statistics"]);
-const SETTINGS_TITLES = { general: "通用", model: "模型", context: "上下文", personalization: "个性化", statistics: "统计" };
+const SETTINGS_ROUTES = new Set(["general", "model", "service", "context", "personalization", "statistics"]);
+const SETTINGS_TITLES = { general: "通用", model: "模型", service: "服务", context: "上下文", personalization: "个性化", statistics: "统计" };
 const STATISTIC_METRICS = {
   requests: { label: "请求数", unit: "次" },
   total_tokens: { label: "Token", unit: "" },
@@ -69,6 +69,7 @@ const modelConfig = new window.ModelConfigView(api, async (updated) => {
   sendButton.disabled = !updated.runtime.api_key_configured;
   await contextSettings.load();
 });
+const serviceConfig = new window.ServiceConfigView(api);
 
 if (window.matchMedia("(max-width: 1040px)").matches) {
   $(".app-shell").classList.add("inspector-closed");
@@ -99,7 +100,7 @@ async function api(path, options = {}) {
 
 function currentRoute() {
   const hash = window.location.hash || "#/chat";
-  const match = hash.match(/^#\/settings\/(general|model|context|personalization|statistics)$/);
+  const match = hash.match(/^#\/settings\/(general|model|service|context|personalization|statistics)$/);
   if (match) return { page: "settings", section: match[1] };
   if (hash === "#/chat" || hash === "") return { page: "chat", section: null };
   window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}#/chat`);
@@ -131,6 +132,7 @@ function renderRoute() {
   if (route.section === "statistics" && previous !== "statistics") loadStatistics();
   if (["model", "context"].includes(route.section)) contextSettings.load();
   if (route.section === "model" && previous !== "model") modelConfig.load();
+  if (route.section === "service" && previous !== "service") serviceConfig.load();
   if (route.section === "personalization" && previous !== "personalization") loadPersonalization();
 }
 
@@ -818,6 +820,7 @@ function setBusy(busy) {
   $("#settings-model-select").disabled = busy;
   contextSettings.setBusy(busy);
   modelConfig.setBusy(busy);
+  serviceConfig.setBusy(busy);
   sendButton.hidden = busy;
   stopButton.hidden = !busy;
   $("#activity-strip").hidden = !busy;
@@ -1021,6 +1024,7 @@ function showToolApproval(event) {
   $("#approval-tool").textContent = event.tool;
   $("#approval-paths").textContent = event.paths.join("\n");
   $("#approval-diff").textContent = event.diff;
+  $("#approve-tool-change").textContent = event.approve_label || "应用";
   rememberModalFocus();
   $("#tool-approval-dialog").hidden = false;
   $("#reject-tool-change").focus();

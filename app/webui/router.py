@@ -22,6 +22,11 @@ from app.runtime.personalization_store import (
     PersonalizationConflict,
     PersonalizationError,
 )
+from app.runtime.service_config_store import (
+    ServiceConfigConflict,
+    ServiceConfigError,
+    ServiceConfigValidation,
+)
 from app.webui.approvals import WebApprovalConflict, WebApprovalNotFound
 from app.webui.directory_picker import (
     DirectoryPickerBusy,
@@ -143,6 +148,11 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
         _require_loopback(request)
         return FileResponse(STATIC_ROOT / "model-config.js", media_type="application/javascript")
 
+    @router.get("/ui/service-config.js", include_in_schema=False)
+    async def service_config_javascript(request: Request):
+        _require_loopback(request)
+        return FileResponse(STATIC_ROOT / "service-config.js", media_type="application/javascript")
+
     @router.get("/ui/api/bootstrap")
     async def bootstrap(request: Request):
         _require_loopback(request)
@@ -198,6 +208,44 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except ModelConfigError as exc:
             raise HTTPException(status_code=503, detail="模型配置保存失败，请检查本机文件。") from exc
+
+    @router.get("/ui/api/service-config")
+    async def service_config(request: Request):
+        """只返回服务注册表及秘密字段的配置状态。"""
+
+        _require_loopback(request)
+        try:
+            return current_service().service_config_payload()
+        except ServiceConfigError as exc:
+            raise HTTPException(status_code=503, detail="服务配置无法读取。") from exc
+
+    @router.put("/ui/api/service-config/{service_id}")
+    async def save_service_config(request: Request, service_id: str):
+        """同源有界写入单个已知服务字段，不回显密钥。"""
+
+        _require_loopback(request)
+        _require_same_origin_json(request)
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 5 * 1024:
+                raise HTTPException(status_code=422, detail="服务配置请求过大。")
+            raw.extend(chunk)
+        try:
+            payload = strict_json(raw.decode("utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("invalid payload")
+            required = {"expected_revision", "field_id", "action"}
+            if payload.get("action") == "set":
+                required.add("value")
+            if set(payload) != required:
+                raise ValueError("invalid fields")
+            return current_service().save_service_config({"service_id": service_id, **payload})
+        except (UnicodeError, ValueError, ServiceConfigValidation, TypeError) as exc:
+            raise HTTPException(status_code=422, detail="服务配置无效，请检查输入。") from exc
+        except (ServiceConfigConflict, WebUiBusyError) as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ServiceConfigError as exc:
+            raise HTTPException(status_code=503, detail="服务配置保存失败，请检查本机文件。") from exc
 
     @router.get("/ui/api/personalization")
     async def personalization(request: Request):

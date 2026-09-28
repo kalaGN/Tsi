@@ -8,21 +8,35 @@ from budget_support import BudgetedTestTurn, estimate_test_request
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+import app.runtime.session as session_module
+import app.runtime.skill_runtime as skill_runtime_module
+import app.webui.service as web_service_module
 from app.runtime.chat import ChatErrorCode, ChatRuntimeError, ChatRuntimeInfo
+from app.runtime.context_settings_store import ContextSettingsStore
 from app.runtime.model_selection import ModelSelectionService
+from app.runtime.model_selection_store import ModelSelectionStore
 from app.runtime.personalization_store import PersonalizationStore
 from app.runtime.session import ChatExecutionSnapshot, ChatSession
 from app.runtime.session_store import SessionStore
 from app.runtime.system_prompt import compose_system_prompt, load_system_prompt
 from app.services.llm.contracts import ChatRole
 from app.services.llm.contracts import ModelStep, TokenUsage
-from app.webui.router import create_webui_router
-from app.webui.approvals import WebApprovalConflict, WebApprovalNotFound
+from app.webui.approvals import (
+    WebApprovalConflict,
+    WebApprovalCoordinator,
+    WebApprovalNotFound,
+)
 from app.webui.projects import DEFAULT_PROJECT_ID, WebProjectCatalog, WebProjectRecord
+from app.webui.router import create_webui_router
 from app.webui.service import WebUiBusyError, WebUiService, _runtime_budget_snapshot
 from app.webui.sessions import WebSessionCatalog, WebSessionStoreError
 from app.webui.statistics import WebStatisticsStore, WebStatisticsStoreError
-from tools.contracts import ToolCall
+from tools.contracts import (
+    SKILL_INSTALL_APPROVAL_WARNING_TEXT,
+    SkillInstallApprovalRequest,
+    ToolCall,
+)
+from tools.groups import ToolGroup
 from tools.workspace import (
     WorkspacePolicy,
     create_web_intent_workspace_registry,
@@ -309,6 +323,102 @@ def test_personalization_api_is_versioned_and_same_origin(tmp_path):
     assert PersonalizationStore(tmp_path / "data" / "personalization.json").load()["prompt"] == payload["prompt"]
 
 
+def test_service_config_api_is_private_versioned_and_same_origin(tmp_path):
+    client, service = settings_client(tmp_path)
+    page = client.get("/ui").text
+    javascript = client.get("/ui/app.js").text
+    service_script = client.get("/ui/service-config.js")
+    assert 'data-settings-route="service"' in page
+    assert 'data-settings-panel="service"' in page
+    assert '<script src="/ui/service-config.js" defer></script>' in page
+    assert 'service: "服务"' in javascript
+    assert service_script.status_code == 200
+    assert 'input.type = "password"' in service_script.text
+    assert 'this.api("/service-config")' in service_script.text
+    initial = client.get("/ui/api/service-config")
+    assert initial.status_code == 200
+    assert initial.json() == {
+        "revision": 0,
+        "services": [{
+            "id": "serper", "name": "Serper 网络搜索",
+            "fields": [{"id": "api_key", "name": "API Key", "configured": False}],
+        }],
+    }
+    secret = "fake-serper-key"
+    payload = {"expected_revision": 0, "field_id": "api_key", "action": "set", "value": secret}
+    assert client.put("/ui/api/service-config/serper", json=payload, headers={"Origin": "https://example.com"}).status_code == 403
+    saved = client.put("/ui/api/service-config/serper", json=payload)
+    assert saved.status_code == 200
+    assert saved.json()["revision"] == 1
+    assert saved.json()["services"][0]["fields"][0]["configured"] is True
+    assert secret not in saved.text
+    assert secret not in client.get("/ui/api/service-config").text
+    assert service.service_config_store.secret("serper", "api_key") == secret
+    assert client.put("/ui/api/service-config/serper", json=payload).status_code == 409
+    assert client.put("/ui/api/service-config/unknown", json={**payload, "expected_revision": 1}).status_code == 422
+    assert client.put("/ui/api/service-config/serper", json={**payload, "expected_revision": 1, "extra": True}).status_code == 422
+    assert client.put("/ui/api/service-config/serper", content='{"action":"set","action":"clear"}', headers={"Content-Type": "application/json"}).status_code == 422
+    cleared = client.put("/ui/api/service-config/serper", json={"expected_revision": 1, "field_id": "api_key", "action": "clear"})
+    assert cleared.status_code == 200
+    assert cleared.json()["services"][0]["fields"][0]["configured"] is False
+
+
+def test_service_config_api_does_not_replace_corrupt_file(tmp_path):
+    client, service = settings_client(tmp_path)
+    path = service.service_config_store.path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("broken", encoding="utf-8")
+    path.chmod(0o600)
+    assert client.get("/ui/api/service-config").status_code == 503
+    assert client.put("/ui/api/service-config/serper", json={
+        "expected_revision": 0, "field_id": "api_key", "action": "set", "value": "fake-key",
+    }).status_code == 503
+    assert path.read_text(encoding="utf-8") == "broken"
+
+
+def test_production_web_search_uses_saved_service_key_not_legacy_env(tmp_path, monkeypatch):
+    """保存后走真实生产 Registry 接线，网络层只用假响应替代。"""
+
+    seen_keys = []
+
+    async def fake_search_request(_tool, api_key, _payload):
+        seen_keys.append(api_key)
+        return {"organic": []}
+
+    monkeypatch.setattr("tools.web_search.WebSearchTool._request", fake_search_request)
+    monkeypatch.setattr(web_service_module, "DEFAULT_WEB_PROJECTS_PATH", tmp_path / "projects.json")
+    monkeypatch.setattr(web_service_module, "DEFAULT_WEB_SESSIONS_ROOT", tmp_path / "sessions")
+    monkeypatch.setattr(web_service_module, "DEFAULT_WEB_SESSION_PATH", tmp_path / "legacy.json")
+    monkeypatch.setattr(web_service_module, "DEFAULT_WEB_STATISTICS_PATH", tmp_path / "statistics.json")
+    monkeypatch.setattr(web_service_module, "ContextSettingsStore", lambda: ContextSettingsStore(tmp_path / "context-settings.json"))
+    monkeypatch.setattr(web_service_module, "ModelSelectionStore", lambda: ModelSelectionStore(tmp_path / "model-selection.json"))
+    monkeypatch.setattr(web_service_module, "PersonalizationStore", lambda: PersonalizationStore(tmp_path / "personalization.json"))
+    monkeypatch.setattr(skill_runtime_module, "load_mcp_config", lambda: ())
+    service = WebUiService.production(tmp_path, environ={
+        "DEEPSEEK_API_KEY": "fake-model-key", "DEEPSEEK_MODEL": "test-model",
+        "DEEPSEEK_MODELS": "test-model", "SERPER_API_KEY": "legacy-env-key",
+    })
+
+    def search():
+        registry = service.session._execution_snapshot_provider("搜索测试").registry
+        registry.activate((ToolGroup.WEB_SEARCH,))
+        result = asyncio.run(registry.execute(ToolCall("search", "web_search", '{"query":"Tsi"}')))
+        return json.loads(result.output)["data"]
+
+    assert search() == {"status": "unavailable", "reason": "api_key_missing"}
+    assert seen_keys == []
+    service.service_config_store.save(
+        expected_revision=0, service_id="serper", field_id="api_key", action="set", value="saved-fake-key",
+    )
+    assert search()["status"] == "success"
+    assert seen_keys == ["saved-fake-key"]
+    service.service_config_store.save(
+        expected_revision=1, service_id="serper", field_id="api_key", action="clear",
+    )
+    assert search() == {"status": "unavailable", "reason": "api_key_missing"}
+    assert seen_keys == ["saved-fake-key"]
+
+
 def test_personalization_save_only_changes_following_snapshots(tmp_path):
     client, service = settings_client(tmp_path)
     (tmp_path / "AGENTS.md").write_text("项目规则", encoding="utf-8")
@@ -377,6 +487,163 @@ def test_saved_page_model_budget_is_used_on_next_web_send(tmp_path):
     assert events[-1]["type"] == "completed"
     assert events[-1]["context_percent"] == service.session.context_snapshot["percent"]
     assert service.session.context_snapshot["input_limit"] == 10_904
+
+
+def test_production_web_settings_reach_next_model_and_compaction_request(tmp_path, monkeypatch):
+    class RecordingProvider(WebProvider):
+        def __init__(self):
+            super().__init__()
+            self.output_limits = []
+
+        def create_turn(self, messages, tools, *, request_id, **kwargs):
+            self.output_limits.append(kwargs["options"].max_output_tokens)
+            return super().create_turn(messages, tools, request_id=request_id, **kwargs)
+
+    monkeypatch.setattr(web_service_module, "DEFAULT_WEB_PROJECTS_PATH", tmp_path / "projects.json")
+    monkeypatch.setattr(web_service_module, "DEFAULT_WEB_SESSIONS_ROOT", tmp_path / "sessions")
+    monkeypatch.setattr(web_service_module, "DEFAULT_WEB_SESSION_PATH", tmp_path / "legacy.json")
+    monkeypatch.setattr(web_service_module, "DEFAULT_WEB_STATISTICS_PATH", tmp_path / "statistics.json")
+    monkeypatch.setattr(web_service_module, "ContextSettingsStore", lambda: ContextSettingsStore(tmp_path / "context-settings.json"))
+    monkeypatch.setattr(web_service_module, "ModelSelectionStore", lambda: ModelSelectionStore(tmp_path / "model-selection.json"))
+    monkeypatch.setattr(web_service_module, "PersonalizationStore", lambda: PersonalizationStore(tmp_path / "personalization.json"))
+    monkeypatch.setattr(web_service_module, "get_chat_runtime_info", lambda: ChatRuntimeInfo("deepseek", "test-model", True))
+    monkeypatch.setattr(skill_runtime_module, "load_mcp_config", lambda: ())
+
+    observed_budgets = []
+    actual_prepare = session_module.prepare_context
+
+    async def record_prepare(*args, **kwargs):
+        observed_budgets.append(args[5])
+        return await actual_prepare(*args, **kwargs)
+
+    monkeypatch.setattr(session_module, "prepare_context", record_prepare)
+    service = WebUiService.production(
+        tmp_path,
+        environ={"DEEPSEEK_API_KEY": "fake-key", "DEEPSEEK_MODEL": "test-model", "DEEPSEEK_MODELS": "test-model"},
+    )
+    provider = RecordingProvider()
+    service.session.replace_provider(provider)
+    app = FastAPI()
+    app.include_router(create_webui_router(service))
+    client = TestClient(app)
+
+    saved_model = client.put(
+        "/ui/api/context-settings",
+        json={"expected_revision": 0, "scope": "model", "provider": "deepseek", "model": "test-model", "overrides": {"context_window_tokens": 16_000, "max_output_tokens": 1000}},
+        headers={"Origin": "http://testserver"},
+    )
+    assert saved_model.status_code == 200
+    saved_compaction = client.put(
+        "/ui/api/context-settings",
+        json={"expected_revision": 1, "scope": "compaction", "overrides": {"trigger_percent": 30, "target_percent": 20, "recent_turns": 2}},
+        headers={"Origin": "http://testserver"},
+    )
+    assert saved_compaction.status_code == 200
+
+    async def send(text):
+        return [event async for event in service.stream_message(text)]
+
+    assert asyncio.run(send("第一问"))[-1]["type"] == "completed"
+    assert provider.output_limits == [1000]
+    assert observed_budgets[0].context_window_tokens == 16_000
+    assert observed_budgets[0].trigger_percent == 30
+    assert observed_budgets[0].recent_turns == 2
+    assert service.session.context_snapshot["input_limit"] == 10_904
+
+    next_model = client.put(
+        "/ui/api/context-settings",
+        json={"expected_revision": 2, "scope": "model", "provider": "deepseek", "model": "test-model", "overrides": {"context_window_tokens": 20_000, "max_output_tokens": 1200}},
+        headers={"Origin": "http://testserver"},
+    )
+    assert next_model.status_code == 200
+    assert asyncio.run(send("第二问"))[-1]["type"] == "completed"
+    assert provider.output_limits == [1000, 1200]
+    assert observed_budgets[1].context_window_tokens == 20_000
+    assert service.session.context_snapshot["input_limit"] == 14_704
+
+
+def test_production_web_can_activate_skill_install_group(tmp_path, monkeypatch):
+    class SkillInstallTurn:
+        def __init__(self):
+            self.step = 0
+            self.tools = ()
+
+        def replace_tools(self, tools):
+            self.tools = tuple(tool.name for tool in tools)
+
+        async def next(self, tool_results=(), *, on_text_delta=None):
+            self.step += 1
+            if self.step == 1:
+                return ModelStep(
+                    200,
+                    None,
+                    (ToolCall("activate-skill-install", "activate_tool_groups", '{"groups":["skill_install"]}'),),
+                    TokenUsage(4, 2, 6),
+                )
+            return ModelStep(200, "安装工具可用", (), TokenUsage(4, 2, 6))
+
+    class SkillInstallProvider(WebProvider):
+        def __init__(self):
+            super().__init__()
+            self.turn = SkillInstallTurn()
+
+        def create_turn(self, messages, tools, *, request_id, **kwargs):
+            return BudgetedTestTurn(self.turn, messages, tools, **kwargs)
+
+    monkeypatch.setattr(web_service_module, "DEFAULT_WEB_PROJECTS_PATH", tmp_path / "projects.json")
+    monkeypatch.setattr(web_service_module, "DEFAULT_WEB_SESSIONS_ROOT", tmp_path / "sessions")
+    monkeypatch.setattr(web_service_module, "DEFAULT_WEB_SESSION_PATH", tmp_path / "legacy.json")
+    monkeypatch.setattr(web_service_module, "DEFAULT_WEB_STATISTICS_PATH", tmp_path / "statistics.json")
+    monkeypatch.setattr(web_service_module, "ContextSettingsStore", lambda: ContextSettingsStore(tmp_path / "context-settings.json"))
+    monkeypatch.setattr(web_service_module, "ModelSelectionStore", lambda: ModelSelectionStore(tmp_path / "model-selection.json"))
+    monkeypatch.setattr(web_service_module, "PersonalizationStore", lambda: PersonalizationStore(tmp_path / "personalization.json"))
+    monkeypatch.setattr(skill_runtime_module, "load_mcp_config", lambda: ())
+    service = WebUiService.production(
+        tmp_path,
+        environ={"DEEPSEEK_API_KEY": "fake-key", "DEEPSEEK_MODEL": "test-model", "DEEPSEEK_MODELS": "test-model"},
+    )
+    provider = SkillInstallProvider()
+    service.session.replace_provider(provider)
+
+    async def send():
+        return [event async for event in service.stream_message("安装一个项目 Skill")]
+
+    events = asyncio.run(send())
+
+    assert events[-1]["type"] == "completed"
+    assert "install_skill" in provider.turn.tools
+    assert service.bootstrap()["capabilities"]["skills"] is True
+
+
+def test_web_skill_install_approval_exposes_source_target_and_action():
+    async def scenario():
+        coordinator = WebApprovalCoordinator()
+        emitted = []
+        request = SkillInstallApprovalRequest(
+            call_id="install-1",
+            tool_name="install_skill",
+            title="安装 Skill",
+            source_type="github",
+            source_display="https://github.com/acme/repo/tree/main/skills/demo",
+            target_path=".agents/skills/demo-skill",
+            network_access=True,
+            warning_text=SKILL_INSTALL_APPROVAL_WARNING_TEXT,
+            fingerprint="d" * 64,
+        )
+        pending = asyncio.create_task(coordinator.request("request-1", request, emitted.append))
+        await asyncio.sleep(0)
+
+        assert emitted[0]["paths"] == [
+            "来源：https://github.com/acme/repo/tree/main/skills/demo",
+            "目标：.agents/skills/demo-skill",
+            "访问网络：是",
+        ]
+        assert emitted[0]["approve_label"] == "安装"
+        assert "安装批准不会批准" in emitted[0]["diff"]
+        coordinator.resolve(emitted[0]["approval_id"], "request-1", True)
+        assert await pending is True
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("overrides", [{"max_output_tokens": True}, {"max_output_tokens": 0}, {"context_window_tokens": 4096}, {"api_key": "not-a-secret"}, {"path": "not-allowed"}])
@@ -753,6 +1020,11 @@ def test_webui_settings_and_workspace_approval_contract_are_present(tmp_path):
     assert ".showModal()" not in javascript
     assert "/tool-approvals/" in javascript
     assert '$("#activity-text").textContent = "正在回答"' in javascript
+    assert "startTaskFeedback(input)" in javascript
+    assert "window.setInterval(renderTaskFeedback, 3000)" in javascript
+    assert "任务理解：" in javascript
+    assert "需要拆分步骤" in javascript
+    assert 'resumeTaskFeedback("模型正在调用工具，等待执行结果")' in javascript
     assert 'return ["completed", "failed", "cancelled"].includes(event.type)' in javascript
     assert "await reader.cancel()" in javascript
     assert '#/settings/general' in javascript

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import json
-import os
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from urllib.parse import urlsplit
 
 import httpx
@@ -65,10 +64,11 @@ class WebSearchTool:
     def __init__(
         self,
         *,
-        environ: Mapping[str, str] | None = None,
+        api_key_provider: Callable[[], str] | None = None,
         client: httpx.AsyncClient | None = None,
     ) -> None:
-        self._environ = os.environ if environ is None else environ
+        # 未显式接线的 Registry 不得回退读取旧环境密钥。
+        self._api_key_provider = api_key_provider or (lambda: "")
         self._client = client
 
     async def invoke(self, arguments: Mapping[str, object]) -> object:
@@ -86,7 +86,10 @@ class WebSearchTool:
         if type(limit) is not int or not 1 <= limit <= MAX_RESULTS:
             raise ToolArgumentError()
 
-        api_key = self._environ.get("SERPER_API_KEY", "").strip()
+        try:
+            api_key = self._api_key_provider().strip()
+        except Exception:
+            return {"status": "error", "reason": "configuration_unavailable"}
         if not api_key:
             return {"status": "unavailable", "reason": "api_key_missing"}
 

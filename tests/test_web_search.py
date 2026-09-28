@@ -18,7 +18,8 @@ def run_search(tool, arguments):
     return json.loads(result.output), result
 
 
-def test_web_search_does_not_request_network_without_api_key():
+def test_web_search_does_not_request_network_without_api_key(monkeypatch):
+    monkeypatch.setenv("SERPER_API_KEY", "legacy-env-key")
     requests = []
 
     def handler(request):
@@ -31,7 +32,7 @@ def test_web_search_does_not_request_network_without_api_key():
             trust_env=False,
         ) as client:
             return await run_search_async(
-                WebSearchTool(environ={}, client=client),
+                WebSearchTool(client=client),
                 {"query": "Tsi"},
             )
 
@@ -43,6 +44,15 @@ def test_web_search_does_not_request_network_without_api_key():
         "reason": "api_key_missing",
     }
     assert requests == []
+
+
+def test_web_search_fails_closed_when_private_config_cannot_be_read():
+    def unavailable_key():
+        raise OSError("private config unavailable")
+
+    payload, result = run_search(WebSearchTool(api_key_provider=unavailable_key), {"query": "Tsi"})
+    assert result.is_error is False
+    assert payload["data"] == {"status": "error", "reason": "configuration_unavailable"}
 
 
 def test_web_search_calls_only_fixed_serper_endpoint_and_filters_results():
@@ -78,7 +88,7 @@ def test_web_search_calls_only_fixed_serper_endpoint_and_filters_results():
         ) as client:
             return await run_search_async(
                 WebSearchTool(
-                    environ={"SERPER_API_KEY": "test-serper-key"},
+                    api_key_provider=lambda: "test-serper-key",
                     client=client,
                 ),
                 {"query": "  Tsi 助手  ", "limit": 2},
@@ -119,7 +129,7 @@ def test_web_search_calls_only_fixed_serper_endpoint_and_filters_results():
     ],
 )
 def test_web_search_rejects_invalid_arguments(arguments):
-    payload, result = run_search(WebSearchTool(environ={}), arguments)
+    payload, result = run_search(WebSearchTool(), arguments)
 
     assert result.is_error is True
     assert payload["error"]["code"] == "invalid_arguments"
@@ -145,7 +155,7 @@ def test_web_search_returns_stable_errors_for_bad_upstream(response, reason):
         ) as client:
             return await run_search_async(
                 WebSearchTool(
-                    environ={"SERPER_API_KEY": "test-key"},
+                    api_key_provider=lambda: "test-key",
                     client=client,
                 ),
                 {"query": "Tsi"},

@@ -46,7 +46,6 @@ def allowed_tool_groups(
             "读取并修改工作区、运行检查和撤销本轮修改",
             WORKSPACE_WRITE_NAMES,
         ))
-    if entry == "tui":
         if "load_skill" in available_names:
             groups.append(ToolGroupDefinition(
                 ToolGroup.SKILLS, "加载 Skill 指令、读取资源并按审批运行脚本",
@@ -56,6 +55,7 @@ def allowed_tool_groups(
             groups.append(ToolGroupDefinition(
                 ToolGroup.SKILL_INSTALL, "从受支持来源安装 Skill", ("install_skill",),
             ))
+    if entry == "tui":
         groups.append(ToolGroupDefinition(
             ToolGroup.GIT_WRITE, "经逐次审批暂存文件、创建中文提交并推送既有上游",
             ("git_stage", "git_commit", "git_push"),

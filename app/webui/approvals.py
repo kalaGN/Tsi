@@ -7,7 +7,13 @@ import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from tools.contracts import AnyToolApprovalRequest, McpApprovalRequest, ToolApprovalRequest
+from tools.contracts import (
+    AnyToolApprovalRequest,
+    McpApprovalRequest,
+    ScriptApprovalRequest,
+    SkillInstallApprovalRequest,
+    ToolApprovalRequest,
+)
 
 
 class WebApprovalNotFound(Exception):
@@ -44,9 +50,17 @@ class WebApprovalCoordinator:
         request: AnyToolApprovalRequest,
         emit: ApprovalEventHandler,
     ) -> bool:
-        """注册一个已经过 Registry 校验的文件审批并等待一次性决定。"""
+        """注册一个已经过 Registry 校验的交互审批并等待一次性决定。"""
 
-        if not isinstance(request, (ToolApprovalRequest, McpApprovalRequest)):
+        if not isinstance(
+            request,
+            (
+                ToolApprovalRequest,
+                McpApprovalRequest,
+                ScriptApprovalRequest,
+                SkillInstallApprovalRequest,
+            ),
+        ):
             raise ValueError("unsupported web approval type")
         if self._pending is not None:
             raise WebApprovalConflict("another approval is pending")
@@ -65,9 +79,35 @@ class WebApprovalCoordinator:
                 "title": request.title,
             }
             if isinstance(request, McpApprovalRequest):
-                payload.update(paths=[f"Server：{request.server_name} · Tool：{request.remote_tool_name}"], diff=f"{request.warning_text}\n\n参数：\n{request.arguments_text}")
+                payload.update(
+                    paths=[f"Server：{request.server_name} · Tool：{request.remote_tool_name}"],
+                    diff=f"{request.warning_text}\n\n参数：\n{request.arguments_text}",
+                    approve_label="执行",
+                )
+            elif isinstance(request, SkillInstallApprovalRequest):
+                payload.update(
+                    paths=[
+                        f"来源：{request.source_display}",
+                        f"目标：{request.target_path}",
+                        f"访问网络：{'是' if request.network_access else '否'}",
+                    ],
+                    diff=request.warning_text,
+                    approve_label="安装",
+                )
+            elif isinstance(request, ScriptApprovalRequest):
+                payload.update(
+                    paths=[
+                        f"Skill：{request.skill_name}",
+                        f"脚本：{request.script_path}",
+                    ],
+                    diff=f"{request.warning_text}\n\n命令：\n{request.command_text}",
+                    approve_label="执行",
+                )
             else:
-                payload.update(paths=list(request.paths), diff=request.diff_text)
+                payload.update(
+                    paths=list(request.paths),
+                    diff=request.diff_text,
+                )
             emit(payload)
             return await future
         finally:

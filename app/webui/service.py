@@ -21,8 +21,10 @@ from app.runtime.task_runs import TaskRunError, TaskRunStore
 from app.runtime.model_selection import ModelSelectionError, ModelSelectionService
 from app.runtime.model_selection_store import ModelSelectionStore
 from app.runtime.personalization_store import PersonalizationError, PersonalizationStore
+from app.runtime.service_config_store import ServiceConfigStore
 from app.runtime.session import ChatExecutionSnapshot, ChatSession, RuntimeBudgetSnapshot
 from app.runtime.session_store import SessionStore
+from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.workspace_changes import AppliedChangeTracker
 from app.runtime.system_prompt import SystemPromptLoadError, compose_system_prompt, load_system_prompt
 from app.runtime.tool_loop import WORKSPACE_TOOL_LOOP_LIMITS
@@ -38,13 +40,13 @@ from app.webui.statistics import (
     WebStatisticsStoreError,
 )
 from tools.contracts import AnyToolApprovalRequest, ToolCall, ToolResult
+from tools.skills import SkillLoadError, load_skill_catalog
 from tools.workspace import (
     ListWorkspaceFilesTool,
     ReadWorkspaceFileTool,
     WorkspacePolicy,
     create_web_intent_workspace_registry,
 )
-from tools.mcp_client import McpRegistry, load_mcp_config
 from local_paths import data_root
 
 
@@ -81,7 +83,9 @@ class WebUiService:
         personalization_store: PersonalizationStore | None = None,
         projects: WebProjectCatalog | None = None,
         model_config_store: ModelConfigStore | None = None,
+        service_config_store: ServiceConfigStore | None = None,
         task_store: TaskRunStore | None = None,
+        skills_enabled: bool = False,
     ) -> None:
         self.catalog = catalog
         self._session_factory = session_factory
@@ -104,7 +108,11 @@ class WebUiService:
             workspace / "data" / "personalization.json",
         )
         self.model_config_store = model_config_store
+        self.service_config_store = service_config_store or ServiceConfigStore(
+            workspace / "data" / "service-config.json",
+        )
         self.task_store = task_store
+        self.skills_enabled = skills_enabled
         self._active_task_id: str | None = None
         self._request_lock = asyncio.Lock()
         self._active_task: asyncio.Task[None] | None = None
@@ -151,6 +159,9 @@ class WebUiService:
             startup_warning = startup_warning or "个性化设置无法加载，Web 会话暂未使用自定义提示词。"
 
         model_config_store = ModelConfigStore() if environ is None else None
+        service_config_store = ServiceConfigStore() if environ is None else ServiceConfigStore(
+            root / "data" / "service-config.json",
+        )
         task_store = TaskRunStore(
             data_root() / "task-runs" if environ is None else root / "data" / "task-runs"
         )
@@ -170,8 +181,42 @@ class WebUiService:
         provider = restored.provider or create_provider(model_values)
         warning = restored.warning or startup_warning
         runtime_info = ChatRuntimeInfo(provider.name, provider.model, provider.api_key_configured)
+        skill_runtimes: dict[tuple[str, str], SkillRuntime] = {}
 
-        def execution_snapshot(_input_text: str) -> ChatExecutionSnapshot:
+        def project_skill_runtime(
+            project: WebProjectRecord,
+            active_policy: WorkspacePolicy,
+        ) -> SkillRuntime:
+            key = (project.id, project.path)
+            runtime = skill_runtimes.get(key)
+            if runtime is not None:
+                return runtime
+            try:
+                skill_catalog = load_skill_catalog(active_policy.root)
+                skills_error = None
+            except SkillLoadError as exc:
+                skill_catalog = None
+                skills_error = str(exc)
+
+            def registry_factory(policy: WorkspacePolicy, **kwargs):
+                return create_web_intent_workspace_registry(
+                    policy,
+                    web_search_api_key_provider=lambda: service_config_store.secret("serper", "api_key"),
+                    **kwargs,
+                )
+
+            runtime = SkillRuntime(
+                active_policy.root,
+                None,
+                active_policy,
+                skill_catalog,
+                initial_error=skills_error,
+                registry_factory=registry_factory,
+            )
+            skill_runtimes[key] = runtime
+            return runtime
+
+        def execution_snapshot(input_text: str) -> ChatExecutionSnapshot:
             project = projects.require(catalog.current.project_id)
             try:
                 active_policy = _project_workspace_policy(project)
@@ -181,26 +226,15 @@ class WebUiService:
                 system_prompt = load_system_prompt(active_policy.root)
             except SystemPromptLoadError:
                 system_prompt = None
-            registry = create_web_intent_workspace_registry(
-                active_policy,
-                web_search_environ=values,
-            )
-            try:
-                configs = load_mcp_config()
-            except ValueError as exc:
-                raise ChatRuntimeError(ChatErrorCode.CONFIGURATION, "MCP 配置无效，请检查 data/mcp-servers.json。") from exc
-            if configs:
-                registry = McpRegistry(
-                    lambda mcp_tools: create_web_intent_workspace_registry(
-                        active_policy,
-                        web_search_environ=values,
-                        mcp_tools=mcp_tools,
-                    ),
-                    configs,
-                )
+            snapshot = project_skill_runtime(project, active_policy).snapshot(input_text)
             return ChatExecutionSnapshot(
-                system_prompt=compose_system_prompt(system_prompt, personalization_store.current_prompt),
-                registry=registry,
+                system_prompt=compose_system_prompt(
+                    system_prompt,
+                    snapshot.system_prompt,
+                    personalization_store.current_prompt,
+                ),
+                registry=snapshot.registry,
+                version=snapshot.version,
             )
 
         def session_factory(store: SessionStore) -> ChatSession:
@@ -234,7 +268,9 @@ class WebUiService:
             personalization_store=personalization_store,
             projects=projects,
             model_config_store=model_config_store,
+            service_config_store=service_config_store,
             task_store=task_store,
+            skills_enabled=True,
         )
 
     def _task_store(self) -> TaskRunStore:
@@ -330,6 +366,17 @@ class WebUiService:
 
         return self.personalization_store.load()
 
+    def service_config_payload(self) -> dict[str, object]:
+        """只返回已注册服务及密钥配置状态。"""
+
+        return self.service_config_store.load().public_payload()
+
+    def save_service_config(self, payload: dict) -> dict[str, object]:
+        """保存后下一次搜索工具调用重新读取文件。"""
+
+        self._require_idle("保存服务配置")
+        return self.service_config_store.save(**payload).public_payload()
+
     def save_personalization(self, *, expected_revision: int, prompt: str) -> dict[str, object]:
         """保存后仅影响下一次模型请求的执行快照。"""
 
@@ -364,7 +411,7 @@ class WebUiService:
                 "workspace_read": True,
                 "workspace_write": True,
                 "native_directory_picker": directory_picker_available(),
-                "skills": False,
+                "skills": self.skills_enabled,
             },
         }
 

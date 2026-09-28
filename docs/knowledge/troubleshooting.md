@@ -36,7 +36,7 @@ Skill Catalog、正文、资源和脚本输入输出会随系统提示词、工�
 - `skill_package_invalid`：候选包的 YAML、名称、编码、普通文件类型、符号链接、数量或大小不符合现有 Skill 规则。
 - `skill_refresh_failed`：目标曾提交但全量 Catalog 刷新失败，安装事务会删除本次目标并继续使用旧 Runtime。
 
-GitHub URL 必须使用 `https://github.com/<owner>/<repo>/tree/<ref>/<skill-directory>`，第一版 `ref` 不能含 `/`。个人来源参数只写 `~/.codex/skills` 下的直属目录名，`expected_name` 必须与候选 `SKILL.md` 的 `name` 完全一致。安装成功后状态栏可立即更新，但必须发送下一条用户消息后模型才能使用新 Skill；当前请求不能直接运行刚安装的脚本。手动修改目录不会触发热刷新。
+Web/TUI 的 GitHub URL 必须使用 `https://github.com/<owner>/<repo>/tree/<ref>/<skill-directory>`，仓库根地址和插件包地址不属于单个 Skill 目录，第一版 `ref` 不能含 `/`。个人来源参数只写 `~/.codex/skills` 下的直属目录名，`expected_name` 必须与候选 `SKILL.md` 的 `name` 完全一致。安装成功后运行时立即发布新 Catalog，但必须发送下一条用户消息后模型才能使用新 Skill；当前请求不能直接运行刚安装的脚本。手动修改目录不会触发热刷新。
 
 排查安装时可按同一 request ID 查看 `llm_tool_call`、`llm_tool_approval` 和 `llm_tool_result`：它们分别回答“请求了什么来源”“是否获批”“成功或属于哪类安全失败”。日志会明文保存 URL、个人目录名和目标名称，不记录真实 Home 绝对路径、GitHub 响应正文或凭据。
 
@@ -128,9 +128,9 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 
 ## Web 网络搜索返回 `api_key_missing`
 
-- 在项目根目录 `.env` 设置非空 `SERPER_API_KEY`，并使用 `--env-file .env` 启动 Web 服务。
+- 在 Web／桌面版「设置 → 服务」为 Serper 网络搜索保存 API Key；下一次搜索立即生效。旧 `.env` 的 `SERPER_API_KEY` 已彻底停用，不会自动迁移。
 - 搜索只使用固定 Google Serper Search API；不要配置自定义 URL、Header 或引擎变量。
-- 修改 `.env` 后重启 Uvicorn。工具不会把 Key 返回给模型或写入项目日志。
+- 工具不会把 Key 返回给模型或写入项目日志；若配置文件损坏或权限不安全，搜索返回 `configuration_unavailable`，请检查本机 `service-config.json`，不要放宽文件权限。
 - `upstream_unavailable` 表示 Serper 网络请求失败或返回非 2xx；`invalid_response` 和 `response_too_large` 表示上游响应不符合安全边界。
 
 ## TUI 显示 `Key: missing`

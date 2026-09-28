@@ -191,6 +191,10 @@
             <svg aria-hidden="true" viewBox="0 0 24 24"><rect x="4" y="4" width="16" height="16" rx="3" /><path d="M9 9h6v6H9zM12 1v3M12 20v3M1 12h3M20 12h3" /></svg>
             <span>模型</span>
           </button>
+          <button type="button" data-settings-route="service">
+            <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 7h16M4 12h16M4 17h16M8 4v6M16 9v6M10 14v6" /></svg>
+            <span>服务</span>
+          </button>
           <button type="button" data-settings-route="context">
             <svg aria-hidden="true" viewBox="0 0 24 24"><path d="M4 5h16v14H4zM8 9h8M8 13h5M8 16h3" /></svg>
             <span>上下文</span>
@@ -291,6 +295,17 @@
               <p>控制何时整理历史以及保留多少轮原文。适用于本项目全部 Web 会话和 TUI。</p>
             </div>
             <div class="settings-card budget-card" data-budget-form="compaction"></div>
+          </section>
+
+          <section class="settings-panel" id="settings-service-panel" data-settings-panel="service" hidden>
+            <div class="settings-panel-copy">
+              <h2>外部服务</h2>
+              <p>只显示 Tsi 已接入的服务；保存后下一次工具调用生效。</p>
+            </div>
+            <p class="settings-note">密钥以明文保存在本机私有文件中，仅当前用户可读；页面不会回显或保存在浏览器中。请勿在共享设备上使用。</p>
+            <p id="service-config-status" class="budget-status" role="status">正在加载…</p>
+            <div id="service-config-list" class="service-config-list"></div>
+            <button type="button" class="secondary-button" id="service-config-reload">重新加载</button>
           </section>
 
           <section class="settings-panel" id="settings-personalization-panel" data-settings-panel="personalization" hidden>
@@ -444,6 +459,7 @@
     <div class="toast" id="toast" role="status" hidden></div>
     <script src="/ui/context-settings.js" defer></script>
     <script src="/ui/model-config.js" defer></script>
+    <script src="/ui/service-config.js" defer></script>
     <script src="/ui/app.js" defer></script>
   </body>
 </html>

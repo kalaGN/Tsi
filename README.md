@@ -18,11 +18,7 @@ cd /Users/wangfei/study/fastapi/demo
 
 模型配置保存在本机私有的 `data/model-config.json`，API Key **以明文存储**，父目录权限 `0700`、文件权限 `0600`；页面不会回显已保存的 Key，也不会把它写入浏览器本地存储或模型日志。源码 Web UI 与 TUI 共用项目 `data/`；独立桌面版使用 `~/Library/Application Support/Tsi/data/`。模型字段不再读取 `.env`。如果旧 `.env` 中有模型密钥，请手动复制到设置页并确认可用，再自行删除旧条目；应用不会自动导入或删除它们。模型选择仍在 `model-selection.json` 中恢复。
 
-Web UI 的网络搜索使用固定 Serper.dev Google Search API；需要在 `.env` 增加：
-
-```dotenv
-SERPER_API_KEY=replace-with-real-api-key
-```
+Web UI 的网络搜索使用固定 Serper.dev Google Search API。在「设置 → 服务」中为 **Serper 网络搜索**填写 API Key 并保存；下一次搜索立即生效。服务配置保存在本机私有 `data/service-config.json`（桌面版使用 `~/Library/Application Support/Tsi/data/service-config.json`），Key 以明文保存，页面只显示配置状态。旧 `.env` 中的 `SERPER_API_KEY` **彻底停用**：请手动在设置页重新填写，确认搜索可用后自行清理旧条目；应用不会自动导入或删除它。
 
 ## 工具调用
 
@@ -59,7 +55,7 @@ Web UI 与 TUI 使用不同的显式工具白名单。Web UI 可按需激活时�
 | 使用入口 | 工具 | 作用 | 执行方式 |
 | --- | --- | --- | --- |
 | Web UI、TUI | `get_current_time(timezone)` | 获取指定 IANA 时区（例如 `Asia/Shanghai`）的当前 ISO 8601 时间 | 自动执行 |
-| Web UI | `web_search(query, limit)` | 搜索公开网络并返回有界标题、HTTP(S) 链接和摘要 | 自动执行；需要 `SERPER_API_KEY` |
+| Web UI | `web_search(query, limit)` | 搜索公开网络并返回有界标题、HTTP(S) 链接和摘要 | 自动执行；需在「设置 → 服务」保存 Serper Key |
 | Web UI、TUI | `list_workspace_files` | 分页列举允许读取的文件和目录 | 自动执行 |
 | Web UI、TUI | `search_workspace_text` | 一次扫描搜索 1～4 个字面量关键词，返回命中的文件和行号 | 自动执行 |
 | Web UI、TUI | `read_workspace_files` | 一次读取最多 4 个独立文本片段及各文件 SHA-256，减少模型往返 | 自动执行 |

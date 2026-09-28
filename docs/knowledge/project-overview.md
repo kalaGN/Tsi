@@ -2,7 +2,7 @@
 
 ## 目标
 
-Tsi 助手用于学习和验证 FastAPI、浏览器 UI、Textual、外部模型流式接口与受控 Function Calling。本机 Web UI 提供 DSH 风格三栏交互、受限网络搜索和逐次审批的 Workspace 修改；TUI 进一步提供 Codex 兼容 Skill 与 Git 交付能力。
+Tsi 助手用于学习和验证 FastAPI、浏览器 UI、Textual、外部模型流式接口与受控 Function Calling。本机 Web UI 提供 DSH 风格三栏交互、受限网络搜索、Codex 兼容 Skill 和逐次审批的 Workspace 修改；TUI 进一步提供 Git 交付能力。
 
 ## 项目形态
 
@@ -37,7 +37,7 @@ Tsi 助手用于学习和验证 FastAPI、浏览器 UI、Textual、外部模型�
 - `app/runtime/chat.py`：Web UI/TUI 共享用例、结果和错误语义。
 - `app/runtime/tool_loop.py`：有界模型步骤和串行工具执行编排。
 - `app/runtime/trace.py`：供本地评测使用的可选结构化执行轨迹。
-- `app/runtime/skill_runtime.py`：TUI Skill Catalog 版本、安装器和请求级执行快照。
+- `app/runtime/skill_runtime.py`：Web/TUI Skill Catalog 版本、安装器和请求级执行快照。
 - `app/services/llm/`：配置工厂、共享网络边界、阿里云与 DeepSeek Provider。
 - `tools/`：Provider 中立契约、静态/请求级分组 Registry、当前时间、受限网络搜索、Workspace 策略、文件/Git 工具、固定项目检查、Skill 快照以及请求级 MCP 客户端。
 - `app/tui/`：Textual 应用、状态和模块启动入口。
@@ -71,17 +71,17 @@ git diff --check
 - 两家上游均使用 SSE；Web UI 以 NDJSON 流式推送并在页面上增量展示，TUI 增量展示纯文本并在完成后用同一原文渲染 Assistant Markdown。
 - 中文输入、`Cmd+A` / `Ctrl+A` 全选输入、Esc 清空输入、耗时与 Token 单行统计、请求中动画与实时耗时、请求取消、`/clear`、`/memory`、`/model`、`/skills`、`/quit`、Enter 和双击 Esc。
 - TUI 启动目录直属 `AGENTS.md` 的 32 KiB UTF-8 有界读取，以及不持久化的 Provider 标准 system 消息。
-- TUI 启动目录 `.agents/skills/*/SKILL.md` 的安全 YAML Catalog、渐进读取，以及每次审批的 `.py`/`.sh` 脚本执行。
-- TUI 经逐次审批从公开 GitHub 目录或当前用户 `~/.codex/skills` 直属目录原子安装 Skill；成功后下一次请求热刷新。
+- Web/TUI 项目目录 `.agents/skills/*/SKILL.md` 的安全 YAML Catalog、渐进读取，以及每次审批的 `.py`/`.sh` 脚本执行。
+- Web/TUI 经逐次审批从公开 GitHub Skill 目录或当前用户 `~/.codex/skills` 直属目录原子安装 Skill；成功后下一次请求热刷新。
 - `/skills` 只读当前运行时已发布 Catalog 的名称、描述和相对入口，不调用模型、不进入会话历史，也不触发磁盘重扫。
 - TUI 输入 `/` 或命令前缀时预览 `/clear`、`/skills`、`/model`、`/memory`、`/memory clear`、`/quit`；`/model` 打开单层供应商/模型列表，上下循环移动、Enter 确认、Esc 取消，成功选择原子保存到独立的 `data/model-selection.json`。
 - v3 会话完整保存 Transcript、结构化摘要、摘要覆盖与原文起点两个边界，以及显式长期偏好；基于当前模型可用输入预算触发有界压缩，失败时按完整轮次淘汰模型输入，保持本地历史可恢复。
 - 上下键输入历史、草稿恢复，以及从成功 Session user 消息恢复历史。
-- 用户消息以不解析 Markdown 的右对齐、自适应宽度背景卡片展示；Assistant 支持标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；系统和错误保持纯文本。
+- 用户消息以不解析 Markdown 的右对齐、自适应宽度背景卡片展示；Assistant 支持标题、列表、引用、链接、表格和代码块的 Rich Markdown 展示；系统和错误保持纯文本。Web 发送请求后会立即在 Assistant 输出区域展示任务理解与初步拆分判断，并每 3 秒刷新执行状态；收到真实模型文本后切换为流式回答，工具阶段继续展示等待反馈。
 - 最终消息和流式临时文本支持鼠标选择，并通过 `Cmd+C` / `Ctrl+C` 复制渲染后的可见文字；对话记录还可双击立即复制当前渲染行。
-- 环境变量密钥、固定上游 URL、显式超时和脱敏错误分类。
+- 模型与 Serper 密钥使用本机私有配置；MCP 等其他密钥按各自配置约定读取。外部调用使用固定上游 URL、显式超时和脱敏错误分类。
 - Web UI 先按模型意图激活网络搜索或 Workspace 工具组，TUI 激活本地工具组；配置 MCP Server 时两端另可激活 `mcp` 组，其每次调用逐次审批。内置只读工具自动执行，写入和撤销仍逐次审批。
-- Web UI 不注册 Skill、脚本或 Git 写工具；审批只绑定当前请求，取消或断流立即失效。
+- Web UI 注册 Skill 加载、安装和脚本工具，但不注册 Git 写工具；所有写入、安装和执行审批只绑定当前请求，取消或断流立即失效。
 - TUI 支持结构化 create/replace、哈希冲突保护、原子批次、固定项目检查和进程内 LIFO 撤销。
 - TUI 支持逐次审批的指定文件 Stage、中文 Commit 和当前分支既有上游 Push。
 - request ID 关联的结构化模型、HTTP 和工具日志。

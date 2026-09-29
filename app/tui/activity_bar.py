@@ -21,7 +21,9 @@ class ActivityBar(Static):
         if advance:
             self._frame_index = (self._frame_index + 1) % len(self.FRAMES)
         label = (
-            "等待审批" if status is RunStatus.AWAITING_APPROVAL
+            "等待计划确认" if status is RunStatus.AWAITING_PLAN
+            else "正在判断任务" if status is RunStatus.PLANNING
+            else "等待审批" if status is RunStatus.AWAITING_APPROVAL
             else "正在整理上下文" if self.compacting else "思考中"
         )
         self.update(

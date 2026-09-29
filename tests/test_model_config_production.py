@@ -32,14 +32,20 @@ class RecordingProvider:
 
     def create_turn(self, messages, tools, *, request_id, **kwargs):
         self.used_keys.append(self.key)
-        return BudgetedTestTurn(RecordingTurn(), messages, tools, **kwargs)
+        preflight = bool(messages and "只读任务预判器" in messages[0].content)
+        answer = ('{"kind":"direct","reason":"范围集中","steps":[],"question":null}'
+                  if preflight else "测试成功")
+        return BudgetedTestTurn(RecordingTurn(answer), messages, tools, **kwargs)
 
 
 class RecordingTurn:
+    def __init__(self, answer):
+        self.answer = answer
+
     async def next(self, tool_results=(), *, on_text_delta=None):
         if on_text_delta:
-            on_text_delta("测试成功")
-        return ModelStep(200, "测试成功", (), TokenUsage(4, 3, 7))
+            on_text_delta(self.answer)
+        return ModelStep(200, self.answer, (), TokenUsage(4, 3, 7))
 
 
 def test_web_settings_update_next_production_request_without_env_model_key(tmp_path, monkeypatch):
@@ -81,7 +87,7 @@ def test_web_settings_update_next_production_request_without_env_model_key(tmp_p
 
     events = asyncio.run(_collect(service, "下一轮请求"))
     assert events[-1]["type"] == "completed"
-    assert used_keys == ["saved-secret"]
+    assert used_keys == ["saved-secret", "saved-secret"]
     assert service.session._provider.model == "custom-model"
 
     restarted_values = store.load().environment()

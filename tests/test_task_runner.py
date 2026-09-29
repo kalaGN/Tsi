@@ -69,3 +69,35 @@ def test_task_timeout_is_visible_and_requires_review(tmp_path, monkeypatch):
     assert events[-1]["type"] == "failed"
     assert events[-2]["task"]["state"] == "needs_review"
     assert store.load(task.id).state == "needs_review"
+
+
+def test_deferred_task_does_not_consume_attempt_until_plan_is_confirmed(tmp_path):
+    store = TaskRunStore(tmp_path / "runs")
+    task = store.create("session-1", "project-1", "创建文件", [
+        {"kind": "file_exists", "target": "answer.txt", "expected_sha256": None},
+    ])
+
+    async def declined(_prompt):
+        yield {"type": "preflight_started"}
+        yield {"type": "plan_approval_required"}
+        yield {"type": "preflight_cancelled"}
+
+    async def confirmed(_prompt):
+        yield {"type": "preflight_started"}
+        yield {"type": "execution_started"}
+        (tmp_path / "answer.txt").write_text("done", encoding="utf-8")
+        yield {"type": "completed", "output_text": "完成"}
+
+    async def collect(stream):
+        return [event async for event in run_task_step(
+            store.load(task.id), store, stream, WorkspacePolicy(tmp_path),
+            deferred_start=True,
+        )]
+
+    first = asyncio.run(collect(declined))
+    assert first[-1]["type"] == "preflight_cancelled"
+    assert store.load(task.id).state == "ready"
+    assert store.load(task.id).attempts == 0
+    second = asyncio.run(collect(confirmed))
+    assert second[-2]["task"]["state"] == "completed"
+    assert store.load(task.id).attempts == 1

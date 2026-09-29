@@ -8,6 +8,8 @@ class RunStatus(str, Enum):
     """驱动状态栏展示的有限状态集合。"""
 
     READY = "Ready"
+    PLANNING = "Planning"
+    AWAITING_PLAN = "Awaiting plan"
     THINKING = "Thinking"
     AWAITING_APPROVAL = "Awaiting approval"
     ERROR = "Error"

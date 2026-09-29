@@ -19,6 +19,7 @@ from app.services.llm.contracts import (
 )
 from app.tui.activity_bar import ActivityBar
 from app.tui.approval import ToolApprovalScreen
+from app.tui.plan_confirmation import PlanConfirmationScreen
 from app.tui.bootstrap import TuiDependencies
 from app.tui.command_palette import CommandPalette
 from app.tui.commands import LocalCommand, parse_local_command
@@ -96,12 +97,14 @@ class ChatTuiApp(App[None]):
             if self._task_policy is not None else None
         )
         self._active_task: TaskRun | None = None
+        self._pending_task: TaskRun | None = None
         self._request = RequestCoordinator(
             self,
             dependencies.chat_runner,
             clock=dependencies.clock,
             workspace_enabled=dependencies.workspace_enabled,
             activity_interval_seconds=self.ACTIVITY_INTERVAL_SECONDS,
+            preflight_enabled=dependencies.preflight_enabled,
         )
         self._input_history = InputHistory(
             [
@@ -213,7 +216,7 @@ class ChatTuiApp(App[None]):
     def action_submit_prompt(self) -> None:
         """处理本地命令、输入校验，并启动唯一的异步对话请求。"""
 
-        if isinstance(self.screen, ToolApprovalScreen):
+        if isinstance(self.screen, (ToolApprovalScreen, PlanConfirmationScreen)):
             self._submit_focused_approval_action()
             return
         prompt_widget = self.query_one("#prompt", TextArea)
@@ -329,15 +332,40 @@ class ChatTuiApp(App[None]):
                 raise TaskRunError("格式：/task new 目标 | file_exists:相对路径；/task resume 任务ID")
             if task.state not in {"ready", "needs_review"}:
                 raise TaskRunError("任务当前不可继续。")
-            running = self._task_store.transition(task.id, task.revision, "running")
-            self._active_task = running
             text = task.goal if task.attempts == 0 else (
                 f"继续完成此前任务：{task.goal}\n先检查工作区状态，不要假设上次写入未生效。"
             )
-            self._write_message("System", f"任务 {task.id[:8]} 开始第 {running.attempts} 轮。")
+            if self._request.preflight_enabled:
+                self._pending_task = task
+            else:
+                self._pending_task = task
+                self.task_request_started()
             self._start_prompt_request(text, prompt)
         except (TaskRunError, ValueError) as exc:
             self._write_message("Error", str(exc))
+
+    def task_request_started(self) -> bool:
+        """预判完成或计划确认后，才消耗长任务的一轮执行次数。"""
+
+        task = self._pending_task
+        if task is None:
+            return True
+        self._pending_task = None
+        if self._task_store is None:
+            return False
+        try:
+            running = self._task_store.transition(task.id, task.revision, "running")
+        except TaskRunError as exc:
+            self._write_message("Error", str(exc))
+            return False
+        self._active_task = running
+        self._write_message("System", f"任务 {task.id[:8]} 开始第 {running.attempts} 轮。")
+        return True
+
+    def task_preflight_aborted(self) -> None:
+        """未执行的长任务保持 ready/needs_review，不消耗轮次。"""
+
+        self._pending_task = None
 
     async def task_request_completed(self) -> None:
         """模型返回后用确定性证据决定完成，不信任自然语言宣称。"""
@@ -570,7 +598,7 @@ class ChatTuiApp(App[None]):
     def action_complete_suggestion(self) -> None:
         """补全命令或 Skill 候选，实际执行留给下一次提交。"""
 
-        if isinstance(self.screen, ToolApprovalScreen):
+        if isinstance(self.screen, (ToolApprovalScreen, PlanConfirmationScreen)):
             self.screen.focus_next()
             return
         command = self.query_one(CommandPalette).take_selection()
@@ -666,7 +694,7 @@ class ChatTuiApp(App[None]):
     def action_confirm_exit(self) -> None:
         """优先清空输入；输入为空时才进入取消请求和双 Esc 退出。"""
 
-        if isinstance(self.screen, ToolApprovalScreen):
+        if isinstance(self.screen, (ToolApprovalScreen, PlanConfirmationScreen)):
             # App 的高优先级 Esc 会先收到按键；审批界面必须把它收敛为拒绝。
             self.screen.dismiss(False)
             return

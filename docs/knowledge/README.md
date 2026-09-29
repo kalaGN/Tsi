@@ -11,6 +11,7 @@
 - [故障排查](troubleshooting.md)：常见启动、测试和调用问题。
 - [仓库审计](repository-audit.md)：文档、工程、安全、可靠性和性能缺口审计。
 - [长任务模式](task-runs.md)：Web/TUI 的创建、验收、恢复与安全边界。
+- [当前编排逻辑](orchestration.md)：单 Agent 的无工具任务预判、计划确认、对话工具循环与长任务验收。
 
 ## 维护
 

@@ -5,10 +5,12 @@ from collections.abc import Awaitable, Callable
 from typing import Protocol, TypeVar
 
 from textual.timer import Timer
+from textual.screen import ModalScreen
 from textual.worker import Worker, get_current_worker
 
 from app.runtime.chat import ChatResult, ChatRuntimeError
 from app.runtime.session import ChatSession
+from app.runtime.task_preflight import TaskPreflightError, plan_execution_hint
 from app.services.llm.contracts import (
     TextDeltaHandler,
     TextResetHandler,
@@ -16,6 +18,7 @@ from app.services.llm.contracts import (
 )
 from app.tui.activity_bar import ActivityBar
 from app.tui.approval import ToolApprovalScreen
+from app.tui.plan_confirmation import PlanConfirmationScreen
 from app.tui.state import RunStatus
 from app.tui.transcript import StreamOutput
 from app.runtime.workspace_changes import AppliedChangeTracker
@@ -61,7 +64,13 @@ class RequestHost(Protocol):
     def write_request_message(self, role: str, content: str) -> None:
         ...
 
-    async def push_screen_wait(self, screen: ToolApprovalScreen) -> bool:
+    async def push_screen_wait(self, screen: ModalScreen[bool]) -> bool:
+        ...
+
+    def task_request_started(self) -> bool:
+        ...
+
+    def task_preflight_aborted(self) -> None:
         ...
 
     def refresh_request_skill_status(self) -> None:
@@ -85,6 +94,7 @@ class RequestCoordinator:
         clock: Clock = DEFAULT_CLOCK,
         workspace_enabled: bool = False,
         activity_interval_seconds: float = 0.1,
+        preflight_enabled: bool = False,
     ) -> None:
         self._host = host
         self._runner = runner
@@ -92,6 +102,7 @@ class RequestCoordinator:
         self._clock = clock
         self._workspace_enabled = workspace_enabled
         self._activity_interval_seconds = activity_interval_seconds
+        self.preflight_enabled = preflight_enabled
         self._active_worker: Worker[None] | None = None
         self._generation = 0
         self._activity_timer: Timer | None = None
@@ -126,7 +137,7 @@ class RequestCoordinator:
             return
         started_at = self._clock()
         self._host.write_request_message("You", input_text)
-        self._host.run_status = RunStatus.THINKING
+        self._host.run_status = RunStatus.PLANNING if self.preflight_enabled else RunStatus.THINKING
         self._generation += 1
         generation = self._generation
         self._begin_stream(generation)
@@ -157,6 +168,7 @@ class RequestCoordinator:
         interrupted = getattr(self._host, "task_request_interrupted", None)
         if interrupted is not None:
             interrupted(cancelled=True)
+        self._host.task_preflight_aborted()
         self._host.run_status = RunStatus.READY
         if show_message:
             self._host.write_request_message("System", "Request cancelled")
@@ -194,6 +206,34 @@ class RequestCoordinator:
         applied_changes = AppliedChangeTracker()
 
         try:
+            execution_hint = None
+            if self.preflight_enabled:
+                session = getattr(self._runner, "__self__", None)
+                if not isinstance(session, ChatSession):
+                    raise TaskPreflightError("unavailable", "任务预判不可用，请检查运行配置。")
+                decision = await session.assess_task(input_text)
+                if worker.is_cancelled or generation != self._generation:
+                    return
+                if decision.kind == "clarify":
+                    self._host.task_preflight_aborted()
+                    self._host.write_request_message("Assistant", decision.question or "请补充任务信息。")
+                    self._host.run_status = RunStatus.READY
+                    return
+                if decision.kind == "planned":
+                    self._host.run_status = RunStatus.AWAITING_PLAN
+                    approved = await self._host.push_screen_wait(PlanConfirmationScreen(decision))
+                    if worker.is_cancelled or generation != self._generation:
+                        return
+                    if approved is not True:
+                        self._host.task_preflight_aborted()
+                        self._host.write_request_message("System", "计划已取消，任务未执行。")
+                        self._host.run_status = RunStatus.READY
+                        return
+                    execution_hint = plan_execution_hint(decision)
+                self._host.run_status = RunStatus.THINKING
+                if not self._host.task_request_started():
+                    self._host.run_status = RunStatus.ERROR
+                    return
             runner_arguments = {
                 "on_text_delta": lambda delta: self._append_stream_delta(
                     delta,
@@ -203,6 +243,8 @@ class RequestCoordinator:
             }
             if self._supports_context_events:
                 runner_arguments["on_context_event"] = lambda event: self._on_context_event(event, generation)
+                if execution_hint is not None:
+                    runner_arguments["execution_hint"] = execution_hint
             if self._workspace_enabled:
                 runner_arguments["on_tool_approval"] = (
                     lambda request: self._approve_tool(request, generation)
@@ -221,6 +263,12 @@ class RequestCoordinator:
             if result.finish_reason == "output_limit":
                 self._host.write_request_message("System", "回答达到最大输出 Token，内容可能不完整。")
             self._host.run_status = RunStatus.READY
+        except TaskPreflightError as exc:
+            if worker.is_cancelled or generation != self._generation:
+                return
+            self._host.task_preflight_aborted()
+            self._host.write_request_message("Error", exc.user_message)
+            self._host.run_status = RunStatus.ERROR
         except ChatRuntimeError as exc:
             if worker.is_cancelled or generation != self._generation:
                 return
@@ -237,6 +285,7 @@ class RequestCoordinator:
             interrupted = getattr(self._host, "task_request_interrupted", None)
             if interrupted is not None:
                 interrupted()
+            self._host.task_preflight_aborted()
             self._host.write_request_message("Error", "Unexpected internal error")
             self._write_applied_change_warning(applied_changes.paths())
             self._write_elapsed_time(started_at)

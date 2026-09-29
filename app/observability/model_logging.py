@@ -61,6 +61,7 @@ _REDACTED_REQUEST_HEADERS = {
     "Authorization": "Bearer [REDACTED]",
 }
 _EVENT_FIELDS = {
+    "task_preflight": ("request_id", "outcome", "duration_ms", "steps_count", "error_code"),
     "task_state_change": ("request_id", "task_id", "state", "attempts", "revision"),
     "mcp_server": ("request_id", "server_name", "status", "duration_ms"),
     "llm_request": (
@@ -189,6 +190,7 @@ class _ModelEventReadableFormatter(logging.Formatter):
     """把同一白名单事件渲染为适合直接阅读的中文分块日志。"""
 
     _EVENT_NAMES = {
+        "task_preflight": "任务预判",
         "llm_request": "模型请求",
         "llm_response": "模型响应",
         "llm_http_request": "HTTP 请求",
@@ -241,6 +243,11 @@ class _ModelEventReadableFormatter(logging.Formatter):
             lines.extend((f"调用ID：{record.call_id}", f"工具：{record.tool_name}"))
         if event_name == "mcp_server":
             lines.extend((f"Server：{record.server_name}", f"状态：{record.status}", f"耗时：{record.duration_ms} ms"))
+        if event_name == "task_preflight":
+            lines.extend((
+                f"结果：{record.outcome}", f"耗时：{record.duration_ms} ms",
+                f"步骤数：{record.steps_count}", f"错误代码：{record.error_code or '-'}",
+            ))
 
         if event_name == "llm_request":
             lines.append(f"输入长度：{record.input_chars} 字符")
@@ -439,6 +446,19 @@ def new_request_id() -> str:
     """为本地日志条目生成不受客户端控制的标识。"""
 
     return uuid4().hex
+
+
+def log_task_preflight(
+    *, request_id: str, outcome: str, duration_ms: float,
+    steps_count: int = 0, error_code: str | None = None,
+) -> None:
+    """只记录预判结果、耗时和步骤数，不记录原输入或计划正文。"""
+
+    logging.getLogger(LOGGER_NAME).info("task_preflight", extra={
+        "event": "task_preflight", "request_id": request_id,
+        "outcome": outcome, "duration_ms": duration_ms,
+        "steps_count": steps_count, "error_code": error_code,
+    })
 
 
 def log_task_state_change(*, task_id: str, state: str, attempts: int, revision: int) -> None:

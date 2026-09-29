@@ -63,6 +63,7 @@ class TuiDependencies:
     clock: Clock
     task_policy: WorkspacePolicy | None = None
     task_store: TaskRunStore | None = None
+    preflight_enabled: bool = False
 
 
 def build_tui_dependencies(
@@ -86,6 +87,7 @@ def build_tui_dependencies(
     environ: Mapping[str, str] | None = None,
     clock: Clock = time.monotonic,
     task_policy: WorkspacePolicy | None = None,
+    preflight_enabled: bool = False,
 ) -> TuiDependencies:
     """构造生产 TUI 依赖，同时把可恢复启动失败转换为诊断。"""
 
@@ -232,6 +234,7 @@ def build_tui_dependencies(
         clock=clock,
         task_policy=task_policy,
         task_store=task_store,
+        preflight_enabled=preflight_enabled,
     )
 
 
@@ -253,6 +256,7 @@ def injected_tui_dependencies(
     model_options: tuple[ModelOption, ...] = (),
     model_selection_store: ModelSelectionStore | None = None,
     provider_factory: ProviderFactory = create_provider_for_model,
+    preflight_enabled: bool = False,
 ) -> TuiDependencies:
     """为测试或宿主构造不读取环境和生产磁盘的显式依赖。"""
 
@@ -303,6 +307,7 @@ def injected_tui_dependencies(
         workspace_enabled=workspace_enabled or skill_runtime is not None,
         skills_count=skills_count,
         clock=clock,
+        preflight_enabled=preflight_enabled,
     )
 
 

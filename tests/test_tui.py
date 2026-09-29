@@ -1,7 +1,9 @@
 import asyncio
+import hashlib
 import subprocess
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -24,6 +26,8 @@ from app.runtime.model_selection_store import (
 )
 from app.runtime import model_selection as runtime_model_selection
 from app.runtime.session import ChatSession
+from app.runtime.task_preflight import PlannedStep, TaskDecision
+from app.runtime.task_runs import TaskRunStore
 from app.runtime.skill_runtime import SkillRuntime
 from app.runtime.session_store import SessionStore, SessionStoreError
 from app.services.llm.contracts import (
@@ -46,6 +50,7 @@ from app.tui.model_palette import ModelPalette
 from app.tui.skill_palette import SkillPalette
 from app.tui.state import RunStatus
 from app.tui.approval import ToolApprovalScreen
+from app.tui.plan_confirmation import PlanConfirmationScreen
 from app.tui.widgets import SelectableRichLog
 from tools import (
     GIT_APPROVAL_WARNING_TEXT,
@@ -128,6 +133,7 @@ def make_app(
     model_options=None,
     model_selection_store=None,
     configuration_error=None,
+    preflight_enabled=False,
 ):
     runtime_info_was_given = runtime_info is not None
     runtime_info = runtime_info or DEEPSEEK_INFO
@@ -147,6 +153,7 @@ def make_app(
             runtime_info_factory=tui_bootstrap.get_chat_runtime_info,
             provider_factory=provider_factory,
             clock=clock or time.monotonic,
+            preflight_enabled=preflight_enabled,
         )
     else:
         dependencies = injected_tui_dependencies(
@@ -165,6 +172,7 @@ def make_app(
             model_options=tuple(model_options or ()),
             model_selection_store=model_selection_store,
             provider_factory=provider_factory,
+            preflight_enabled=preflight_enabled,
         )
     return ChatTuiApp(dependencies)
 
@@ -3185,5 +3193,100 @@ def test_quit_command_cancels_active_request_before_exit():
         assert exit_called
         assert cancelled.is_set()
         assert app._request.activity_timer is None
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("approved", (True, False))
+def test_tui_preflight_plan_requires_confirmation(tmp_path, monkeypatch, approved):
+    async def scenario():
+        provider = ImmediateProvider("deepseek", "deepseek-v4-flash", "执行完成")
+        session = ChatSession(SessionStore(tmp_path / "session.json"), provider=provider)
+
+        async def assess(_input_text, *, request_id=None):
+            return TaskDecision("planned", "需要两步", (
+                PlannedStep("检查", "检查结果"), PlannedStep("修改", "目标文件"),
+            ), None)
+
+        monkeypatch.setattr(session, "assess_task", assess)
+        app = make_app(chat_session=session, preflight_enabled=True)
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("完成任务")
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, PlanConfirmationScreen):
+                    break
+            assert isinstance(app.screen, PlanConfirmationScreen)
+            assert app.screen.query_one("#reject").has_focus
+            assert app.run_status is RunStatus.AWAITING_PLAN
+            assert provider.calls == []
+            await pilot.press("y" if approved else "escape")
+            await app.workers.wait_for_complete()
+            assert len(provider.calls) == int(approved)
+            assert len(session.messages) == (2 if approved else 0)
+            assert app.run_status is RunStatus.READY
+            assert ("执行完成" if approved else "任务未执行") in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
+def test_tui_preflight_clarify_does_not_run_business_turn(tmp_path, monkeypatch):
+    async def scenario():
+        provider = ImmediateProvider("deepseek", "deepseek-v4-flash")
+        session = ChatSession(SessionStore(tmp_path / "session.json"), provider=provider)
+
+        async def assess(_input_text, *, request_id=None):
+            return TaskDecision("clarify", "缺少文件名", (), "要修改哪个文件？")
+
+        monkeypatch.setattr(session, "assess_task", assess)
+        app = make_app(chat_session=session, preflight_enabled=True)
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text("修改文件")
+            await pilot.press("enter")
+            await app.workers.wait_for_complete()
+            assert provider.calls == []
+            assert session.messages == ()
+            assert "要修改哪个文件？" in transcript_text(app)
+
+    asyncio.run(scenario())
+
+
+def test_tui_long_task_cancelled_plan_keeps_attempts_zero(tmp_path, monkeypatch):
+    async def scenario():
+        provider = ImmediateProvider("deepseek", "deepseek-v4-flash")
+        session = ChatSession(SessionStore(tmp_path / "session.json"), provider=provider)
+        policy = WorkspacePolicy(tmp_path)
+        store = TaskRunStore(tmp_path / "tasks")
+        project_id = hashlib.sha256(str(policy.root).encode("utf-8")).hexdigest()[:32]
+        task = store.create("tui-default", project_id, "检查文件", [
+            {"kind": "file_absent", "target": "missing.txt", "expected_sha256": None},
+        ])
+
+        async def assess(_input_text, *, request_id=None):
+            return TaskDecision("planned", "先检查", (
+                PlannedStep("检查文件", "检查结果"),
+            ), None)
+
+        monkeypatch.setattr(session, "assess_task", assess)
+        dependencies = replace(
+            injected_tui_dependencies(chat_session=session, runtime_info=DEEPSEEK_INFO),
+            task_policy=policy, task_store=store, preflight_enabled=True,
+        )
+        app = ChatTuiApp(dependencies)
+        async with app.run_test() as pilot:
+            app.query_one("#prompt", TextArea).load_text(f"/task resume {task.id}")
+            await pilot.press("enter")
+            for _ in range(20):
+                await pilot.pause()
+                if isinstance(app.screen, PlanConfirmationScreen):
+                    break
+            assert store.load(task.id).state == "ready"
+            assert store.load(task.id).attempts == 0
+            await pilot.press("escape")
+            await app.workers.wait_for_complete()
+            assert store.load(task.id).state == "ready"
+            assert store.load(task.id).attempts == 0
+            assert provider.calls == []
 
     asyncio.run(scenario())

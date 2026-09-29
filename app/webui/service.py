@@ -18,6 +18,7 @@ from app.runtime.model_budget import ModelBudgetCatalog
 from app.runtime.model_config_store import ModelConfigStore
 from app.runtime.task_runner import run_task_step
 from app.runtime.task_runs import TaskRunError, TaskRunStore
+from app.runtime.task_preflight import TaskPreflightError, plan_execution_hint
 from app.runtime.model_selection import ModelSelectionError, ModelSelectionService
 from app.runtime.model_selection_store import ModelSelectionStore
 from app.runtime.personalization_store import PersonalizationError, PersonalizationStore
@@ -86,6 +87,7 @@ class WebUiService:
         service_config_store: ServiceConfigStore | None = None,
         task_store: TaskRunStore | None = None,
         skills_enabled: bool = False,
+        preflight_enabled: bool = False,
     ) -> None:
         self.catalog = catalog
         self._session_factory = session_factory
@@ -113,6 +115,7 @@ class WebUiService:
         )
         self.task_store = task_store
         self.skills_enabled = skills_enabled
+        self.preflight_enabled = preflight_enabled
         self._active_task_id: str | None = None
         self._request_lock = asyncio.Lock()
         self._active_task: asyncio.Task[None] | None = None
@@ -271,6 +274,7 @@ class WebUiService:
             service_config_store=service_config_store,
             task_store=task_store,
             skills_enabled=True,
+            preflight_enabled=True,
         )
 
     def _task_store(self) -> TaskRunStore:
@@ -316,7 +320,10 @@ class WebUiService:
         policy = _project_workspace_policy(project)
         self._active_task_id = task.id
         try:
-            async for event in run_task_step(task, store, self.stream_message, policy):
+            async for event in run_task_step(
+                task, store, self.stream_message, policy,
+                deferred_start=self.preflight_enabled,
+            ):
                 yield event
         finally:
             self._active_task_id = None
@@ -497,8 +504,29 @@ class WebUiService:
                         event_type = str(event["type"])
                         emit(event_type, **{key: value for key, value in event.items() if key not in {"type", "request_id"}})
 
+                    execution_hint = None
+                    if self.preflight_enabled:
+                        emit("preflight_started")
+                        decision = await active_session.assess_task(input_text, request_id=request_id)
+                        emit("preflight_result", **decision.payload())
+                        if decision.kind == "clarify":
+                            record_statistics("completed")
+                            emit("preflight_clarify", question=decision.question)
+                            return
+                        if decision.kind == "planned":
+                            approved = await self._approvals.request_plan(
+                                request_id, decision,
+                                lambda payload: emit("plan_approval_required", **payload),
+                            )
+                            if not approved:
+                                record_statistics("cancelled")
+                                emit("preflight_cancelled")
+                                return
+                            execution_hint = plan_execution_hint(decision)
+                        emit("execution_started")
                     result = await active_session.send(
                         input_text,
+                        execution_hint=execution_hint,
                         on_text_delta=lambda text: emit("text_delta", text=text),
                         on_text_reset=lambda: emit("text_reset"),
                         on_tool_approval=on_tool_approval,
@@ -512,6 +540,11 @@ class WebUiService:
                 except ChatRuntimeError as exc:
                     record_statistics("failed")
                     emit("failed", code=exc.code.value, message=exc.user_message,
+                         applied_changes=applied_changes.paths())
+                    return
+                except TaskPreflightError as exc:
+                    record_statistics("failed")
+                    emit("failed", code=exc.code, message=exc.user_message,
                          applied_changes=applied_changes.paths())
                     return
                 except Exception:
@@ -556,7 +589,7 @@ class WebUiService:
                 while True:
                     event = await queue.get()
                     yield event
-                    if event["type"] in {"completed", "failed", "cancelled"}:
+                    if event["type"] in {"completed", "failed", "cancelled", "preflight_clarify", "preflight_cancelled"}:
                         break
                 await runner
             finally:

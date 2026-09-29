@@ -53,7 +53,29 @@ class WebProvider:
         self.answer = answer
 
     def create_turn(self, messages, tools, *, request_id, **budget):
-        return BudgetedTestTurn(WebTurn(self.answer), messages, tools, **budget)
+        answer = self.answer
+        if not tools and messages and "只读任务预判器" in messages[0].content:
+            answer = '{"kind":"direct","reason":"范围集中","steps":[],"question":null}'
+        return BudgetedTestTurn(WebTurn(answer), messages, tools, **budget)
+
+
+class PreflightWebProvider(WebProvider):
+    """区分无工具预判与业务 Turn，验证确认前没有执行。"""
+
+    def __init__(self, decision):
+        super().__init__("业务已执行")
+        self.decision = decision
+        self.business_calls = 0
+        self.preflight_tools = None
+        self.business_messages = None
+
+    def create_turn(self, messages, tools, *, request_id, **budget):
+        if messages and "只读任务预判器" in messages[0].content:
+            self.preflight_tools = tuple(tools)
+            return BudgetedTestTurn(WebTurn(self.decision), messages, tools, **budget)
+        self.business_calls += 1
+        self.business_messages = tuple(messages)
+        return super().create_turn(messages, tools, request_id=request_id, **budget)
 
 
 class WebTurn:
@@ -496,7 +518,8 @@ def test_production_web_settings_reach_next_model_and_compaction_request(tmp_pat
             self.output_limits = []
 
         def create_turn(self, messages, tools, *, request_id, **kwargs):
-            self.output_limits.append(kwargs["options"].max_output_tokens)
+            if tools or "只读任务预判器" not in messages[0].content:
+                self.output_limits.append(kwargs["options"].max_output_tokens)
             return super().create_turn(messages, tools, request_id=request_id, **kwargs)
 
     monkeypatch.setattr(web_service_module, "DEFAULT_WEB_PROJECTS_PATH", tmp_path / "projects.json")
@@ -588,6 +611,8 @@ def test_production_web_can_activate_skill_install_group(tmp_path, monkeypatch):
             self.turn = SkillInstallTurn()
 
         def create_turn(self, messages, tools, *, request_id, **kwargs):
+            if not tools and messages and "只读任务预判器" in messages[0].content:
+                return super().create_turn(messages, tools, request_id=request_id, **kwargs)
             return BudgetedTestTurn(self.turn, messages, tools, **kwargs)
 
     monkeypatch.setattr(web_service_module, "DEFAULT_WEB_PROJECTS_PATH", tmp_path / "projects.json")
@@ -878,6 +903,79 @@ def test_webui_workspace_write_waits_for_explicit_approval(
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize("approved", (True, False))
+def test_webui_plan_confirmation_precedes_business_request(tmp_path, approved):
+    async def scenario():
+        decision = json.dumps({
+            "kind": "planned", "reason": "需要两步", "question": None,
+            "steps": [{"action": "检查现状", "deliverable": "检查结果"}],
+        }, ensure_ascii=False)
+        provider = PreflightWebProvider(decision)
+        service = create_service(tmp_path, provider)
+        service.preflight_enabled = True
+        events = []
+        approval = None
+        async for event in service.stream_message("请完成较复杂任务"):
+            events.append(event)
+            if event["type"] == "plan_approval_required":
+                approval = event
+                assert provider.preflight_tools == ()
+                assert provider.business_calls == 0
+                assert service.session.messages == ()
+                with pytest.raises(WebApprovalConflict):
+                    service.resolve_tool_approval(event["approval_id"], "wrong-request", True)
+                service.resolve_tool_approval(event["approval_id"], event["request_id"], approved)
+                with pytest.raises(WebApprovalNotFound):
+                    service.resolve_tool_approval(event["approval_id"], event["request_id"], True)
+        assert approval is not None
+        assert provider.business_calls == int(approved)
+        assert len(service.session.messages) == (2 if approved else 0)
+        if approved:
+            assert "检查现状" in provider.business_messages[-1].content
+            assert provider.business_messages[-1].role is ChatRole.USER
+            assert service.session.messages[0].content == "请完成较复杂任务"
+            assert all("检查现状" not in message.content for message in provider.business_messages if message.role is ChatRole.SYSTEM)
+        assert events[-1]["type"] == ("completed" if approved else "preflight_cancelled")
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("decision,terminal", (
+    ('{"kind":"clarify","reason":"缺少文件名","steps":[],"question":"哪个文件？"}', "preflight_clarify"),
+    ('{"kind":"planned","reason":"缺步骤","steps":[],"question":null}', "failed"),
+))
+def test_webui_preflight_clarify_or_invalid_never_executes(tmp_path, decision, terminal):
+    async def scenario():
+        provider = PreflightWebProvider(decision)
+        service = create_service(tmp_path, provider)
+        service.preflight_enabled = True
+        events = [event async for event in service.stream_message("请修改")]
+        assert events[-1]["type"] == terminal
+        assert provider.business_calls == 0
+        assert service.session.messages == ()
+
+    asyncio.run(scenario())
+
+
+def test_webui_plan_confirmation_timeout_rejects_late_approval(tmp_path):
+    async def scenario():
+        provider = PreflightWebProvider(json.dumps({
+            "kind": "planned", "reason": "需要检查", "question": None,
+            "steps": [{"action": "检查", "deliverable": "结果"}],
+        }, ensure_ascii=False))
+        service = create_service(tmp_path, provider)
+        service.preflight_enabled = True
+        service._approvals._plan_timeout_seconds = 0.001
+        events = [event async for event in service.stream_message("先检查")]
+        approval = next(event for event in events if event["type"] == "plan_approval_required")
+        assert events[-1]["type"] == "preflight_cancelled"
+        assert provider.business_calls == 0
+        with pytest.raises(WebApprovalNotFound):
+            service.resolve_tool_approval(approval["approval_id"], approval["request_id"], True)
+
+    asyncio.run(scenario())
+
+
 def test_webui_cancel_invalidates_pending_workspace_approval(tmp_path):
     async def scenario():
         service = create_service(tmp_path, WorkspaceWriteProvider())
@@ -1020,12 +1118,13 @@ def test_webui_settings_and_workspace_approval_contract_are_present(tmp_path):
     assert ".showModal()" not in javascript
     assert "/tool-approvals/" in javascript
     assert '$("#activity-text").textContent = "正在回答"' in javascript
-    assert "startTaskFeedback(input)" in javascript
+    assert 'startTaskFeedback(input, "正在判断任务")' in javascript
+    assert 'event.type === "preflight_result"' in javascript
     assert "window.setInterval(renderTaskFeedback, 3000)" in javascript
     assert "任务理解：" in javascript
-    assert "需要拆分步骤" in javascript
+    assert "plan_approval_required" in javascript
     assert 'resumeTaskFeedback("模型正在调用工具，等待执行结果")' in javascript
-    assert 'return ["completed", "failed", "cancelled"].includes(event.type)' in javascript
+    assert 'return ["completed", "failed", "cancelled", "preflight_clarify", "preflight_cancelled"].includes(event.type)' in javascript
     assert "await reader.cancel()" in javascript
     assert '#/settings/general' in javascript
     assert 'api("/statistics")' in javascript

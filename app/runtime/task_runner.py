@@ -15,14 +15,16 @@ EventStream = Callable[[str], AsyncIterator[dict[str, object]]]
 
 async def run_task_step(
     task: TaskRun, store: TaskRunStore, stream: EventStream, policy: WorkspacePolicy,
+    *, deferred_start: bool = False,
 ) -> AsyncIterator[dict[str, object]]:
     """每次继续只增加一个完整对话轮次；断流后的结果一律人工检查。"""
 
     if task.state not in {"ready", "needs_review"}:
         raise ValueError("任务当前不可执行。")
-    current = store.transition(task.id, task.revision, "running")
+    current = task if deferred_start else store.transition(task.id, task.revision, "running")
     settled = False
-    yield {"type": "task_state", "task": current.public_payload()}
+    if not deferred_start:
+        yield {"type": "task_state", "task": current.public_payload()}
     prompt = task.goal if task.attempts == 0 else (
         f"继续完成此前任务：{task.goal}\n"
         "先检查现有会话和工作区状态；不要假设上一次未完成的写操作没有生效。"
@@ -31,6 +33,19 @@ async def run_task_step(
         async with asyncio.timeout(600):
             async for event in stream(prompt):
                 event_type = event.get("type")
+                if deferred_start and current.state in {"ready", "needs_review"}:
+                    if event_type == "execution_started":
+                        current = store.transition(current.id, current.revision, "running")
+                        yield {"type": "task_state", "task": current.public_payload()}
+                        yield event
+                        continue
+                    if event_type in {"preflight_clarify", "preflight_cancelled", "failed", "cancelled"}:
+                        settled = True
+                        yield event
+                        return
+                    # 预判和计划审批期间保留 ready/needs_review，不消耗尝试次数。
+                    yield event
+                    continue
                 if event_type == "tool_approval_required" and current.state == "running":
                     current = store.transition(current.id, current.revision, "awaiting_approval")
                     yield {"type": "task_state", "task": current.public_payload()}

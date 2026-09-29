@@ -1,4 +1,4 @@
-ToolApprovalScreen { align: center middle; }
+ToolApprovalScreen, PlanConfirmationScreen { align: center middle; }
 #approval-dialog {
     width: 92%;
     height: 88%;

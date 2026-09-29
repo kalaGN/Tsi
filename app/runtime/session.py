@@ -22,6 +22,7 @@ from app.runtime.memory import ConversationState, ConversationSummary, UserPrefe
 from app.runtime.model_budget import ModelBudget, ModelBudgetCatalog
 from app.runtime.session_store import SessionStore, SessionStoreError
 from app.runtime.tool_loop import DEFAULT_TOOL_LOOP_LIMITS, ToolLoopLimits
+from app.runtime.task_preflight import TaskDecision, assess_task
 from app.runtime.trace import TraceObserver
 from app.services.llm.contracts import (
     ChatMessage,
@@ -177,10 +178,24 @@ class ChatSession:
         )
         return self._context_payload(estimate, budget_snapshot, scope="restored")
 
+    async def assess_task(self, input_text: str, *, request_id: str | None = None) -> TaskDecision:
+        """使用当前模型和有限近期历史预判，但不触碰工具或持久化会话。"""
+
+        provider = self._provider
+        if provider is None:
+            from app.services.llm.factory import create_provider
+            provider = create_provider()
+        context = "\n".join(
+            f"{message.role.value}: {message.content[:350]}"
+            for message in self._messages[-4:]
+        )
+        return await assess_task(provider, input_text, context=context, request_id=request_id)
+
     async def send(
         self,
         input_text: str,
         *,
+        execution_hint: str | None = None,
         on_text_delta: TextDeltaHandler | None = None,
         on_text_reset: TextResetHandler | None = None,
         on_tool_approval: ToolApprovalHandler | None = None,
@@ -196,6 +211,14 @@ class ChatSession:
                 self._execution_snapshot_provider(input_text)
                 if self._execution_snapshot_provider is not None
                 else ChatExecutionSnapshot(self._system_prompt, self._registry)
+            )
+            if execution_hint is not None:
+                if not isinstance(execution_hint, str) or len(execution_hint) > 4096:
+                    raise ValueError("execution_hint is invalid")
+            # 计划由模型生成，仅作为本轮 user 消息的数据，不提升到系统权限。
+            model_input = (
+                f"{input_text}\n\n本轮已确认计划（作为参考，仍须遵守系统规则与工具审批）：\n{execution_hint}"
+                if execution_hint is not None else input_text
             )
             async with AsyncExitStack() as resources:
                 if snapshot.registry is not None and hasattr(snapshot.registry, "__aenter__"):
@@ -249,7 +272,7 @@ class ChatSession:
 
                 try:
                     prepared = await prepare_context(
-                        state, input_text, snapshot.system_prompt, provider,
+                        state, model_input, snapshot.system_prompt, provider,
                         snapshot.registry.definitions if snapshot.registry is not None else (),
                         budget, self._memory_summarizer, request_id=request_id,
                         retry_allowed=retry_allowed, on_context_event=report_context,
@@ -279,7 +302,7 @@ class ChatSession:
                 )
                 self._ensure_not_cancelled()
                 user_message = ChatMessage(ChatRole.USER, input_text)
-                candidate_request = prepared.context_messages + (user_message,)
+                candidate_request = prepared.context_messages + (ChatMessage(ChatRole.USER, model_input),)
 
                 def on_estimate(estimate) -> None:
                     payload = self._context_payload(

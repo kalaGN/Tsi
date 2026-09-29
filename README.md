@@ -2,6 +2,12 @@
 
 Tsi 助手是一个轻量大模型调用项目，同时提供 DSH 风格 Web UI 和可恢复上下文的 Textual TUI，支持阿里云 Responses API、DeepSeek Chat Completions API，以及受限的本地项目工具。
 
+Web UI 与 TUI 的每轮聊天、显式长任务都会先进行一次无工具模型预判：简单任务直接执行；复杂任务显示最多 6 步计划，确认后才执行；信息不足则先询问。预判失败或取消不会调用业务工具，也不会保存一轮未完成对话。该流程额外增加一次模型请求和等待时间，计划确认不代替后续写操作审批。详见[编排说明](docs/knowledge/orchestration.md)。
+
+## 界面预览
+
+![Tsi 助手 Web UI 界面预览](docs/images/20260929-tsi-web-ui.png)
+
 ## 安装依赖
 
 项目要求 Python 3.11，当前仓库已使用本地 `.venv`：

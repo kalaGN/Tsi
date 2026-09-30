@@ -4,6 +4,10 @@
 
 ## 索引
 
+- [使用指南](usage.md)：模型与服务配置、Web/TUI 操作、Skill 使用和本地记忆。
+- [工具与扩展](tools.md)：工具清单、MCP 接入和审批边界。
+- [运行与运维](operations.md)：桌面打包、服务端点及模型日志。
+- [开发与评测](development.md)：测试、Agent 评测和提交前检查。
 - [项目概览](project-overview.md)：项目目标、技术栈、边界、命令和已确认的基础设施现状。
 - [架构](architecture.md)：技术栈、组件职责和请求链路。
 - [API 约定](api-conventions.md)：接口、校验和错误响应约定。

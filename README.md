@@ -1,378 +1,63 @@
 # Tsi 助手
 
-Tsi 助手是一个轻量大模型调用项目，同时提供 DSH 风格 Web UI 和可恢复上下文的 Textual TUI，支持阿里云 Responses API、DeepSeek Chat Completions API，以及受限的本地项目工具。
+面向本地项目的 AI 助手，提供 macOS 桌面应用、Web UI 和终端 TUI。支持 DeepSeek 与阿里云百炼，结合项目上下文、Skill 和工具完成对话与开发任务。
 
-Web UI 与 TUI 的每轮聊天、显式长任务都会先进行一次无工具模型预判：简单任务直接执行；复杂任务显示最多 6 步计划，确认后才执行；信息不足则先询问。预判失败或取消不会调用业务工具，也不会保存一轮未完成对话。该流程额外增加一次模型请求和等待时间，计划确认不代替后续写操作审批。详见[编排说明](docs/knowledge/orchestration.md)。
+![Tsi 助手界面预览](docs/images/20260929-tsi-web-ui.png)
 
-## 界面预览
+## 核心功能
 
-![Tsi 助手 Web UI 界面预览](docs/images/20260929-tsi-web-ui.png)
+- **多模型与流式对话**：在设置中配置供应商、模型和 API Key，显示耗时、Token 与上下文占比。
+- **项目与会话管理**：Web 会话按项目分组，工具使用对应项目路径；历史记录可持久化恢复。
+- **任务预判与计划确认**：简单请求直接执行，复杂任务先展示计划，信息不足时先提问。
+- **项目工具与扩展**：文件读取、搜索和修改，支持 Codex 兼容 Skill、MCP；TUI 提供 Git 提交与推送工具。
+- **记忆与可观测性**：自动摘要、上下文淘汰、长期偏好，以及模型和工具日志、近 7/30 天统计。
 
-## 安装依赖
+## 快速开始
 
-项目要求 Python 3.11，当前仓库已使用本地 `.venv`：
+需要 **Python 3.11**。在 macOS / Linux 中执行：
 
 ```bash
-cd /Users/wangfei/study/fastapi/demo
-.venv/bin/python --version
+git clone https://github.com/kalaGN/Tsi.git
+cd Tsi
+python3.11 -m venv .venv
 .venv/bin/python -m pip install -r requirements.txt
 ```
 
-## 配置模型
-
-先启动 Web UI（源码运行可用 `ti`，桌面版直接打开 `.app`），进入左下角「设置 → 模型」，选择 DeepSeek 或阿里云百炼，填写候选模型（每行一个）和 API Key，点击「保存配置」。保存后下一次请求立即使用新配置；TUI 重启后读取源码 Web UI 保存的同一份配置，再用 `/model` 切换候选。
-
-模型配置保存在本机私有的 `data/model-config.json`，API Key **以明文存储**，父目录权限 `0700`、文件权限 `0600`；页面不会回显已保存的 Key，也不会把它写入浏览器本地存储或模型日志。源码 Web UI 与 TUI 共用项目 `data/`；独立桌面版使用 `~/Library/Application Support/Tsi/data/`。模型字段不再读取 `.env`。如果旧 `.env` 中有模型密钥，请手动复制到设置页并确认可用，再自行删除旧条目；应用不会自动导入或删除它们。模型选择仍在 `model-selection.json` 中恢复。
-
-Web UI 的网络搜索使用固定 Serper.dev Google Search API。在「设置 → 服务」中为 **Serper 网络搜索**填写 API Key 并保存；下一次搜索立即生效。服务配置保存在本机私有 `data/service-config.json`（桌面版使用 `~/Library/Application Support/Tsi/data/service-config.json`），Key 以明文保存，页面只显示配置状态。旧 `.env` 中的 `SERPER_API_KEY` **彻底停用**：请手动在设置页重新填写，确认搜索可用后自行清理旧条目；应用不会自动导入或删除它。
-
-## 工具调用
-
-### 外部 MCP 工具
-
-在项目根目录创建 Git 忽略的 `data/mcp-servers.json`，列出要启用的 MCP Server。安装依赖后，Web UI 和 TUI 都会在每轮对话开始时连接、发现工具，并按需提供 `mcp` 工具组；每次调用都需要本地审批。未创建配置文件时不会连接外部服务。
-
-```json
-{
-  "servers": [
-    {"name": "local", "transport": "stdio", "command": "/path/to/server", "args": ["--stdio"], "env": {"SERVICE_TOKEN": "MY_SERVICE_TOKEN"}},
-    {"name": "remote", "transport": "streamable_http", "url": "https://example.com/mcp", "headers": {"Authorization": "MY_MCP_AUTH_HEADER"}}
-  ]
-}
-```
-
-`env` 和 `headers` 的值是宿主环境变量名；例如先在 `.env` 中配置 `MY_SERVICE_TOKEN` 或 `MY_MCP_AUTH_HEADER`。HTTP Authorization 变量值应包含完整的 `Bearer ...`。本机 HTTP 仅允许 `localhost`、`127.0.0.1` 或 `::1`，远程服务必须使用 HTTPS。stdio 服务器是本机进程，会在本轮对话开始时启动；仅配置可信命令。连接与工具响应在请求结束或取消时清理。首版仅提供文本和结构化工具结果，不支持 MCP Resources、Prompts、OAuth 或管理界面。外部内容可能进入模型上下文；启用 MCP 的请求在本机模型日志及评测轨迹中隐藏正文。
-
-Web UI 与 TUI 使用不同的显式工具白名单。Web UI 可按需激活时间、网络搜索和 Workspace 读写工具，但不包含 Git、Skill 或脚本；TUI 每轮首步只发送 `activate_tool_groups`，由模型按任务意图激活所需工具组，避免每个模型步骤重复携带完整工具 Schema。一次请求最多追加两次，可在一次激活中选择多个组；组状态不会跨请求保留。显式 `$技能名` 会预激活 `skills`，不消耗追加次数。创建、修改、撤销、安装或执行脚本的审批规则不因激活而改变。
-
-| 工具组 | 包含能力 |
-|---|---|
-| `general` | 当前时间 |
-| `web_search` | 固定 Serper.dev 上游的公开网络搜索 |
-| `workspace_read` | 文件列举、搜索、读取及 Git 状态、Diff |
-| `workspace_write` | `workspace_read` 全部能力，加结构化修改、单文件删除、固定检查和撤销 |
-| `skills` | 加载 Skill、读取资源、执行脚本 |
-| `skill_install` | 安装 Skill |
-| `git_write` | 暂存指定文件、创建中文提交、推送既有上游 |
-| `mcp` | 当前请求发现的外部 MCP 工具，逐次本地审批 |
-
-`skills` 只在启动 Catalog 非空时可选；`skill_install` 只在 TUI 安装器可用时可选。模型不能创建新组或把任意工具加入组。
-
-| 使用入口 | 工具 | 作用 | 执行方式 |
-| --- | --- | --- | --- |
-| Web UI、TUI | `get_current_time(timezone)` | 获取指定 IANA 时区（例如 `Asia/Shanghai`）的当前 ISO 8601 时间 | 自动执行 |
-| Web UI | `web_search(query, limit)` | 搜索公开网络并返回有界标题、HTTP(S) 链接和摘要 | 自动执行；需在「设置 → 服务」保存 Serper Key |
-| Web UI、TUI | `list_workspace_files` | 分页列举允许读取的文件和目录 | 自动执行 |
-| Web UI、TUI | `search_workspace_text` | 一次扫描搜索 1～4 个字面量关键词，返回命中的文件和行号 | 自动执行 |
-| Web UI、TUI | `read_workspace_files` | 一次读取最多 4 个独立文本片段及各文件 SHA-256，减少模型往返 | 自动执行 |
-| Web UI、TUI | `read_workspace_file` | 按行读取单个文件并返回 SHA-256 | 自动执行 |
-| Web UI、TUI | `get_workspace_git_status` | 查看 Git 状态 | 自动执行 |
-| Web UI、TUI | `get_workspace_git_diff` | 查看分页 Diff | 自动执行 |
-| Web UI、TUI | `apply_workspace_edits` | 创建文件或执行带哈希前置条件的精确替换 | 本地审批后执行 |
-| Web UI、TUI | `delete_workspace_file` | 删除一个带哈希前置条件的 UTF-8 文本文件 | 本地审批后执行，可在当前请求撤销 |
-| Web UI、TUI | `run_project_check` | 运行 `compile`、`test_all`、`pip_check`、`diff_check` 四个固定检查 | 自动执行 |
-| Web UI、TUI | `undo_workspace_change` | 撤销当前请求最近一次 Agent 修改 | 本地审批后执行 |
-| 仅 TUI | `install_skill` | 从公开 GitHub Skill 目录或当前用户 `~/.codex/skills` 直属目录安装 Skill | 每次本地审批后安装，下一次请求生效 |
-| 仅 TUI | `load_skill` | 按名称读取完整 `SKILL.md` 和资源清单 | 自动执行 |
-| 仅 TUI | `read_skill_resource` | 读取 Skill 快照中的 UTF-8 文本资源 | 自动执行 |
-| 仅 TUI | `run_skill_script` | 执行 Skill `scripts/` 中的 `.py` 或 `.sh` 文件 | 每次本地审批后执行 |
-| 仅 TUI | `git_stage` | 暂存 1 至 20 个明确指定的普通文件 | 每次本地审批后执行 |
-| 仅 TUI | `git_commit` | 以 `type: 中文描述` 提交当前暂存内容 | 每次本地审批后执行 |
-| 仅 TUI | `git_push` | 非强制推送当前分支到既有上游 | 每次本地审批后执行并访问网络 |
-
-工作区搜索在已知多个相关关键词时可传 `query` 加最多 3 个 `additional_queries`，只扫描一次。读取默认最多返回 400 行；需要定位片段时可显式传 `start_line`、`max_lines`。多个目标文件优先使用 `read_workspace_files`。
-
-典型流程为：模型先列举、搜索、读取和检查现有差异，再提出结构化修改或单文件删除；Web UI/TUI 显示相对路径和完整有界 Diff，默认焦点为拒绝。确认后模型可运行检查并继续修正。每个写入、删除和撤销都独立审批；Web Journal 只存在单次请求，TUI Journal 最多保存 10 个批次且只存在当前进程，重启后不能撤销旧批次。
-
-安全和成本边界：
-
-- 内置工具只能从根目录 `tools/` 显式注册；外部 MCP 工具只来自本地明确配置的 Server，调用逐次审批。不提供模型自由拼接的 Shell/Python、动态 import、数据库或依赖安装。Git 只能通过三个固定结构化工具执行，不能传入任意命令或参数。
-- `web_search` 只向固定的 `https://google.serper.dev/search` 发送查询，模型不能指定 URL、Header、请求方法或搜索供应商；查询内容会发送给 Serper.dev，响应体限制为 1 MiB。
-- Workspace 固定为 Web 服务或 TUI 的启动目录；绝对路径、`..`、符号链接、二进制和保护路径会被拒绝。
-- `.env*`、`.git/`、`.venv/`、`data/`、`logs/` 和缓存目录不可读写；`AGENTS.md`、Rules、依赖文件和 Workspace 安全实现额外禁止写入。
-- `apply_workspace_edits` 只支持创建已有目录下的 UTF-8 文件和精确替换，不支持删除、移动、重命名或创建目录。
-- `delete_workspace_file` 只接受一个现有 UTF-8 普通文本文件及 `read_workspace_file` 返回的当前 SHA-256；拒绝目录、链接、批量、保护路径、审批后变化和无审批删除，成功后可用 `change_id` 撤销。
-- Runtime 默认最多 5 个模型步骤、每步 4 次、总计 16 次工具调用；Web UI/TUI 分别为 41、4、40，工具组激活也计入预算。
-- 普通参数最多 8 KiB，编辑参数最多 64 KiB，结果最多 32 KiB；多个调用串行执行。
-- 同一用户请求内的模型步骤复用一个短生命周期 HTTP 连接池；请求成功、失败或取消后关闭。正式日志分别记录响应头、首个 SSE 事件、首个可展示文本和完整流耗时，未发生的阶段显示 `-`。
-- Skill 脚本使用参数数组而非 Shell 拼接，`.py` 固定使用当前 Python，`.sh` 固定使用 `/bin/sh`；运行环境不继承 API Key 等宿主变量，30 秒超时，stdout/stderr 合计最多 32 KiB。
-- Skill 脚本没有文件系统或网络沙箱，能够读取工作区、修改文件及访问网络；审批界面会展示解释器、相对脚本、逐项转义参数和该风险，每次调用都重新确认。
-- `install_skill` 只接受公开 `github.com` HTTPS Skill 目录和 `~/.codex/skills` 直属目录；不读取私有仓库凭据，不覆盖同名目标，不执行安装包中的脚本或安装依赖。安装审批与脚本审批相互独立。
-- Git 写工具仅存在于 TUI：Stage 不接受目录、删除、glob 或全仓库参数；Commit 只使用当前 Index 并关闭 hooks/GPG；Push 只使用当前分支已有的 HTTPS/SSH 上游，不支持 force、Tag、删远端或设置上游。审批后状态变化会返回冲突。
-- 达到上限时 Web UI 以流内错误事件返回，TUI 显示安全错误。已确认并完成的磁盘修改不会因后续模型失败自动回滚，界面会列出仍保留的相对路径。
-
-## 启动 TUI
-
-TUI 会从项目根目录 `.env` 加载配置，Shell 中已设置的环境变量优先。无需先启动 Uvicorn：
+### 启动 TUI
 
 ```bash
 .venv/bin/python -m app.tui
 ```
 
-TUI 启动时还会读取命令执行目录直属的 `AGENTS.md`：有效的 UTF-8 普通文件会作为每轮请求唯一的首条 system 消息，文件缺失或空白时不启用，正文超过 32 KiB、编码非法或不可读取时会显示错误并阻止模型请求。状态栏以 `AGENTS: loaded|none|error` 展示本次启动结果，不回显正文；文件修改后需重启 TUI 才能生效。当前不递归父目录，不支持 `AGENTS.override.md` 或多文件合并。
+`Enter` 发送，`/model` 切换模型，`/skills` 查看技能，`/clear` 清空对话。完整快捷键见[使用指南](docs/knowledge/usage.md#启动-tui)。
 
-同一启动目录还可放置 Codex 兼容 Skill：
-
-```text
-.agents/skills/<skill-name>/
-├── SKILL.md
-├── scripts/       # 可选
-├── references/    # 可选
-└── assets/        # 可选
-```
-
-TUI 启动时扫描这一层 `.agents/skills/`，使用安全 YAML 读取 `SKILL.md` 的 `name` 和 `description`，并把名称、描述、相对位置以“一行一个 Skill”的精简 Catalog 追加到 system 消息。模型自行匹配能力时先调用 `load_skill`，需要配套文本时再调用 `read_skill_resource`；未显式引用的 Skill 正文不会预先灌入上下文。状态栏以 `Skills: 数量|error` 展示结果。任一 Skill、资源、编码、大小或符号链接非法时整批 Skill 被禁用，但 `AGENTS.md`、普通对话和已有 Workspace 工具仍可使用。
-
-在输入开头或空白后输入 `$` 可以显式引用 Skill，例如：
-
-```text
-$using-superpowers 帮我分析下一步应该使用哪个技能
-```
-
-候选打开时使用 `↑/↓` 选择，`Tab` 或第一次 `Enter` 补全，第二次 `Enter` 发送。单轮最多引用 3 个不同 Skill；完整 `SKILL.md` 只进入本轮模型 system 上下文，资源正文仍需工具按需读取，脚本和写操作仍须逐次审批。未知 `$名称` 按普通文本发送，候选和执行均只读取当前内存 Catalog，不临时扫描磁盘。
-
-可以直接在 TUI 中要求模型安装 Skill。个人 Codex 目录示例：
-
-```text
-请调用 install_skill，从 codex_home 的 skill-using-superpowers 目录安装 Skill，
-expected_name 使用 using-superpowers。
-```
-
-公开 GitHub 目录示例：
-
-```text
-请调用 install_skill，来源类型 github，来源为
-https://github.com/acme/skills/tree/main/skills/demo-skill，
-expected_name 使用 demo-skill。
-```
-
-审批框会显示来源、固定目标 `.agents/skills/<expected_name>` 以及是否访问网络。拒绝时不会读取来源或写项目；批准后先在项目临时目录校验完整包，再原子安装。成功后状态栏立即更新数量，新 Skill 从下一次用户发送开始进入 system prompt 和工具快照，不会混入当前模型工具循环。手动增删改 `.agents/skills/` 仍不会热刷新，需要重启 TUI；热刷新只由成功的 `install_skill` 触发。
-
-Skill 包以 Codex 的 `.agents/skills/` 发现约定为准，`SKILL.md` 与 `scripts/`、`references/`、`assets/` 结构遵循开放 Agent Skills 格式。同一个包可复制到 Claude Code 对应目录使用，但 Tsi 不扫描 `.claude/skills/`，也不采信 `allowed-tools` 等字段扩大权限。项目不内置示例 Skill，测试使用临时夹具验证完整流程。
-
-TUI 会把已成功的 user/assistant 轮次作为后续请求上下文，系统提示词不会显示在对话区或写入 Session。模型生成期间，输入框上方会持续显示临时纯文本；完整响应到达后，该区域会被一份最终 Markdown 消息替换并美化为标题、列表、表格和代码块等结构。流式展示不会执行代码，也不会把半截回答写入会话历史。请求期间还会显示动画、`思考中`、实时耗时和 Esc 取消提示；成功或失败后仍会在对话记录中显示最终耗时，取消请求不记录最终耗时。成功响应把耗时与上游实际报告的本轮 Token 输入、输出和合计放在同一行；任一模型步骤未返回 usage 时同一行显示 `Token：不可用`，不会用字符数估算或把部分统计伪装成完整合计。
-
-- `Enter`：模型列表打开时确认选择，命令或 Skill 候选打开时先补全，否则发送输入。
-- `Tab`：补全当前命令或 Skill 候选。
-- `Cmd+A`（macOS）/ `Ctrl+A`：输入框聚焦时全选当前输入内容。
-- `↑` / `↓`：模型列表打开时循环移动候选，否则浏览已发送输入；越过最新记录时恢复浏览前草稿。
-- 鼠标拖选消息后按 `Cmd+C`（macOS）或 `Ctrl+C`：复制选中的可见文本。
-- 在对话记录中双击某一可见行：立即复制该行的渲染文字；流式输出和审批 Diff 仍使用拖选复制。
-- `Esc`：模型列表打开时先取消选择；否则输入框非空时清空输入，输入为空时第一次取消运行中请求并提示，1.5 秒内再次按下退出。
-- `/clear`：清空界面、模型上下文、滚动摘要和本地对话历史；长期偏好保留。
-- `/memory`：查看从明确表达中保存的长期偏好，不显示滚动摘要。
-- `/memory clear`：只清除长期偏好，不清除当前对话和摘要。
-- `/model`：打开模型候选列表；`↑/↓` 循环移动，`Enter` 确认，`Esc` 取消。切换保留会话并立即保存，重启 TUI 后恢复最后一次成功选择。
-- `/skills`：列出当前运行时已发布的 Skill 名称、描述和项目相对入口；不会调用模型或重新扫描磁盘。
-- `/quit`：取消运行中请求并退出。
-
-输入 `/` 会在输入框上方显示命令预览，继续输入 `/sk` 等前缀可过滤候选；在输入起点或空白后输入 `$` 会显示 Skill 候选。候选打开时，`↑/↓` 选择、`Tab` 或 `Enter` 补全，补全后再次 `Enter` 执行或发送；`Esc` 先关闭候选并保留输入。完整命令可直接回车执行，无匹配项时按普通输入处理。请求执行期间不显示候选。
-
-TUI 支持直接使用中文输入法。用户输入会用右对齐、按内容收缩的背景卡片区分，但仍逐字显示、不解析 Markdown；Assistant 生成中按纯文本增量显示，完成后按 Markdown 美化，系统提示和错误信息保持纯文本。最终消息、流式临时文本和审批 Diff 都可选择复制；对话记录额外支持双击复制单个渲染行。上下键通常用于输入历史，模型候选打开时改为移动候选，不承担多行输入的垂直光标移动；粘贴的多行文本仍可原样发送。`/help` 和 `/chat` 不是本地命令，会作为普通文本发送给模型。TUI 当前不支持 HTML、远程图片、Mermaid、多会话管理、历史搜索、向量记忆、任意命令工具或请求级模型切换。
-
-## 启动 Web UI
-
-Web UI 复用现有 FastAPI 服务。启动后访问 <http://127.0.0.1:8000/ui>：
+### 启动 Web UI
 
 ```bash
-.venv/bin/python -m uvicorn main:app --reload --env-file .env
+.venv/bin/python -m uvicorn main:app --reload
 ```
 
-页面采用精简的 DSH 风格三栏布局，功能性入口优先使用带悬停提示和无障碍名称的图标按钮；支持中文输入、流式回答、安全 Markdown、停止生成、模型切换、上下文/Token/耗时、浅色/深色主题，以及 Workspace 文件树和文本预览。窄屏默认收起左右面板，避免遮挡对话区。Web 会话独立保存在 `data/web-sessions/`，左栏可新建、切换、重命名、清空和删除会话；刷新或重启后恢复最后选择，旧 `data/web-session.json` 首次启动时迁移为“历史对话”。TUI 会话不受影响。
+打开 <http://127.0.0.1:8000/ui>。首次使用，在 **设置 → 模型** 中保存供应商、候选模型和 API Key；TUI 重启后读取同一份配置。网络搜索 Key 在 **设置 → 服务** 中配置。
 
-左侧会话按本地项目分组。点击“项目”旁的 `+`，输入项目名称和已有目录的绝对路径，即可创建项目；在 macOS 上也可点击“选择目录”调用系统目录选择器，选中后路径会回填输入框，仍需点击“保存”。其他系统可继续手动输入。项目行可切换或编辑名称/路径，顶部 `+` 在当前项目内新建会话。切换会话会同步切换文件浏览、工具 Workspace 根目录和该目录直属 `AGENTS.md`；修改项目路径后，已有消息保留，下一轮请求使用新目录。项目配置保存在 `data/web-projects.json`，旧 Web 会话自动归入首次启动目录对应的默认项目。首版不删除项目；文件写操作仍需逐次审批，模型等设置仍由所有项目共用。
+模型配置保存在本机私有文件，API Key 为明文且限制文件权限，**不从 `.env` 读取**。其他运行参数可使用可选的 `.env`，此时启动 Web 服务需加 `--env-file .env`。详细存储说明见[使用指南](docs/knowledge/usage.md#配置模型)。
 
-上下文参数在左下角“设置”中配置：**模型**页设置当前模型的窗口、最大回复长度及高级摘要输出上限和安全余量；**上下文**页设置全局触发比例、目标比例、保留轮数，以及高级摘要超时与失败冷却。修改先留在页面草稿，点击“保存”后写入 `data/context-settings.json`，下一次 Web/TUI 请求生效；“恢复继承/恢复默认”只重置草稿，仍需保存。模型页参数按供应商和模型分别保存；环境变量 `LLM_MODEL_BUDGETS` 可提供部署默认，旧 `TUI_CONTEXT_WINDOW_TOKENS` 仅作为窗口的兼容默认。配置来源会逐字段显示，保存期间或请求运行期间不允许冲突操作；API Key 单独保存在本机私有模型配置文件，不进入上下文预算文件或聊天正文。
+## 文档
 
-Web UI 只允许本机 loopback 客户端访问。模型可按需激活时间、受限网络搜索及 Workspace 读写工具；搜索和读取自动执行，创建、精确替换、单文件删除和撤销会展示完整有界 Diff，只有当前请求的逐次批准才能执行。取消、断流或请求结束会使待审批操作失效。Web 不提供 Skill、Git 写、脚本或任意命令能力。左下角“设置”进入带左侧菜单的独立页面：通用页调整主题、界面密度和发送快捷键，模型页切换当前模型并设置模型预算，上下文页设置自动压缩策略，统计页展示累计请求、成功率、Token、耗时和模型分布，并以波形图切换最近 7 天或 30 天的请求数、Token 与平均耗时。界面偏好仅保存在当前浏览器，模型选择继续复用项目已有的持久化机制；Web 聚合统计从功能启用后开始保存在 `data/web-statistics.json`，不包含对话正文、会话 ID、工具参数、文件路径或密钥。静态页面不加载远程脚本、样式、图片、字体或图表库。
+| 文档 | 内容 |
+| --- | --- |
+| [文档首页](docs/README.md) | 使用、开发与项目知识导航 |
+| [使用指南](docs/knowledge/usage.md) | 模型配置、项目会话、TUI、Skill 与记忆 |
+| [工具与扩展](docs/knowledge/tools.md) | 工具清单、MCP 与审批约束 |
+| [运行与运维](docs/knowledge/operations.md) | macOS 打包、服务端点与日志 |
+| [开发与评测](docs/knowledge/development.md) | 测试、Agent 评测与提交检查 |
+| [编排说明](docs/knowledge/orchestration.md) | 任务预判、计划确认与工具执行链路 |
 
-## 打包 macOS 桌面应用
-
-正式桌面包使用 Tauri 2 容纳现有 Web UI，PyInstaller 内置 FastAPI 后端；双击 `.app` 即可独立运行，不需要另起 Uvicorn，也不需要 Node.js。当前构建脚本面向 Apple Silicon macOS，需要 Rust/Cargo、Python 3.11 和 Xcode Command Line Tools。
-
-```bash
-cd /Users/wangfei/study/fastapi/demo
-.venv/bin/python -m pip install -r requirements-desktop.txt
-cargo install tauri-cli --version '^2.0.0' --locked
-bash scripts/build_macos_tauri.sh
-```
-
-构建产物位于 `src-tauri/target/release/bundle/macos/Tsi.app`。也可以把 Cargo CLI 装在项目本地的 `build/tauri-cli`，构建脚本会自动识别。构建产物与中间文件不受 Git 跟踪。当前产物仅供本机验证，未配置 Apple Developer ID 签名与公证；分发给其他 Mac 前仍需完成签名和公证。
-
-桌面版首次运行后，在应用内「设置 → 模型」配置 API Key。桌面数据、日志和默认工作区分别保存在 `~/Library/Application Support/Tsi/` 的 `data/`、`logs/`、`workspace/`，与源码运行模式隔离。桌面后端只绑定随机本机端口；桌面 API 还需启动时生成的临时令牌。旧 Pake 方案仅是依赖外部 Uvicorn 的网页壳，不属于独立打包方案。
-
-## 服务端点
-
-Web UI 与 FastAPI 由同一个 Uvicorn 进程提供：
-
-```bash
-.venv/bin/python -m uvicorn main:app --reload --env-file .env
-```
-
-启动后可访问：
-
-- 首页：http://127.0.0.1:8000/
-- Web UI：http://127.0.0.1:8000/ui
-- Swagger：http://127.0.0.1:8000/docs
-- ReDoc：http://127.0.0.1:8000/redoc
-
-所有接口只接受 loopback 客户端。无状态聚合 JSON 的 `POST /chat` 接口已移除，对话只能通过 Web UI 或 TUI 发起。
-
-## TUI 本地状态
-
-TUI 每个成功轮次都会原子保存到：
-
-```text
-data/chat-session.json
-data/model-selection.json
-```
-
-`chat-session.json` 保存完整界面消息、滚动摘要和长期偏好；`model-selection.json` 独立保存最近一次成功切换的供应商与模型。重新启动 TUI 会恢复两者。模型选择仍在当前候选中且对应 Key 可用时优先于 `model-config.json` 的首个模型，否则显示安全提示并回退默认模型。无效选择文件不会在启动时自动覆盖，之后成功切换可原子替换它。
-
-`/clear` 可清理损坏的会话文件并重置会话，但不会删除模型选择；`/memory clear` 同样不影响模型选择。两个文件均使用标准库原子写入和 `0600` 权限，模型选择文件不包含 API Key、聊天内容或其他环境配置。
-
-模型请求使用本地估算管理上下文：默认窗口 `128000`、业务输出 `4096`、摘要输出 `2048`、安全余量 `4096` Token，可用输入上限为窗口减业务输出与安全余量。默认达到可用输入的 70% 时，当前模型尝试一次无工具结构化摘要，目标为 50%，通常保护最近 6 个完整轮次；硬超限时保护轮次也可能淘汰。摘要失败会冷却并降级到只淘汰旧模型输入，不丢弃本地完整 Transcript。业务与摘要每次实际发送前都会检查真实载荷估算，包括工具定义和续接结果；当前输入自身超限会拒绝，已执行的工具副作用不会自动回滚。旧版会话首次成功升级至 v3 前生成原字节 `.pre-v3.bak` 私密备份，清空或删除会话时同步清理备份。估算占比不等于上游计费 Token，也不保证上游真实窗口与填写值相同。
-
-用户明确输入“请记住……”“以后请/以后使用……”“我的偏好是……”或“我习惯……”时，TUI 会保存与回复语言、编码、注释、提交、测试、格式、工具等开发协作相关的非敏感偏好。偏好会作为低优先级记忆进入后续请求，不能覆盖 `AGENTS.md`、当前输入或工具审批；包含密钥、Token、密码、Cookie 等敏感提示的内容会被拒绝保存。`/memory` 可查看，`/memory clear` 可单独清除。
-
-输入历史在启动时从已成功保存的 user 消息恢复。本次进程内已经发出但最终失败或取消的输入也可以用上下键找回，但不会写入会话文件；`/clear` 会同时清空对话、摘要和输入历史，但保留长期偏好。
-
-工具调用和工具结果只在当前请求内使用，不写入会话文件；Skill Catalog、正文、资源和脚本轨迹同样不持久化。一次工具循环完整成功后，只保存用户输入和模型最终回答。
-
-> 隐私警告：会话文件及迁移备份以明文保存输入、回答、摘要和长期偏好。`data/` 已被 Git 忽略，文件以 `0600` 写入，但具有同一用户权限的进程仍可读取其内容。
-
-## 模型请求日志
-
-Web 服务每次模型调用会把同一 request ID 关联的事件写入 stderr 和本地文件；stderr 保持单行 JSON，本地文件使用适合直接阅读的中文分块格式。TUI 为避免日志覆盖全屏界面，只写本地文件：
-
-```text
-logs/
-├── runtime/YYYYMMDD-model-calls.log  # Web 服务与 TUI 真实使用日志
-└── tests/YYYYMMDD-model-calls.log    # Pytest 测试日志
-```
-
-文件名使用进程启动时的北京日期，例如 `20260920-model-calls.log`。旧的 `logs/model-calls.log*` 不会自动迁移或删除，仅作历史记录保留。
-
-本地文件示例：
-
-```text
-时间：2026-08-12 14:32:19.311 +08:00
-事件：工具结果
-请求ID：b7102d8c...
-调用ID：call_01
-工具：read_workspace_file
-状态：成功
-耗时：2.73 ms
-输出长度：1256 字符
-
-【工具输出】
-{
-  "ok": true,
-  "data": {
-    "path": "README.md"
-  }
-}
-================================================================================
-```
-
-文件时间统一使用北京时间并包含毫秒和 `+08:00`；请求体、Header、超时配置、工具参数和工具结果会在可解析时缩进为 JSON，模型输入输出保持原始换行。
-
-不需要工具且上游返回 usage 时，成功调用按固定顺序产生五条可关联事件：
-
-```text
-llm_request -> llm_http_request -> llm_http_response -> llm_token_usage -> llm_response
-```
-
-如果上游没有返回 usage，则省略 `llm_token_usage`，其余成功事件不变。
-
-- `llm_request`：Runtime 视角的当前输入正文（仅最后一条 user 消息）。
-- `llm_http_request`：真实外部 HTTP 边界，记录实际 Provider URL、`POST`、脱敏 Header（`Authorization` 固定写为 `Bearer [REDACTED]`）、完整 JSON 请求体和 `connect_seconds=10 / total_seconds=600` 超时。完整请求体包含 DeepSeek 的 `messages` 或阿里云的 `input`，多轮历史以明文按上游顺序完整保留。
-- `llm_http_response`：外部 HTTP 收到响应后立即记录，包含状态码（含非 2xx）、Content-Type 和单调时钟耗时 `duration_ms`，不记录原始响应体。
-- `llm_token_usage`：每个成功解析的模型步骤各记录一次，包含同一 request ID、从 1 开始的步骤编号，以及输入、输出和总 Token；工具循环会产生多条，日志不保存 Provider 私有 usage 对象。
-- `llm_response`：成功统一输出文本。
-- `llm_error`：Runtime 最终失败，包含同一 request ID、Provider、模型、安全错误代码、异常类型、上游状态和可展示文案。它可以区分“HTTP 已响应但内容语义无效”和网络失败。
-
-需要工具时，同一个 request ID 下会出现多组 `llm_http_request/llm_http_response`，并在工具执行处插入：
-
-- `llm_tool_call`：call ID、工具名、参数字符数和完整 JSON 参数。
-- `llm_tool_result`：call ID、成功/错误状态、耗时、输出字符数和完整工具结果。
-
-工具参数和结果会直接记录在专用工具事件中；实际回传模型的完整工具结果还会出现在下一次 `llm_http_request.request_body` 中。审批事件只记录决定、文件数和 Diff 字符数，不额外记录审批正文。调用 `install_skill` 时，GitHub URL、个人 Skill 目录名、目标名称和安全安装结果也会作为工具参数及结果明文记录，但真实 Home 绝对路径、GitHub 响应正文和凭据不会记录。
-
-本轮 Token 合计是同一请求内所有模型步骤 usage 的逐项相加。它表示已经发生的上游消耗，不等于下一次请求的上下文窗口占比；当前不持久化会话累计、不换算费用，也不单独展示缓存或推理 Token。
-
-连接超时或网络失败时，`llm_http_request` 后写一条 `llm_http_error`，随后 Runtime 写 `llm_error`。非 2xx 或语义无效响应会先写 `llm_http_response`，随后写 `llm_error`；后者保存最多 256 KiB 的上游原始响应体前缀，并标明是否截断，不记录响应 Header 或 Traceback。
-
-日志不记录环境 API Key、真实 `Authorization`、响应 Header、Cookie 或异常堆栈。失败事件会按上述边界记录上游原始响应体，其中可能包含模型生成内容或上游诊断信息。
-
-> 隐私警告：输入、输出、工具参数、工具结果、TUI 加载的 `AGENTS.md`、Skill Catalog/正文/文本资源、脚本参数及 stdout/stderr 和完整请求体都会以明文写入本地文件；Web 服务还会同步写入 stderr，且多轮历史会在每次调用时重复落盘。不要在这些位置放置密码、Token、个人隐私或其他不应发送和持久化的数据。具有本地文件读取权限的用户或进程可以读取日志内容。
-
-运行与测试日志独立轮转：单文件阈值为 10 MiB，各保留 5 个备份；`logs/` 已被 Git 忽略。由于正文不截断，单条超大记录可令当前文件暂时超过该阈值。日志失败不影响模型请求本身。
-
-## 运行测试
+## 开发与贡献
 
 ```bash
 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
 ```
 
-所有外部模型测试均使用 HTTPX MockTransport，不会调用真实接口或消耗额度。
-Pytest 在收集测试模块前把文件 Handler 固定到当日 `logs/tests/YYYYMMDD-model-calls.log`，不会追加 `logs/runtime/` 下的真实运行日志。
+开发前阅读 [AGENTS.md](AGENTS.md) 和[项目规则](docs/rules/README.md)。行为变更应附相关测试并同步文档，提交信息使用 `type: 中文描述`。详细检查命令见[开发指南](docs/knowledge/development.md#提交前检查)。
 
-## Agent 评测
-
-仓库内置本地评测系统，用来验证当前“模型 + AGENTS.md + Skill + 记忆 + 工具组 + 审批与工具循环”的整体行为。默认回放模式使用真实 `ChatSession`、SkillRuntime 和工具实现，但由确定性 Provider 驱动，并把每个 Case 放入独立临时工作区；不会访问网络、消耗模型额度或修改当前源码仓库。
-
-运行九类核心回放 Case：
-
-```bash
-.venv/bin/python -m app.evaluation run --suite evals/cases/core.jsonl
-```
-
-报告生成到被 Git 忽略的 `evals/reports/`，同时包含机器可读 JSON 和中文 Markdown。当前核心用例覆盖直接回答、只读工具、写入批准、写入拒绝、工具错误恢复、调用上限、按需工具披露、显式 Skill 和记忆上下文。
-
-与仓库内已确认基线比较：
-
-```bash
-.venv/bin/python -m app.evaluation compare \
-  --baseline evals/baselines/core.json \
-  --candidate evals/reports/<本次报告>.json
-```
-
-总体得分下降超过 3 分、通过率下降超过 5 个百分点，或已有安全 Case 从通过变为失败时，命令返回退出码 1。运行模式不同，或真实评测的供应商/模型不同，不会强行比较。Harness 指纹变化会单独提示，但不会掩盖结果回归。
-
-真实模型评测必须使用不含 `replay_steps` 的独立 JSONL Suite，并显式开启 `--live`：
-
-```bash
-.venv/bin/python -m app.evaluation run \
-  --suite evals/cases/core-live.jsonl \
-  --live \
-  --provider deepseek \
-  --model deepseek-v4-flash \
-  --trials 3
-```
-
-未传 `--live` 时不能创建真实 Provider；真实密钥只从项目 `.env` 或已有环境变量读取，CLI 不接受密钥参数。`--trials` 范围为 1–20。真实评测会产生费用，且耗时、Token 只在 Case 明确配置预算时参与通过判定。
-
-可以使用另一供应商或模型为既有报告追加辅助语义评分：
-
-```bash
-.venv/bin/python -m app.evaluation judge \
-  --report evals/reports/<本次报告>.json \
-  --provider aliyun \
-  --model qwen3-max
-```
-
-Judge 不开放工具，输出到新的 `-judged.json/.md`，Token 与被测 Agent 分开记录。Judge 只能提供正确性、完整性和相关性辅助证据，不能覆盖审批绕过、路径越界等确定性安全失败。
-
-用例使用一行一个 JSON 对象的 JSONL 格式。Case 可声明回放步骤、临时普通文本文件、初始对话、偏好、审批结果，以及文本、上下文、工具、逐步可见工具、文件、错误和成本断言。加载器拒绝未知字段、危险路径、密钥和损坏的角色序列；报告不保存完整系统提示词，只保存角色、哈希和已脱敏的有限工具轨迹。
-
-## 提交前检查
-
-```bash
-.venv/bin/python -m compileall -q main.py app tools tests
-PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 .venv/bin/python -m pytest -q
-.venv/bin/python -m pip check
-git diff --check
-```
-
-仓库当前没有 Formatter、Lint、类型检查或 CI，不要把不存在的命令当作现有质量门禁。
+当前服务面向本机使用。工作区写入和 Skill 脚本需要逐次审批；复杂任务的计划确认不会代替工具审批。独立 macOS 安装包的构建与签名状态见[桌面打包说明](docs/knowledge/operations.md#打包-macos-桌面应用)。

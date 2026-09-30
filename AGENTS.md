@@ -12,4 +12,4 @@
 - 工具仅从 `tools/` 显式注册；只读的当前时间与固定域名搜索工具自动执行，Web/TUI 写操作和 Skill 脚本不得绕过审批。
 - 模型 Key 与已接入服务的 Key 只从各自本机私有配置读取；MCP 等其他密钥遵循对应配置约定。密钥不得进入代码、文档、日志、测试或 Git，测试禁止调用真实付费或生产服务。
 - Commit 使用 `type: 中文描述`；未经用户明确要求不得提交，不得通过删除或弱化测试制造通过。
-- 详细规则与架构入口：[Rules](docs/rules/README.md)、[Spec](docs/spec/README.md)、[Knowledge](docs/knowledge/README.md)、[编排](docs/knowledge/orchestration.md)。
+- 详细说明与架构入口：[文档首页](docs/README.md)、[Rules](docs/rules/README.md)、[Spec](docs/spec/README.md)、[Knowledge](docs/knowledge/README.md)、[编排](docs/knowledge/orchestration.md)。

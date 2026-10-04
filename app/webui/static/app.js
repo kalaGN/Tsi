@@ -1052,6 +1052,44 @@ function finishStreamAsMarkdown(finalText) {
   state.streamNode = null;
 }
 
+async function consumeEventStream(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  function consume(line) {
+    let event;
+    try { event = JSON.parse(line); }
+    catch (error) {
+      TsiDiagnostics.report("stream_parse_error", { error_type: "SyntaxError" });
+      // JSON.parse 的原文错误可能包含响应正文，不展示给用户。
+      throw new Error("页面事件流解析失败，请重试。");
+    }
+    return handleEvent(event);
+  }
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+      for (const line of lines) {
+        if (line.trim() && consume(line)) {
+          // 终态立即结束 UI；不等待连接关闭，也不重复消费尾部缓冲。
+          await reader.cancel();
+          return;
+        }
+      }
+      if (done) {
+        if (buffer.trim() && consume(buffer)) return;
+        TsiDiagnostics.report("stream_disconnected", { error_type: "ProtocolError" });
+        throw new Error("连接已中断，未收到请求完成状态。");
+      }
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 async function sendMessage() {
   const input = prompt.value;
   if (state.busy || !input.trim()) return;
@@ -1064,34 +1102,13 @@ async function sendMessage() {
   addActivity("模型请求", "进行中");
   $("#activity-text").textContent = "思考中";
   setBusy(true);
+  TsiDiagnostics.begin(state.currentSessionId, null, () => state.busy);
 
   try {
     const response = await api("/chat", { method: "POST", body: JSON.stringify({ input }) });
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      let terminalReceived = false;
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        if (handleEvent(JSON.parse(line))) {
-          terminalReceived = true;
-          break;
-        }
-      }
-      if (terminalReceived) {
-        // 业务终态比连接关闭更准确，避免服务端连接稍晚关闭时页面仍保持忙碌。
-        await reader.cancel();
-        break;
-      }
-      if (done) break;
-    }
-    if (buffer.trim()) handleEvent(JSON.parse(buffer));
+    await consumeEventStream(response);
   } catch (error) {
+    TsiDiagnostics.report("request_failed", { error_type: TsiDiagnostics.errorType(error) });
     stopTaskFeedback();
     if (state.streamNode) state.streamNode.textContent = "";
     addMessage("assistant", error.message, { error: true });
@@ -1104,6 +1121,7 @@ async function sendMessage() {
     setBusy(false);
     prompt.disabled = false;
     prompt.focus();
+    TsiDiagnostics.settled(() => state.busy);
   }
 }
 
@@ -1135,31 +1153,17 @@ async function runTask(task) {
   addActivity("任务执行", "进行中");
   $("#activity-text").textContent = "任务执行中";
   setBusy(true);
+  TsiDiagnostics.begin(state.currentSessionId, task.id, () => state.busy);
   try {
     const response = await api(`/tasks/${encodeURIComponent(task.id)}/run`, { method: "POST", body: "{}" });
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    while (true) {
-      const { value, done } = await reader.read();
-      buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-      let terminal = false;
-      for (const line of lines) {
-        if (!line.trim()) continue;
-        if (handleEvent(JSON.parse(line))) { terminal = true; break; }
-      }
-      if (terminal) { await reader.cancel(); break; }
-      if (done) break;
-    }
-    if (buffer.trim()) handleEvent(JSON.parse(buffer));
+    await consumeEventStream(response);
     if (state.streamNode) {
       stopTaskFeedback();
       state.streamNode.closest(".message")?.remove();
       state.streamNode = null;
     }
   } catch (error) {
+    TsiDiagnostics.report("request_failed", { error_type: TsiDiagnostics.errorType(error) });
     stopTaskFeedback();
     state.streamNode?.closest(".message")?.remove();
     state.streamNode = null;
@@ -1168,11 +1172,13 @@ async function runTask(task) {
     stopTaskFeedback();
     closeToolApproval();
     setBusy(false);
+    TsiDiagnostics.settled(() => state.busy);
     await loadTasks();
   }
 }
 
 function handleEvent(event) {
+  TsiDiagnostics.observe(event);
   if (event.type === "task_state") {
     renderTask(event.task);
   } else if (event.type === "task_verification") {

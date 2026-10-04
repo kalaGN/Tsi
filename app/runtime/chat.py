@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Sequence
 import os
+from app.observability.request_context import span_call
 
 from app.observability.model_logging import (
     log_context_management,
@@ -152,6 +153,7 @@ async def run_chat(
     )
 
 
+@span_call
 async def run_chat_messages(
     messages: Sequence[ChatMessage],
     provider: LlmProvider | None = None,

@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import copy
 import json
-import os
-import tempfile
 from pathlib import Path
 
+from app.runtime.atomic_file import atomic_write
 from app.runtime.model_budget import model_identity, strict_json, validate_overrides
 from local_paths import data_root
 
@@ -87,30 +86,12 @@ class ContextSettingsStore:
         encoded = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
         if len(encoded) > 64 * 1024:
             raise ValueError("上下文设置过大。")
-        temporary = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            descriptor, name = tempfile.mkstemp(dir=self.path.parent, prefix=".context-settings-", suffix=".tmp")
-            temporary = Path(name)
-            with os.fdopen(descriptor, "wb") as stream:
-                os.fchmod(stream.fileno(), 0o600)
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-            directory = os.open(self.path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            atomic_write(self.path, encoded, prefix=".context-settings-",
+                         ignore_cleanup_errors=True)
         except OSError as exc:
             raise ContextSettingsError("上下文设置保存失败，原配置未被主动重置。") from exc
-        finally:
-            if temporary is not None:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass  # 不用临时文件清理失败掩盖原保存异常。
         self._last_good = payload
         self.warning = None
         return copy.deepcopy(payload)

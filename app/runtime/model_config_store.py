@@ -5,10 +5,10 @@ from __future__ import annotations
 import json
 import os
 import stat
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from app.runtime.atomic_file import atomic_write
 from app.runtime.model_budget import strict_json
 from app.services.llm.aliyun import ALIYUN_DEFAULT_MODEL
 from app.services.llm.deepseek import DEEPSEEK_DEFAULT_MODEL
@@ -212,30 +212,13 @@ class ModelConfigStore:
         except (UnicodeError, ValueError, TypeError) as exc:
             raise ModelConfigValidation("模型配置无效，请检查模型名称和密钥长度。") from exc
 
-        temporary = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
             if self.path.parent.is_symlink() or not self.path.parent.is_dir():
                 raise OSError("invalid directory")
             os.chmod(self.path.parent, 0o700)
-            descriptor, temporary_name = tempfile.mkstemp(dir=self.path.parent, prefix=".model-config-", suffix=".tmp")
-            temporary = Path(temporary_name)
-            with os.fdopen(descriptor, "wb") as stream:
-                os.fchmod(stream.fileno(), 0o600)
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            if self.path.is_symlink() or (self.path.exists() and not self.path.is_file()):
-                raise OSError("invalid target")
-            os.replace(temporary, self.path)
-            directory = os.open(self.path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            atomic_write(self.path, encoded, prefix=".model-config-",
+                         check_target=True)
         except OSError as exc:
             raise ModelConfigError("模型配置保存失败，原配置未被主动重置。") from exc
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
         return updated

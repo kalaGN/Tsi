@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 import shutil
-import signal
 import stat
 import tempfile
 from dataclasses import dataclass
@@ -16,6 +15,7 @@ from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Callable, Mapping
 from uuid import uuid4
 
+from tools.process import read_process_output as _read_process_output, stop_process as _stop_process
 from tools.contracts import (
     ToolApprovalRequest,
     ToolArgumentError,
@@ -593,46 +593,6 @@ async def _run_git(
     if process.returncode != 0:
         raise ToolRejectedError(ToolErrorCode.CHECK_UNAVAILABLE)
     return {"exit_code": process.returncode, "output": text, "truncated": truncated}
-
-
-async def _read_process_output(
-    process: asyncio.subprocess.Process,
-    maximum: int,
-) -> tuple[bytes, bool]:
-    """持续排空子进程管道，但只在内存保留固定字节数。"""
-
-    if process.stdout is None:
-        raise RuntimeError("process stdout is unavailable")
-    retained = bytearray()
-    truncated = False
-    while True:
-        chunk = await process.stdout.read(8192)
-        if not chunk:
-            break
-        remaining = maximum - len(retained)
-        if remaining > 0:
-            retained.extend(chunk[:remaining])
-        if len(chunk) > max(remaining, 0):
-            truncated = True
-    await process.wait()
-    return bytes(retained), truncated
-
-
-async def _stop_process(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is not None:
-        return
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except (AttributeError, ProcessLookupError):
-        process.terminate()
-    try:
-        await asyncio.wait_for(process.wait(), timeout=1)
-    except asyncio.TimeoutError:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (AttributeError, ProcessLookupError):
-            process.kill()
-        await process.wait()
 
 
 class GetWorkspaceGitStatusTool:

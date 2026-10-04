@@ -28,6 +28,7 @@ from app.runtime.service_config_store import (
     ServiceConfigValidation,
 )
 from app.webui.approvals import WebApprovalConflict, WebApprovalNotFound
+from app.webui.diagnostics import DiagnosticLimiter, validate_diagnostic, write_diagnostic
 from app.webui.directory_picker import (
     DirectoryPickerBusy,
     DirectoryPickerError,
@@ -88,6 +89,29 @@ def create_webui_router(service: WebUiService | None = None) -> APIRouter:
 
     router = APIRouter()
     resolved_service = service
+    diagnostic_limiter = DiagnosticLimiter()
+
+    @router.get("/ui/diagnostics.js", include_in_schema=False)
+    async def diagnostics_javascript(request: Request):
+        _require_loopback(request)
+        return FileResponse(STATIC_ROOT / "diagnostics.js", media_type="application/javascript")
+
+    @router.post("/ui/api/diagnostics", status_code=204)
+    async def client_diagnostic(request: Request):
+        _require_loopback(request)
+        _require_same_origin_json(request)
+        if not diagnostic_limiter.allow():
+            raise HTTPException(status_code=429, detail="页面诊断提交过于频繁。")
+        raw = bytearray()
+        async for chunk in request.stream():
+            if len(raw) + len(chunk) > 2048:
+                raise HTTPException(status_code=413, detail="页面诊断数据过大。")
+            raw.extend(chunk)
+        try:
+            payload = validate_diagnostic(strict_json(raw.decode("utf-8")))
+        except (ValueError, UnicodeError, RecursionError):
+            raise HTTPException(status_code=422, detail="页面诊断数据无效。") from None
+        write_diagnostic(payload)
 
     def current_service() -> WebUiService:
         nonlocal resolved_service

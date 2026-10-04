@@ -8,6 +8,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.observability.model_logging import log_context_management, log_model_token_usage, new_request_id
+from app.observability.request_context import agent_phase, current_request_id, span_call
 from app.runtime.chat import ChatErrorCode, ChatResult, ChatRuntimeError, run_chat_messages
 from app.runtime.context_compaction import (
     ContextEventHandler,
@@ -196,6 +197,7 @@ class ChatSession:
         input_text: str,
         *,
         execution_hint: str | None = None,
+        request_id: str | None = None,
         on_text_delta: TextDeltaHandler | None = None,
         on_text_reset: TextResetHandler | None = None,
         on_tool_approval: ToolApprovalHandler | None = None,
@@ -206,7 +208,8 @@ class ChatSession:
         if not isinstance(input_text, str) or not input_text.strip():
             raise ChatRuntimeError(ChatErrorCode.INVALID_INPUT, "Input must not be blank")
         async with self._send_lock:
-            request_id = new_request_id()
+            request_id = request_id or current_request_id() or new_request_id()
+            agent_phase("context_preparation")
             snapshot = (
                 self._execution_snapshot_provider(input_text)
                 if self._execution_snapshot_provider is not None
@@ -311,6 +314,7 @@ class ChatSession:
                     if on_context_event is not None:
                         on_context_event({"type": "context_updated", "request_id": request_id, **payload})
 
+                agent_phase("model_call")
                 result = await run_chat_messages(
                     candidate_request, provider=provider, registry=snapshot.registry,
                     system_prompt=prepared.system_prompt,
@@ -342,6 +346,7 @@ class ChatSession:
                     committed.context_start_message_count,
                 )
                 try:
+                    agent_phase("session_save")
                     self._store.save_state(committed)
                 except SessionStoreError as exc:
                     raise _storage_error(exc) from exc
@@ -401,6 +406,12 @@ class ChatSession:
         self._active_budget = None
         self._last_context = None
 
+    @property
+    def logging_session_id(self) -> str:
+        """只暴露会话文件标识，不把本机绝对路径写入关联日志。"""
+        return self._store.path.stem
+
+    @span_call
     async def _summarize_with_provider(
         self,
         previous_summary: ConversationSummary | None,
@@ -416,7 +427,7 @@ class ChatSession:
             ChatMessage(ChatRole.SYSTEM, SUMMARY_SYSTEM_PROMPT),
             ChatMessage(ChatRole.USER, build_summary_input(previous_summary, messages)),
         )
-        child_id = new_request_id()
+        child_id = current_request_id() or new_request_id()
         log_context_management(
             request_id=child_id, parent_request_id=parent_request_id,
             phase="summary_request", input_limit=budget.summary_input_limit,

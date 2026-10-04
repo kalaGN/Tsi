@@ -1,6 +1,7 @@
 """TUI 单次请求的可注入调用契约与生命周期协调。"""
 
 import time
+from app.observability.request_context import AgentRequest, agent_phase
 from collections.abc import Awaitable, Callable
 from typing import Protocol, TypeVar
 
@@ -204,27 +205,38 @@ class RequestCoordinator:
     ) -> None:
         worker = get_current_worker()
         applied_changes = AppliedChangeTracker()
+        session = getattr(self._runner, "__self__", None)
+        task = getattr(self._host, "_pending_task", None)
+        runtime_info = getattr(self._host, "runtime_info", None)
+        lifecycle = AgentRequest(entrypoint="tui", task_id=getattr(task, "id", None), session_id=(
+            session.logging_session_id if isinstance(session, ChatSession) else None
+        ), provider=getattr(runtime_info, "provider", None),
+            model=getattr(runtime_info, "model", None)).bind()
 
         try:
             execution_hint = None
             if self.preflight_enabled:
+                agent_phase("task_preflight")
                 session = getattr(self._runner, "__self__", None)
                 if not isinstance(session, ChatSession):
                     raise TaskPreflightError("unavailable", "任务预判不可用，请检查运行配置。")
-                decision = await session.assess_task(input_text)
+                decision = await session.assess_task(input_text, request_id=lifecycle.request_id)
                 if worker.is_cancelled or generation != self._generation:
                     return
                 if decision.kind == "clarify":
+                    lifecycle.finish("completed")
                     self._host.task_preflight_aborted()
                     self._host.write_request_message("Assistant", decision.question or "请补充任务信息。")
                     self._host.run_status = RunStatus.READY
                     return
                 if decision.kind == "planned":
+                    agent_phase("plan_confirmation")
                     self._host.run_status = RunStatus.AWAITING_PLAN
                     approved = await self._host.push_screen_wait(PlanConfirmationScreen(decision))
                     if worker.is_cancelled or generation != self._generation:
                         return
                     if approved is not True:
+                        lifecycle.finish("cancelled")
                         self._host.task_preflight_aborted()
                         self._host.write_request_message("System", "计划已取消，任务未执行。")
                         self._host.run_status = RunStatus.READY
@@ -241,6 +253,8 @@ class RequestCoordinator:
                 ),
                 "on_text_reset": lambda: self._reset_stream(generation),
             }
+            if isinstance(session, ChatSession):
+                runner_arguments["request_id"] = lifecycle.request_id
             if self._supports_context_events:
                 runner_arguments["on_context_event"] = lambda event: self._on_context_event(event, generation)
                 if execution_hint is not None:
@@ -263,13 +277,16 @@ class RequestCoordinator:
             if result.finish_reason == "output_limit":
                 self._host.write_request_message("System", "回答达到最大输出 Token，内容可能不完整。")
             self._host.run_status = RunStatus.READY
+            lifecycle.finish("completed")
         except TaskPreflightError as exc:
+            lifecycle.finish("failed", exc.code)
             if worker.is_cancelled or generation != self._generation:
                 return
             self._host.task_preflight_aborted()
             self._host.write_request_message("Error", exc.user_message)
             self._host.run_status = RunStatus.ERROR
         except ChatRuntimeError as exc:
+            lifecycle.finish("failed", exc.code.value)
             if worker.is_cancelled or generation != self._generation:
                 return
             interrupted = getattr(self._host, "task_request_interrupted", None)
@@ -280,6 +297,7 @@ class RequestCoordinator:
             self._write_elapsed_time(started_at)
             self._host.run_status = RunStatus.ERROR
         except Exception:
+            lifecycle.finish("failed", "internal")
             if worker.is_cancelled or generation != self._generation:
                 return
             interrupted = getattr(self._host, "task_request_interrupted", None)
@@ -291,6 +309,8 @@ class RequestCoordinator:
             self._write_elapsed_time(started_at)
             self._host.run_status = RunStatus.ERROR
         finally:
+            lifecycle.finish("cancelled" if worker.is_cancelled or generation != self._generation else "failed")
+            lifecycle.close()
             if generation == self._generation:
                 self._host.refresh_request_skill_status()
                 self.finish_stream(generation)

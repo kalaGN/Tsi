@@ -1,6 +1,7 @@
 """Provider 中立的有界模型步骤与只读工具执行循环。"""
 
 import time
+from app.observability.request_context import agent_phase, request_span
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -97,7 +98,11 @@ async def run_tool_loop(
         if on_tool_approval is None:
             return False
         started_at = clock()
-        approved = await on_tool_approval(request)
+        agent_phase("tool_approval")
+        try:
+            approved = await on_tool_approval(request)
+        finally:
+            agent_phase("tool_execution")
         duration_ms = round((clock() - started_at) * 1000, 2)
         paths_count = len(request.paths) if isinstance(request, ToolApprovalRequest) else 0
         diff_chars = len(request.diff_text) if isinstance(request, ToolApprovalRequest) else 0
@@ -132,7 +137,9 @@ async def run_tool_loop(
     for step_number in range(1, limits.max_model_steps + 1):
         definitions_before = registry.definitions
         model_started_at = clock() if trace_observer is not None else None
-        step = await turn.next(results, on_text_delta=on_text_delta)
+        agent_phase("model_call")
+        with request_span():
+            step = await turn.next(results, on_text_delta=on_text_delta)
         if model_started_at is not None:
             model_duration_ms = round((clock() - model_started_at) * 1000, 2)
             emit_trace(
@@ -211,7 +218,9 @@ async def run_tool_loop(
                     # 同一步中的激活只能影响下一模型步骤，不能授权同批伪造调用。
                     result = tool_error_result(call.call_id, "unknown_tool")
                 else:
-                    result = await registry.execute(call, execution_context)
+                    agent_phase("tool_execution")
+                    with request_span(call_id=call.call_id):
+                        result = await registry.execute(call, execution_context)
             except ToolPayloadLimitError as exc:
                 raise ToolLoopLimitError("Tool call limit exceeded") from exc
             duration_ms = round((clock() - started_at) * 1000, 2)

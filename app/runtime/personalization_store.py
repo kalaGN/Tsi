@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 
+from app.runtime.atomic_file import atomic_write
 from app.runtime.model_budget import strict_json
 from local_paths import data_root
 
@@ -72,29 +71,11 @@ class PersonalizationStore:
             raise PersonalizationConflict("个性化设置已更新，请重新加载后保存。")
         payload = _validate({"version": 1, "revision": expected_revision + 1, "prompt": prompt})
         encoded = (json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n").encode("utf-8")
-        temporary = None
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-            descriptor, name = tempfile.mkstemp(dir=self.path.parent, prefix=".personalization-", suffix=".tmp")
-            temporary = Path(name)
-            with os.fdopen(descriptor, "wb") as stream:
-                os.fchmod(stream.fileno(), 0o600)
-                stream.write(encoded)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.replace(temporary, self.path)
-            directory = os.open(self.path.parent, os.O_RDONLY)
-            try:
-                os.fsync(directory)
-            finally:
-                os.close(directory)
+            atomic_write(self.path, encoded, prefix=".personalization-",
+                         ignore_cleanup_errors=True)
         except OSError as exc:
             raise PersonalizationError("个性化设置保存失败，原配置未被主动重置。") from exc
-        finally:
-            if temporary is not None:
-                try:
-                    temporary.unlink(missing_ok=True)
-                except OSError:
-                    pass
         self.current_prompt = str(payload["prompt"])
         return payload

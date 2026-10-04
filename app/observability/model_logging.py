@@ -14,6 +14,7 @@ from zoneinfo import ZoneInfo
 
 from tools.mcp_context import MCP_REDACT_LOGS
 from local_paths import log_root
+from app.observability.request_context import correlation_fields
 
 
 LOGGER_NAME = "app.model_calls"
@@ -23,6 +24,12 @@ class _McpContentFilter(logging.Filter):
     """MCP 请求中的模型报文也可能携带外部工具数据。"""
 
     def filter(self, record: logging.LogRecord) -> bool:
+        # 子摘要可保留 legacy request_id；统一 root ID 另有显式字段可检索。
+        for key, value in correlation_fields().items():
+            if key == "request_id":
+                record.root_request_id = value
+            elif not hasattr(record, key):
+                setattr(record, key, value)
         if MCP_REDACT_LOGS.get():
             for field in ("input_text", "output_text", "request_body", "arguments_json", "raw_response", "user_message"):
                 if hasattr(record, field):
@@ -61,6 +68,9 @@ _REDACTED_REQUEST_HEADERS = {
     "Authorization": "Bearer [REDACTED]",
 }
 _EVENT_FIELDS = {
+    "agent_request_started": ("request_id", "entrypoint", "provider", "model", "phase"),
+    "agent_phase_changed": ("request_id", "entrypoint", "phase", "previous_phase", "phase_duration_ms"),
+    "agent_request_finished": ("request_id", "entrypoint", "phase", "outcome", "error_code", "duration_ms", "wait_ms", "execution_ms"),
     "task_preflight": ("request_id", "outcome", "duration_ms", "steps_count", "error_code"),
     "task_state_change": ("request_id", "task_id", "state", "attempts", "revision"),
     "mcp_server": ("request_id", "server_name", "status", "duration_ms"),
@@ -183,6 +193,9 @@ class _ModelEventJsonFormatter(logging.Formatter):
             (field_name, getattr(record, field_name))
             for field_name in _EVENT_FIELDS[event_name]
         )
+        event.update((name, getattr(record, name)) for name in (
+            "root_request_id", "session_id", "task_id", "span_id", "parent_span_id", "call_id"
+        ) if hasattr(record, name))
         return json.dumps(event, ensure_ascii=False, separators=(",", ":"))
 
 
@@ -190,6 +203,11 @@ class _ModelEventReadableFormatter(logging.Formatter):
     """把同一白名单事件渲染为适合直接阅读的中文分块日志。"""
 
     _EVENT_NAMES = {
+        "agent_request_started": "Agent 请求开始",
+        "agent_phase_changed": "Agent 阶段切换",
+        "agent_request_finished": "Agent 请求结束",
+        "task_state_change": "任务状态变化",
+        "mcp_server": "MCP 服务",
         "task_preflight": "任务预判",
         "llm_request": "模型请求",
         "llm_response": "模型响应",
@@ -233,6 +251,11 @@ class _ModelEventReadableFormatter(logging.Formatter):
         """按事件类型输出稳定元数据，避免把 LogRecord 其他字段带入文件。"""
 
         lines = [f"请求ID：{record.request_id}"]
+        for name in ("root_request_id", "session_id", "task_id", "span_id", "parent_span_id"):
+            if hasattr(record, name):
+                lines.append(f"{name}：{getattr(record, name)}")
+        if event_name.startswith("agent_"):
+            lines.extend(f"{name}：{getattr(record, name)}" for name in _EVENT_FIELDS[event_name] if name != "request_id")
         if event_name.startswith("llm_http_") or event_name in {
             "llm_request",
             "llm_response",

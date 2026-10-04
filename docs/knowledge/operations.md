@@ -103,3 +103,19 @@ llm_request -> llm_http_request -> llm_http_response -> llm_token_usage -> llm_r
 > 隐私警告：输入、输出、工具参数、工具结果、TUI 加载的 `AGENTS.md`、Skill Catalog/正文/文本资源、脚本参数及 stdout/stderr 和完整请求体都会以明文写入本地文件；Web 服务还会同步写入 stderr，且多轮历史会在每次调用时重复落盘。不要在这些位置放置密码、Token、个人隐私或其他不应发送和持久化的数据。具有本地文件读取权限的用户或进程可以读取日志内容。
 
 运行与测试日志独立轮转：单文件阈值为 10 MiB，各保留 5 个备份；`logs/` 已被 Git 忽略。由于正文不截断，单条超大记录可令当前文件暂时超过该阈值。日志失败不影响模型请求本身。
+
+### Agent 链路与页面诊断
+
+Web/TUI 每次用户请求生成一个 `request_id`，预判和正式执行共用此 ID。摘要保留所属请求 ID 并通过子 `span_id / parent_span_id` 区分；日志自动补充 `session_id`、可用时的 `task_id`，工具事件包含 `call_id`。同一请求的所有阶段可按 `root_request_id` 检索。
+
+- `agent_request_started`：入口、Provider、模型和接收阶段。
+- `agent_phase_changed`：新阶段、上一阶段和上一阶段耗时。阶段为 `task_preflight`、`plan_confirmation`、`context_preparation`、`model_call`、`tool_approval`、`tool_execution`、`session_save`。
+- `agent_request_finished`：唯一终态 `completed / failed / cancelled / disconnected`、最后阶段、安全错误码和总耗时；`wait_ms` 是计划确认与工具审批等待，`execution_ms` 是总耗时扣除人工等待。连接关闭且执行未结束时取消执行并记录 `disconnected`；主动取消记录 `cancelled`，两者不能混淆。
+
+Web 终态事件统一触发统计与生命周期日志；完成载荷构造失败时记为失败，不提前计入成功。每轮只记录一次统计，断连在统计中归为取消，在生命周期日志中保留 `disconnected`。
+
+页面通过本机同源 `POST /ui/api/diagnostics` 上报固定分类，独立保存到 `logs/runtime/YYYYMMDD-web-client.log`（桌面版位于应用私有 logs 目录，测试写入 `logs/tests/`）。北京时间，JSON 行格式，10 MiB 轮转和 5 个备份。
+
+记录类别：脚本未处理错误、Promise 未处理拒绝、请求失败、NDJSON 解析失败、无终态断流、终态已收到/已应用，以及终态后仍忙碌。仅允许关联 ID、固定错误类型、最后事件、页面协议版本、有限耗时和已知脚本行列；不接收错误 message/stack、URL、聊天正文或密钥。请求上限 2 KiB，服务端每分钟 60 次，页面每分钟 30 次；上报失败不影响聊天。首次事件前的连接失败没有后端请求 ID，仍只能按时间定位。
+
+排查顺序：按 `request_id` 查模型日志的最后阶段和唯一终态，再查同 ID 的页面日志。后端已结束且页面存在 `terminal_state_stuck` 表示 UI 状态异常；页面仅有 `stream_disconnected` 表示未消费到完整终态。工具内部堆栈与 Web 未知异常堆栈仍不在本次诊断范围内。

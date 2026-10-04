@@ -8,6 +8,7 @@ import time
 from dataclasses import dataclass
 
 from app.observability.model_logging import log_task_preflight
+from app.observability.request_context import span_call
 from app.runtime.model_budget import strict_json
 from app.services.llm.contracts import (
     ChatMessage,
@@ -127,6 +128,7 @@ def _parse_decision(step: ModelStep) -> TaskDecision:
     return TaskDecision(kind, reason, (), question)
 
 
+@span_call
 async def assess_task(
     provider: LlmProvider,
     input_text: str,

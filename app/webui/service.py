@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Literal
 
 from app.observability.model_logging import log_web_statistics_error
+from app.observability.request_context import AgentRequest, agent_phase
 from app.runtime.chat import ChatErrorCode, ChatRuntimeError, ChatRuntimeInfo, get_chat_runtime_info
 from app.runtime.context_settings import ContextSettings
 from app.runtime.context_settings_store import ContextSettingsConflict, ContextSettingsError, ContextSettingsStore
@@ -436,11 +437,55 @@ class WebUiService:
             started_at = time.monotonic()
             request_provider = self.runtime_info.provider
             request_model = self.runtime_info.model
+            lifecycle = AgentRequest(entrypoint="web", request_id=request_id,
+                                     session_id=session_id, provider=request_provider,
+                                     model=request_model, task_id=self._active_task_id)
             statistics_recorded = False
             applied_changes = AppliedChangeTracker()
 
+            usage: TokenUsage | None = None
+            terminal_outcomes = {
+                "completed": "completed", "preflight_clarify": "completed",
+                "failed": "failed", "cancelled": "cancelled",
+                "preflight_cancelled": "cancelled",
+            }
+
+            def record_statistics(
+                outcome: Literal["completed", "failed", "cancelled"],
+            ) -> None:
+                nonlocal statistics_recorded
+                if statistics_recorded:
+                    return
+                statistics_recorded = True
+                elapsed_ms = (time.monotonic() - started_at) * 1000
+                try:
+                    self.statistics.record(
+                        WebRequestStatistic(
+                            outcome,
+                            request_provider,
+                            request_model,
+                            elapsed_ms,
+                            usage,
+                        )
+                    )
+                except (WebStatisticsStoreError, ValueError) as exc:
+                    # 统计属于诊断旁路，失败不能覆盖真实模型终态。
+                    log_web_statistics_error(
+                        request_id=request_id,
+                        operation="record",
+                        error_type=type(exc).__name__,
+                    )
+
             def emit(event_type: str, **payload: object) -> None:
                 nonlocal sequence
+                outcome = terminal_outcomes.get(event_type)
+                if outcome is not None:
+                    if statistics_recorded:
+                        return
+                    # 调用前先构造完整载荷；统计和生命周期只接受同一个终态。
+                    record_statistics(outcome)
+                    lifecycle.finish("disconnected" if lifecycle.disconnected else outcome,
+                                     payload.get("code"))
                 sequence += 1
                 queue.put_nowait(
                     {
@@ -469,35 +514,9 @@ class WebUiService:
                     lambda payload: emit("tool_approval_required", **payload),
                 )
 
-            async def run() -> None:
+            async def run_inner() -> None:
+                nonlocal usage
                 emit("request_started")
-
-                def record_statistics(
-                    outcome: Literal["completed", "failed", "cancelled"],
-                    token_usage: TokenUsage | None = None,
-                ) -> None:
-                    nonlocal statistics_recorded
-                    if statistics_recorded:
-                        return
-                    statistics_recorded = True
-                    elapsed_ms = (time.monotonic() - started_at) * 1000
-                    try:
-                        self.statistics.record(
-                            WebRequestStatistic(
-                                outcome,
-                                request_provider,
-                                request_model,
-                                elapsed_ms,
-                                token_usage,
-                            )
-                        )
-                    except (WebStatisticsStoreError, ValueError) as exc:
-                        # 统计属于诊断旁路，失败不能覆盖真实模型终态。
-                        log_web_statistics_error(
-                            request_id=request_id,
-                            operation="record",
-                            error_type=type(exc).__name__,
-                        )
 
                 try:
                     def on_context_event(event: dict[str, object]) -> None:
@@ -506,26 +525,27 @@ class WebUiService:
 
                     execution_hint = None
                     if self.preflight_enabled:
+                        agent_phase("task_preflight")
                         emit("preflight_started")
                         decision = await active_session.assess_task(input_text, request_id=request_id)
                         emit("preflight_result", **decision.payload())
                         if decision.kind == "clarify":
-                            record_statistics("completed")
                             emit("preflight_clarify", question=decision.question)
                             return
                         if decision.kind == "planned":
+                            agent_phase("plan_confirmation")
                             approved = await self._approvals.request_plan(
                                 request_id, decision,
                                 lambda payload: emit("plan_approval_required", **payload),
                             )
                             if not approved:
-                                record_statistics("cancelled")
                                 emit("preflight_cancelled")
                                 return
                             execution_hint = plan_execution_hint(decision)
                         emit("execution_started")
                     result = await active_session.send(
                         input_text,
+                        request_id=request_id,
                         execution_hint=execution_hint,
                         on_text_delta=lambda text: emit("text_delta", text=text),
                         on_text_reset=lambda: emit("text_reset"),
@@ -534,22 +554,18 @@ class WebUiService:
                         on_context_event=on_context_event,
                     )
                 except asyncio.CancelledError:
-                    record_statistics("cancelled")
                     emit("cancelled", applied_changes=applied_changes.paths())
                     return
                 except ChatRuntimeError as exc:
-                    record_statistics("failed")
                     emit("failed", code=exc.code.value, message=exc.user_message,
                          applied_changes=applied_changes.paths())
                     return
                 except TaskPreflightError as exc:
-                    record_statistics("failed")
                     emit("failed", code=exc.code, message=exc.user_message,
                          applied_changes=applied_changes.paths())
                     return
                 except Exception:
                     # 未知内部错误只返回稳定文案，具体诊断留在服务端日志。
-                    record_statistics("failed")
                     emit("failed", code="internal", message="Web UI 请求失败。",
                          applied_changes=applied_changes.paths())
                     return
@@ -561,7 +577,6 @@ class WebUiService:
                     # 对话内容已经由 ChatSession 持久化，索引异常不能让流悬挂。
                     record = self.catalog.current
                     metadata_warning = "消息已保存，但会话列表更新失败。"
-                record_statistics("completed", usage)
                 emit(
                     "completed",
                     output_text=result.output_text,
@@ -582,6 +597,22 @@ class WebUiService:
                     warning=metadata_warning,
                 )
 
+            async def run() -> None:
+                lifecycle.bind()
+                try:
+                    await run_inner()
+                except asyncio.CancelledError:
+                    emit("cancelled", applied_changes=applied_changes.paths())
+                except Exception:
+                    # 完成态渲染数据或目录更新也可能失败，不能让消费者永远等待队列。
+                    emit("failed", code="internal", message="Web UI 请求失败。",
+                         applied_changes=applied_changes.paths())
+                finally:
+                    if not statistics_recorded:
+                        emit("failed", code="internal", message="Web UI 请求失败。",
+                             applied_changes=applied_changes.paths())
+                    lifecycle.close()
+
             runner = asyncio.create_task(run())
             self._active_task = runner
             self._active_request_id = request_id
@@ -589,12 +620,13 @@ class WebUiService:
                 while True:
                     event = await queue.get()
                     yield event
-                    if event["type"] in {"completed", "failed", "cancelled", "preflight_clarify", "preflight_cancelled"}:
+                    if event["type"] in terminal_outcomes:
                         break
                 await runner
             finally:
                 self._approvals.invalidate(request_id)
                 if not runner.done():
+                    lifecycle.disconnected = True
                     runner.cancel()
                     await asyncio.gather(runner, return_exceptions=True)
                 if self._active_task is runner:

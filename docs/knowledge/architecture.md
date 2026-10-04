@@ -31,6 +31,8 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，提供持久
 - `tools/web_search.py`：固定 Serper.dev URL、参数/响应上限和稳定错误的只读网络搜索。
 - `tools/workspace.py`：Workspace 路径策略、文件/Git 工具、结构化编辑、单文件删除、三态 Journal 和撤销。
 - `tools/project_checks.py`：无 Shell 的四个固定项目检查。
+- `tools/process.py`：工作区 Git 与项目检查共用的进程组停止和有界输出读取，不改变各工具的审批、超时与文本截断策略。
+- `app/runtime/atomic_file.py`：四个配置 Store 共用的私有原子写入函数；各 Store 保留自己的字段、修订号及目录校验，不引入 Store 基类。
 - `tools/skills.py`：安全 YAML Skill Catalog、每项单行的精简 system prompt、不可变资源快照、渐进读取工具及需审批的有界脚本执行器。
 - `tools/skill_installation.py`：公开 GitHub/个人 Codex 来源解析、无跟随复制、安装审批、候选校验、原子提交和刷新回滚。
 - `tools/git.py`：TUI 专属的临时 Index Stage 预览、中文 Commit 和既有上游非强制 Push。

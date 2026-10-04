@@ -5,12 +5,12 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-import signal
 import stat
 import time
 from pathlib import Path
 from typing import Mapping
 
+from tools.process import read_process_output as _read_process_output, stop_process as _stop_process
 from tools.contracts import (
     ToolArgumentError,
     ToolDefinition,
@@ -140,46 +140,6 @@ class RunProjectCheckTool:
         ):
             return None
         return current_path
-
-
-async def _stop_process(process: asyncio.subprocess.Process) -> None:
-    if process.returncode is not None:
-        return
-    try:
-        os.killpg(process.pid, signal.SIGTERM)
-    except (AttributeError, ProcessLookupError):
-        process.terminate()
-    try:
-        await asyncio.wait_for(process.wait(), timeout=1)
-    except asyncio.TimeoutError:
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except (AttributeError, ProcessLookupError):
-            process.kill()
-        await process.wait()
-
-
-async def _read_process_output(
-    process: asyncio.subprocess.Process,
-    maximum: int,
-) -> tuple[bytes, bool]:
-    """排空检查进程输出，同时限制驻留内存和 ToolResult 大小。"""
-
-    if process.stdout is None:
-        raise RuntimeError("process stdout is unavailable")
-    retained = bytearray()
-    truncated = False
-    while True:
-        chunk = await process.stdout.read(8192)
-        if not chunk:
-            break
-        remaining = maximum - len(retained)
-        if remaining > 0:
-            retained.extend(chunk[:remaining])
-        if len(chunk) > max(remaining, 0):
-            truncated = True
-    await process.wait()
-    return bytes(retained), truncated
 
 
 def _decode_output(output: bytes, maximum_bytes: int) -> str:

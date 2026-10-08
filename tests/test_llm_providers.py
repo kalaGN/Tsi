@@ -2142,6 +2142,82 @@ def test_post_sse_applies_overall_timeout_and_closes_stream(
     assert events[1]["error_type"] == "timeout"
 
 
+def test_post_sse_logs_http_response_before_rejecting_non_event_stream(
+    monkeypatch,
+    captured_model_events,
+):
+    """代理返回 HTML 等非法内容类型时也必须留下配对的 HTTP 响应事件。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/html"},
+            stream=ChunkedAsyncStream((b"<html>proxy</html>",)),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+
+    with pytest.raises(ProviderInvalidResponseError):
+        asyncio.run(
+            post_sse(
+                DEEPSEEK_CHAT_COMPLETIONS_URL,
+                FAKE_API_KEY,
+                {"model": "m", "stream": True},
+                request_id=REQUEST_ID,
+                provider="deepseek",
+                model="m",
+                on_data=lambda data: None,
+            )
+        )
+
+    events = captured_model_events()
+    assert [event["event"] for event in events] == [
+        "llm_http_request",
+        "llm_http_response",
+    ]
+
+
+def test_post_sse_logs_unexpected_exception_class_as_http_error(
+    monkeypatch,
+    captured_model_events,
+):
+    """未归类异常不得留下孤立的 HTTP 请求事件；正文只允许异常类名。"""
+
+    class FailingAsyncStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            raise RuntimeError("stream exploded")
+            yield b""  # pragma: no cover - 满足异步生成器契约
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=FailingAsyncStream(),
+        )
+
+    install_transport(monkeypatch, handler, adapt_streaming_json=False)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(
+            post_sse(
+                DEEPSEEK_CHAT_COMPLETIONS_URL,
+                FAKE_API_KEY,
+                {"model": "m", "stream": True},
+                request_id=REQUEST_ID,
+                provider="deepseek",
+                model="m",
+                on_data=lambda data: None,
+            )
+        )
+
+    events = captured_model_events()
+    assert [event["event"] for event in events] == [
+        "llm_http_request",
+        "llm_http_error",
+    ]
+    assert events[1]["error_type"] == "RuntimeError"
+
+
 def test_post_sse_cancellation_closes_stream_without_network_error(
     monkeypatch,
     captured_model_events,

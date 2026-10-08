@@ -235,6 +235,16 @@ async def post_sse(
                     content_type = response.headers.get("content-type", "")
                     if not content_type.lower().startswith("text/event-stream"):
                         await _capture_stream_body(response, raw_response)
+                        # 非法内容类型也是完整的 HTTP 往返；不记录就只剩孤立的 HTTP 请求事件。
+                        _log_stream_response(
+                            response,
+                            started_at,
+                            clock,
+                            provider,
+                            model,
+                            request_id,
+                            timings,
+                        )
                         raise ProviderInvalidResponseError(
                             "Upstream service returned an invalid response"
                         )
@@ -300,6 +310,19 @@ async def post_sse(
                 truncated=raw_response.truncated,
             )
         raise error from exc
+    except Exception as exc:
+        # 未归类异常也必须留下配对事件；只记异常类名，不进入日志正文。
+        log_model_http_error(
+            request_id=request_id,
+            provider=provider,
+            model=model,
+            error_type=type(exc).__name__,
+            duration_ms=_elapsed_ms(started_at, clock),
+            response_headers_ms=timings.response_headers_ms,
+            first_event_ms=timings.first_event_ms,
+            first_text_ms=timings.first_text_ms,
+        )
+        raise
 
 
 async def _capture_stream_body(

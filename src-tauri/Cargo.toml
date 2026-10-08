@@ -1,6 +1,6 @@
 [package]
 name = "tsi-desktop"
-version = "0.1.0"
+version = "0.1.1"
 description = "Tsi 助手 macOS 桌面宿主"
 authors = ["Tsi contributors"]
 edition = "2021"

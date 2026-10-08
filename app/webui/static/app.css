@@ -170,6 +170,11 @@ svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width:
 .message-content code { padding: 2px 5px; border-radius: 5px; background: var(--surface-muted); font-family: "SFMono-Regular", Consolas, monospace; font-size: .9em; }
 .message-content pre { overflow: auto; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-muted); }
 .message-content pre code { padding: 0; background: transparent; }
+.message-content a { color: var(--accent); text-decoration: underline; text-underline-offset: 3px; }
+.markdown-table { max-width: 100%; overflow-x: auto; margin: 12px 0; }
+.markdown-table table { width: 100%; border-collapse: collapse; font-size: .94em; }
+.markdown-table th, .markdown-table td { padding: 8px 12px; border: 1px solid var(--border); min-width: 80px; }
+.markdown-table th { background: var(--surface-muted); font-weight: 600; }
 .message.error .message-content { color: var(--danger); }
 .message.assistant .message-content.progress-feedback { padding: 11px 13px; border-left: 3px solid var(--accent); border-radius: 0 9px 9px 0; background: var(--surface-muted); color: var(--muted); white-space: pre-line; font-size: 13px; }
 .stream-caret::after { content: ""; display: inline-block; width: 6px; height: 1.05em; margin-left: 3px; vertical-align: -2px; background: var(--accent); animation: blink 1s steps(1) infinite; }

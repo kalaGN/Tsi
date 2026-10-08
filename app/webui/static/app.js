@@ -5,6 +5,7 @@ const state = {
   startedAt: 0,
   timer: null,
   streamNode: null,
+  streamRenderer: null,
   feedbackTimer: null,
   feedbackInput: "",
   feedbackStartedAt: 0,
@@ -840,12 +841,72 @@ function scrollToBottom() {
   messages.scrollTop = messages.scrollHeight;
 }
 
+function inlineText(parent, text, depth = 0, allowLinks = true) {
+  // 只创建已知节点并写 textContent；原始 HTML 永远作为文字处理。
+  if (depth >= 4) { parent.append(document.createTextNode(text)); return; }
+  const tokens = /\\([\\`*_\[\]|])|(`+)([\s\S]*?)\2|\[([^\]\n]+)\]\(([^\s)]+)\)|\*\*([^\n]+?)\*\*|__([^\n]+?)__|\*([^*\n]+)\*|_([^_\n]+)_/g;
+  let cursor = 0;
+  for (const match of text.matchAll(tokens)) {
+    parent.append(document.createTextNode(text.slice(cursor, match.index)));
+    let node;
+    if (match[1]) node = document.createTextNode(match[1]);
+    else if (match[2]) {
+      node = document.createElement("code");
+      node.textContent = match[3];
+    } else if (match[4]) {
+      let url;
+      try { url = new URL(match[5]); } catch (_) { /* 非法链接保留原文。 */ }
+      if (allowLinks && /^https?:\/\//i.test(match[5]) && url && ["http:", "https:"].includes(url.protocol)) {
+        node = document.createElement("a");
+        node.href = url.href;
+        node.target = "_blank";
+        node.rel = "noopener noreferrer";
+        inlineText(node, match[4], depth + 1, false);
+      } else node = document.createTextNode(match[0]);
+    } else {
+      node = document.createElement(match[6] || match[7] ? "strong" : "em");
+      inlineText(node, match[6] || match[7] || match[8] || match[9], depth + 1, allowLinks);
+    }
+    parent.append(node);
+    cursor = match.index + match[0].length;
+  }
+  parent.append(document.createTextNode(text.slice(cursor)));
+}
+
+function tableCells(line) {
+  let value = line.trim();
+  if (!value.includes("|")) return null;
+  if (value.startsWith("|")) value = value.slice(1);
+  if (value.endsWith("|") && !value.endsWith("\\|")) value = value.slice(0, -1);
+  // 转义竖线和行内代码中的竖线不分列；不支持跨行单元格。
+  const cells = [];
+  let current = "", codeFence = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index];
+    if (character === "\\" && index + 1 < value.length) {
+      current += character + value[++index];
+    } else if (character === "`") {
+      const fence = value.slice(index).match(/^`+/)[0];
+      if (!codeFence) codeFence = fence;
+      else if (codeFence === fence) codeFence = "";
+      current += fence;
+      index += fence.length - 1;
+    } else if (character === "|" && !codeFence) {
+      cells.push(current.trim()); current = "";
+    } else current += character;
+  }
+  cells.push(current.trim());
+  return cells.length <= 32 ? cells : null;
+}
+
 function textBlock(text) {
   const fragment = document.createDocumentFragment();
   const lines = text.replace(/\r\n?/g, "\n").split("\n");
   let index = 0;
   while (index < lines.length) {
     const line = lines[index];
+    const headers = tableCells(line);
+    const separators = tableCells(lines[index + 1] || "");
     if (line.startsWith("```")) {
       const code = [];
       index += 1;
@@ -855,16 +916,44 @@ function textBlock(text) {
       node.textContent = code.join("\n");
       pre.append(node);
       fragment.append(pre);
+    } else if (headers && separators?.length === headers.length
+               && separators.every(cell => /^:?-{3,}:?$/.test(cell))) {
+      index += 1;
+      const wrapper = document.createElement("div");
+      wrapper.className = "markdown-table";
+      const table = document.createElement("table");
+      const head = document.createElement("thead");
+      const body = document.createElement("tbody");
+      const row = (cells, heading = false) => {
+        const tr = document.createElement("tr");
+        cells.forEach((value, column) => {
+          const cell = document.createElement(heading ? "th" : "td");
+          if (heading) cell.scope = "col";
+          cell.style.textAlign = separators[column].endsWith(":")
+            ? (separators[column].startsWith(":") ? "center" : "right") : "left";
+          inlineText(cell, value);
+          tr.append(cell);
+        });
+        return tr;
+      };
+      head.append(row(headers, true));
+      index += 1;
+      let cells;
+      while (index < lines.length && (cells = tableCells(lines[index])) && cells.length === headers.length) {
+        body.append(row(cells)); index += 1;
+      }
+      table.append(head, body); wrapper.append(table); fragment.append(wrapper);
+      continue;
     } else if (/^#{1,3}\s/.test(line)) {
       const level = line.match(/^#+/)[0].length;
       const heading = document.createElement(`h${level}`);
-      heading.textContent = line.replace(/^#{1,3}\s+/, "");
+      inlineText(heading, line.replace(/^#{1,3}\s+/, ""));
       fragment.append(heading);
     } else if (/^[-*]\s+/.test(line)) {
       const list = document.createElement("ul");
       while (index < lines.length && /^[-*]\s+/.test(lines[index])) {
         const item = document.createElement("li");
-        item.textContent = lines[index].replace(/^[-*]\s+/, "");
+        inlineText(item, lines[index].replace(/^[-*]\s+/, ""));
         list.append(item);
         index += 1;
       }
@@ -874,7 +963,7 @@ function textBlock(text) {
       const list = document.createElement("ol");
       while (index < lines.length && /^\d+\.\s+/.test(lines[index])) {
         const item = document.createElement("li");
-        item.textContent = lines[index].replace(/^\d+\.\s+/, "");
+        inlineText(item, lines[index].replace(/^\d+\.\s+/, ""));
         list.append(item);
         index += 1;
       }
@@ -882,12 +971,56 @@ function textBlock(text) {
       continue;
     } else if (line.trim()) {
       const paragraph = document.createElement("p");
-      paragraph.textContent = line;
+      inlineText(paragraph, line);
       fragment.append(paragraph);
     }
     index += 1;
   }
   return fragment;
+}
+
+function createMarkdownStream(target, onRender) {
+  let pending = "", chunks = [], currentNodes = [], frame = null, disposed = false;
+  function render() {
+    frame = null;
+    if (disposed) return;
+    pending += chunks.join(""); chunks = [];
+    currentNodes.forEach(node => node.remove());
+    // 空行之外的已完成块不再重建；围栏内空行不能切断代码块。
+    let start = 0, end = 0, fenced = false;
+    for (const match of pending.matchAll(/([^\r\n]*)(\r\n|\r|\n)/g)) {
+      const line = match[1];
+      if (line.startsWith("```")) fenced = !fenced;
+      const blank = !line.trim();
+      end = match.index + match[0].length;
+      if (blank && !fenced) {
+        target.append(textBlock(pending.slice(start, end)));
+        start = end;
+      }
+    }
+    pending = pending.slice(start);
+    const current = textBlock(pending);
+    currentNodes = Array.from(current.childNodes);
+    target.append(current);
+    onRender();
+  }
+  return {
+    append(text) {
+      if (disposed) return;
+      chunks.push(text);
+      if (frame === null) frame = window.requestAnimationFrame(render);
+    },
+    dispose() {
+      disposed = true;
+      if (frame !== null) window.cancelAnimationFrame(frame);
+      chunks = []; pending = ""; currentNodes = [];
+    },
+  };
+}
+
+function clearStreamRenderer() {
+  state.streamRenderer?.dispose();
+  state.streamRenderer = null;
 }
 
 function addMessage(role, content, { streaming = false, error = false } = {}) {
@@ -967,6 +1100,7 @@ function renderTaskFeedback() {
 }
 
 function startTaskFeedback(input, phase = "") {
+  clearStreamRenderer();
   clearFeedbackTimer();
   state.feedbackInput = input;
   state.feedbackStartedAt = Date.now();
@@ -978,6 +1112,7 @@ function startTaskFeedback(input, phase = "") {
 
 function resumeTaskFeedback(phase) {
   if (!state.feedbackInput || !state.streamNode) return;
+  clearStreamRenderer();
   clearFeedbackTimer();
   state.feedbackPhase = phase;
   state.feedbackHasModelText = false;
@@ -991,9 +1126,11 @@ function beginModelOutput() {
   state.feedbackHasModelText = true;
   state.streamNode.classList.remove("progress-feedback");
   state.streamNode.textContent = "";
+  state.streamRenderer = createMarkdownStream(state.streamNode, scrollToBottom);
 }
 
 function stopTaskFeedback() {
+  clearStreamRenderer();
   clearFeedbackTimer();
   state.streamNode?.classList.remove("progress-feedback");
   state.feedbackInput = "";
@@ -1210,8 +1347,7 @@ function handleEvent(event) {
     // 收到正文增量说明模型已经开始作答，不能继续显示“思考中”。
     $("#activity-text").textContent = "正在回答";
     beginModelOutput();
-    state.streamNode.textContent += event.text;
-    scrollToBottom();
+    state.streamRenderer.append(event.text);
   } else if (event.type === "text_reset" && state.streamNode) {
     resumeTaskFeedback("模型正在调用工具，等待执行结果");
     $("#activity-text").textContent = "正在调用工具";

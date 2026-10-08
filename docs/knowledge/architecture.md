@@ -15,6 +15,8 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，提供持久
 - `app/runtime/session.py`：串行化 TUI 发送，只提交 Provider 和持久化均成功的完整轮次。
 - `app/webui/sessions.py`：维护原子会话索引、独立 SessionStore、旧单会话迁移和安全 ID/标题边界。
 - `app/webui/service.py`：按 ID 延迟装配 Web Session，把 Runtime 与审批回调转换为有序 NDJSON 事件，并注册不含 Git/Skill/脚本的 Workspace 工具。
+- Web 消息采用零依赖手写 Markdown：三级标题、平面列表、反引号代码围栏、表格（最多 32 列，支持对齐、转义竖线及行内代码）、粗体/斜体、行内代码和 HTTP/HTTPS 链接。原始 HTML 只作文本，不加载图片；不支持复杂嵌套列表、跨行单元格及完整 CommonMark 方言。链接新窗口打开并设置 `rel="noopener noreferrer"`。
+- 流式增量按动画帧合并，只重绘当前未完成块；围栏外的空行提交已完成块，围栏内空行不切块。未闭合行内标记暂按文字展示；工具阶段、取消和终态取消待绘制帧，最终回答使用同一渲染器重新生成，不改变保存的模型原文。
 - `app/webui/approvals.py`：把当前请求唯一的文件审批预览桥接为一次性异步决定，负责请求绑定与取消失效。
 - `app/webui/router.py`、`static/`：本机访问控制、Web API 和无远程资源的响应式三栏页面。
 - `app/runtime/skill_runtime.py`：持有当前 Skill Catalog、共享 Workspace Journal 和安装器，在每次发送开始时生成不可变执行快照。

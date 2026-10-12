@@ -12,5 +12,5 @@
 - Web UI 与 TUI 不得暴露 Provider 原始响应；对话以有界 NDJSON 事件流式返回。
 - 工具仅从 `tools/` 显式注册，按 `ToolEffect` 分级：`READ_ONLY`（当前时间、web_search、Workspace 只读、run_project_check、load_skill/read_skill_resource）自动执行；`MUTATING`/`EXECUTING`（Workspace 写、Skill 脚本与安装、Git、MCP）不得绕过逐次审批。
 - 日常运行的模型 Key 与服务 Key 从本机私有配置读取（`data/model-config.json`、`data/service-config.json`）；评测 `--live` 与 MCP 的 env/header 按变量名从 `.env`/进程环境注入。密钥值不得进入代码、文档、日志、测试或 Git，测试禁止调用真实付费或生产服务。
-- Commit 使用 `type: 中文描述`；未经用户明确要求不得提交，不得通过删除或弱化测试制造通过。
+- 代码调整完成并验证后，按影响升级补丁号或次版本号并重新打包 macOS（详见 [Rules](docs/rules/harness-engineering-rules.md#版本与桌面打包)）；Commit 使用 `type: 中文描述`，未经明确要求不得提交，不得删除或弱化测试制造通过。
 - 详细说明与架构入口：[文档首页](docs/README.md)、[Rules](docs/rules/README.md)、[Spec](docs/spec/README.md)、[Knowledge](docs/knowledge/README.md)、[编排](docs/knowledge/orchestration.md)。

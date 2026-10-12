@@ -19,6 +19,27 @@ bash scripts/build_macos_tauri.sh
 
 桌面版首次运行后，在应用内「设置 → 模型」配置 API Key。桌面数据、日志和默认工作区分别保存在 `~/Library/Application Support/Tsi/` 的 `data/`、`logs/`、`workspace/`，与源码运行模式隔离。桌面后端只绑定随机本机端口；桌面 API 还需启动时生成的临时令牌。旧 Pake 方案仅是依赖外部 Uvicorn 的网页壳，不属于独立打包方案。
 
+### 桌面启动性能
+
+后端使用 PyInstaller `--onedir`，整个目录通过 Tauri 资源映射放入 `.app/Contents/Resources/backend/`。Rust 宿主从资源目录启动 `tsi-backend`，相邻 `_internal/` 提供 Python 与依赖；不再每次从单文件解包。分发单位仍是完整 `.app`，不可单独移动后端可执行文件。源码开发的启动方式不变，修改代码后仍需重新构建桌面包。机制依据见 [PyInstaller 运行模式](https://pyinstaller.org/en/stable/operating-mode.html) 和 [Tauri 资源打包](https://v2.tauri.app/develop/resources/)。
+
+2026-10-12 在本机使用临时数据目录、无模型请求测量，从进程启动到 `TSI_READY`：
+
+| 后端形式 | 三次就绪耗时（秒） | 中位数（秒） |
+| --- | --- | --- |
+| 原单文件后端 | 19.278 / 15.937 / 16.696 | 16.696 |
+| 新 `.app` 内的目录式后端 | 1.954 / 0.712 / 0.691 | 0.712 |
+
+此为本机后端就绪指标，不包含整个 WebView 首屏、已有大量会话的加载、其他机器或首次系统安全检查；不能视为所有环境的启动承诺。新包后端的页面加载、无令牌拒绝、带令牌启动接口及正常退出已验证。Apple Developer ID 签名和公证状态不变。
+
+可复现测量（会启动并退出隔离后端，不读取真实用户配置）：
+
+```bash
+.venv/bin/python scripts/benchmark_desktop_startup.py \
+  src-tauri/target/release/bundle/macos/Tsi.app/Contents/Resources/backend/tsi-backend \
+  --runs 3
+```
+
 ## 服务端点
 
 Web UI 与 FastAPI 由同一个 Uvicorn 进程提供：

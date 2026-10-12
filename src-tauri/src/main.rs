@@ -48,9 +48,11 @@ fn main() {
             })
             .build()?;
 
+            // 目录式后端与依赖在应用资源中相邻，避免 onefile 每次启动解包。
+            let backend_path = app.path().resource_dir()?.join("backend/tsi-backend");
             let command = app
                 .shell()
-                .sidecar("tsi-backend")?
+                .command(backend_path)
                 .env("TSI_DESKTOP_TOKEN", token);
             let (mut events, child) = command.spawn()?;
             app.manage(BackendProcess(Mutex::new(Some(child))));
@@ -120,7 +122,7 @@ fn main() {
             if matches!(event, tauri::RunEvent::Exit) {
                 if let Ok(mut child) = app.state::<BackendProcess>().0.lock() {
                     if let Some(mut process) = child.take() {
-                        // PyInstaller onefile 会另起工作进程；通知它正常收尾。
+                        // 通知后端正常收尾，不依赖强制终止进程。
                         // 宿主退出也会关闭 stdin，后端将据此停止服务。
                         let _ = process.write(b"shutdown\n");
                     }

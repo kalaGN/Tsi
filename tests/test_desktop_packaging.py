@@ -1,6 +1,7 @@
 """桌面 sidecar 的路径、认证和静态资源契约。"""
 
 from pathlib import Path
+import json
 from io import BytesIO
 from types import SimpleNamespace
 
@@ -76,3 +77,18 @@ def test_desktop_api_requires_startup_token_without_changing_plain_http(monkeypa
 def test_web_page_sends_desktop_token_only_when_tauri_provides_one():
     source = (Path(__file__).resolve().parents[1] / "app/webui/static/app.js").read_text(encoding="utf-8")
     assert 'if (window.__TSI_DESKTOP_TOKEN__) headers["X-Tsi-Desktop-Token"]' in source
+
+
+def test_desktop_backend_is_bundled_as_directory_without_runtime_extraction():
+    root = Path(__file__).resolve().parents[1]
+    script = (root / "scripts/build_macos_tauri.sh").read_text()
+    config = json.loads((root / "src-tauri/tauri.conf.json").read_text())
+    host = (root / "src-tauri/src/main.rs").read_text()
+    assert "--onedir" in script
+    assert "--onefile" not in script
+    assert config["bundle"]["resources"] == {
+        "../build/tauri-python-onedir/dist/tsi-backend/": "backend/"
+    }
+    assert "externalBin" not in config["bundle"]
+    assert 'resource_dir()?.join("backend/tsi-backend")' in host
+    assert ".command(backend_path)" in host

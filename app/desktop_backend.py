@@ -18,7 +18,7 @@ TOKEN_PATTERN = re.compile(r"[0-9a-f]{32}\Z")
 
 
 def watch_parent_input(server: object) -> None:
-    """桌面宿主关闭 stdin 时让服务自行退出，避免单文件子进程残留。"""
+    """桌面宿主关闭 stdin 时让服务自行退出，避免后端进程残留。"""
 
     try:
         sys.stdin.buffer.readline()

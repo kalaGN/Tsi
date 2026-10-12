@@ -16,6 +16,8 @@
     "active": true,
     "targets": ["app"],
     "icon": ["../packaging/Tsi.icns"],
-    "externalBin": ["binaries/tsi-backend"]
+    "resources": {
+      "../build/tauri-python-onedir/dist/tsi-backend/": "backend/"
+    }
   }
 }

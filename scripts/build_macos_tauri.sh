@@ -22,19 +22,18 @@ elif ! cargo tauri --version >/dev/null 2>&1; then
   exit 1
 fi
 
-target_triple="$(rustc --print host-tuple)"
-build_root="$project_root/build/tauri-python"
-mkdir -p "$build_root" "$project_root/src-tauri/binaries"
+build_root="$project_root/build/tauri-python-onedir"
+mkdir -p "$build_root"
 export PYINSTALLER_CONFIG_DIR="$build_root/config"
 "$project_root/.venv/bin/python" -m PyInstaller \
-  --noconfirm --onefile --name tsi-backend \
+  --noconfirm --onedir --name tsi-backend \
   --paths "$project_root" \
   --add-data "$project_root/app/webui/static:app/webui/static" \
   --distpath "$build_root/dist" \
   --workpath "$build_root/work" \
   --specpath "$build_root/spec" \
   "$project_root/app/desktop_backend.py"
-cp "$build_root/dist/tsi-backend" "$project_root/src-tauri/binaries/tsi-backend-$target_triple"
-chmod 755 "$project_root/src-tauri/binaries/tsi-backend-$target_triple"
+# 保持可执行文件与 _internal 相邻；Tauri 将整个目录作为资源内置，启动时不再解包。
+chmod 755 "$build_root/dist/tsi-backend/tsi-backend"
 cd "$project_root"
 "${tauri_command[@]}" build --bundles app

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import difflib
 import hashlib
+from fnmatch import fnmatchcase
 import json
 import os
 import shutil
@@ -38,6 +39,15 @@ MAX_JOURNAL_BYTES = 512 * 1024
 MAX_RELATIVE_PATH_CHARS = 1024
 MAX_TOOL_TEXT_CHARS = 24 * 1024
 MAX_BATCH_READ_FILES = 4
+SEARCH_EXCLUDED_DIRECTORIES = {
+    "build", "dist", "target", "out", "coverage", "htmlcov", ".next", ".nuxt",
+    "tests", "test", "__tests__", "__snapshots__", ".tox", ".nox",
+}
+SEARCH_EXCLUDED_FILE_PATTERNS = (
+    "test_*.py", "*_test.*", "*.test.*", "*.spec.*", "*Test.java", "*Tests.java",
+    "*Test.kt", "*Tests.kt", "conftest.py", "pytest.ini", ".coverage*",
+    "coverage.xml", "junit*.xml", "*.pyc", "*.pyo",
+)
 PROTECTED_COMPONENTS = {".git", ".venv", "data", "logs", "__pycache__", ".pytest_cache"}
 PROTECTED_WRITE_PATHS = {
     "AGENTS.md",
@@ -281,7 +291,7 @@ class ListWorkspaceFilesTool:
 class SearchWorkspaceTextTool:
     definition = ToolDefinition(
         "search_workspace_text",
-        "一次扫描工作区搜索 1 至 4 个字面量；已知多个相关关键词时合并搜索，返回命中的文件和行号，再批量读取相关片段",
+        "搜索工作区的 1 至 4 个字面量，排除构建和测试目录/文件；多个相关关键词合并搜索，返回文件和行号，再批量读取片段",
         {
             "type": "object",
             "properties": {
@@ -337,7 +347,7 @@ class SearchWorkspaceTextTool:
         limit = _integer(arguments.get("limit"), 100, 1, 100)
         matches: list[dict[str, object]] = []
         scanned = 0
-        for path in _allowed_files(self.policy, base):
+        for path in _allowed_files(self.policy, base, search_only=True):
             relative = self.policy.relative(path)
             if self.policy.is_protected_relative(relative):
                 continue
@@ -526,16 +536,28 @@ def _truncate_utf8(text: str, maximum_bytes: int) -> tuple[str, bool]:
     return "", True
 
 
-def _allowed_files(policy: WorkspacePolicy, base: Path):
+def _excluded_from_search(relative: str) -> bool:
+    """仅限制搜索范围，不将构建或测试文件变成受保护路径。"""
+
+    path = PurePosixPath(relative)
+    return any(part in SEARCH_EXCLUDED_DIRECTORIES for part in path.parts) or any(
+        fnmatchcase(path.name, pattern) for pattern in SEARCH_EXCLUDED_FILE_PATTERNS
+    )
+
+
+def _allowed_files(policy: WorkspacePolicy, base: Path, *, search_only: bool = False):
     """稳定遍历允许文件，并在进入保护目录前剪枝。"""
 
     candidates: list[Path] = []
+    if search_only and _excluded_from_search(policy.relative(base)):
+        return
     for current, directories, files in os.walk(base, followlinks=False):
         current_path = Path(current)
         directories[:] = sorted(
             name
             for name in directories
             if not (current_path / name).is_symlink()
+            and not (search_only and _excluded_from_search(policy.relative(current_path / name)))
             and not policy.is_protected_relative(
                 policy.relative(current_path / name)
             )
@@ -545,6 +567,7 @@ def _allowed_files(policy: WorkspacePolicy, base: Path):
             relative = policy.relative(path)
             if (
                 not path.is_symlink()
+                and not (search_only and _excluded_from_search(relative))
                 and path.is_file()
                 and not policy.is_protected_relative(relative)
             ):

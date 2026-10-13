@@ -84,6 +84,8 @@ TUI 支持直接使用中文输入法。用户输入会用右对齐、按内容�
 
 ## 启动 Web UI
 
+工作区文本搜索 `search_workspace_text` 默认排除构建目录（`build/dist/target/out/coverage/htmlcov/.next/.nuxt`）、测试目录（`tests/test/__tests__/__snapshots__/.tox/.nox`）及常见测试文件（如 `test_*.py`、`*_test.*`、`*.test.*`、`*.spec.*`、Java/Kotlin 的 `*Test/*Tests` 文件和 `conftest.py`）。这些路径不参与扫描额度；显式指定排除目录或 glob 也不会恢复搜索。按路径读取文件和目录列举不受此搜索排除影响，原有安全保护仍然有效。
+
 Web UI 复用现有 FastAPI 服务。启动后访问 <http://127.0.0.1:8000/ui>：
 
 ```bash

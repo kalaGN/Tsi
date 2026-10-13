@@ -227,6 +227,37 @@ def test_list_search_and_read_support_chinese_and_hash(tmp_path):
     assert read["data"]["sha256"] == hashlib.sha256(content.encode()).hexdigest()
 
 
+@pytest.mark.parametrize("excluded", [
+    "build/generated.py", "dist/bundle.js", "src-tauri/target/cache.rs",
+    "app/tests/case.py", "test/example.py", "ui/__tests__/case.ts",
+    "app/test_helpers.py", "pkg/query_test.go", "ui/button.test.tsx",
+    "ui/button.spec.js", "app/conftest.py", "src/QueryTest.java",
+])
+def test_search_excludes_build_and_test_paths_but_keeps_direct_reads(tmp_path, excluded):
+    target = tmp_path / excluded
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text("needle", encoding="utf-8")
+    (tmp_path / "main.py").write_text("needle", encoding="utf-8")
+    policy = WorkspacePolicy(tmp_path)
+    output, result = execute(SearchWorkspaceTextTool(policy), {"query": "needle"})
+    assert not result.is_error
+    assert [item["path"] for item in output["data"]["matches"]] == ["main.py"]
+    assert output["data"]["scanned_files"] == 1
+    read, result = execute(ReadWorkspaceFileTool(policy), {"path": excluded})
+    assert not result.is_error and read["data"]["content"] == "needle"
+
+
+def test_search_prunes_excluded_directories_even_when_explicitly_selected(tmp_path, monkeypatch):
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "example.py").write_text("needle", encoding="utf-8")
+    def forbidden_walk(*args, **kwargs):
+        raise AssertionError("不应遍历排除目录")
+    monkeypatch.setattr(workspace_module.os, "walk", forbidden_walk)
+    output, result = execute(SearchWorkspaceTextTool(WorkspacePolicy(tmp_path)), {"query": "needle", "path": "tests"})
+    assert not result.is_error
+    assert output["data"] == {"matches": [], "next_cursor": None, "scanned_files": 0}
+
+
 def test_search_multiple_keywords_scans_each_file_once(tmp_path, monkeypatch):
     (tmp_path / "code.py").write_text(
         "def load_save():\n    return save()\n", encoding="utf-8"

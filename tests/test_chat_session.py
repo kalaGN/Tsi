@@ -72,6 +72,18 @@ def compact_budget(_provider):
     return RuntimeBudgetSnapshot(COMPACTION_BUDGET)
 
 
+def test_session_rejects_blank_input_without_calling_provider(tmp_path):
+    provider = RecordingProvider(["不应返回"])
+    session = ChatSession(SessionStore(tmp_path / "session.json"), provider=provider)
+
+    with pytest.raises(ChatRuntimeError) as captured:
+        asyncio.run(session.send("   \n"))
+
+    assert provider.calls == []
+    assert captured.value.code == ChatErrorCode.INVALID_INPUT
+    assert captured.value.user_message == "Input must not be blank"
+
+
 def test_chat_session_persists_turns_and_restores_history(tmp_path):
     async def scenario():
         store = SessionStore(tmp_path / "chat-session.json")

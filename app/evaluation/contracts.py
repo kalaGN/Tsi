@@ -193,7 +193,6 @@ class TrialResult:
     dimension_scores: Mapping[str, float]
     assertions: tuple[AssertionResult, ...]
     trace: AgentRunTrace
-    judge: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)

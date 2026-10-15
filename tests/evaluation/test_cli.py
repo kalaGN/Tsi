@@ -1,10 +1,10 @@
 import asyncio
 import json
 
-from app.evaluation import __main__ as evaluation_cli
+import pytest
+
 from app.evaluation.__main__ import _all_live_trials_failed, main
-from app.evaluation.contracts import ReplayStep, load_suite
-from app.evaluation.replay import ReplayProvider
+from app.evaluation.contracts import load_suite
 from budget_support import BudgetedTestTurn, estimate_test_request
 from app.evaluation.runner import run_suite
 from app.services.llm.contracts import ProviderTimeoutError
@@ -45,62 +45,10 @@ def test_compare_cli_returns_regression_exit_code(tmp_path):
     assert main(["compare", "--baseline", str(baseline_path), "--candidate", str(candidate_path)]) == 1
 
 
-def test_judge_cli_writes_new_report_without_overwriting_source(
-    tmp_path,
-    monkeypatch,
-):
-    report = {
-        "version": 1,
-        "run_id": "run",
-        "suite_name": "core",
-        "mode": "replay",
-        "provider": "replay",
-        "model": "scripted-v1",
-        "passed": True,
-        "pass_rate": 100,
-        "score": 100,
-        "cases": [
-            {
-                "case_id": "one",
-                "input_text": "问题",
-                "expected": {},
-                "trials": [
-                    {"trace": {"output_text": "回答", "tool_calls": []}}
-                ],
-            }
-        ],
-    }
-    source = tmp_path / "source.json"
-    source.write_text(json.dumps(report), encoding="utf-8")
-    judgement = (
-        '{"correctness":{"score":5,"reason":"正确"},'
-        '"completeness":{"score":5,"reason":"完整"},'
-        '"relevance":{"score":5,"reason":"相关"}}'
-    )
-    provider = ReplayProvider(((ReplayStep(judgement),),))
-    monkeypatch.setattr(
-        evaluation_cli,
-        "create_provider_for_model",
-        lambda provider_name, model: provider,
-    )
-
-    code = main(
-        [
-            "judge",
-            "--report",
-            str(source),
-            "--provider",
-            "aliyun",
-            "--model",
-            "judge-model",
-            "--output-dir",
-            str(tmp_path / "judged"),
-        ]
-    )
-
-    assert code == 0
-    assert source.read_text(encoding="utf-8") == json.dumps(report)
-    assert len(list((tmp_path / "judged").glob("*-judged.json"))) == 1
+def test_removed_judge_command_is_not_exposed():
+    with pytest.raises(SystemExit) as captured:
+        main(["judge"])
+    assert captured.value.code == 2
 
 
 class _TimeoutTurn:

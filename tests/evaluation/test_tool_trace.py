@@ -2,9 +2,9 @@ import asyncio
 
 from app.evaluation.contracts import ReplayStep
 from app.evaluation.replay import ReplayProvider
-from app.runtime.chat import run_chat
+from app.runtime.chat import run_chat_messages
 from app.runtime.trace import ModelStepCompletedTraceEvent, ToolCallCompletedTraceEvent, ToolCallStartedTraceEvent
-from app.services.llm.contracts import TokenUsage
+from app.services.llm.contracts import ChatMessage, ChatRole, TokenUsage
 from tools import create_default_registry
 from tools.contracts import ToolCall
 
@@ -27,8 +27,8 @@ def test_tool_loop_trace_captures_visible_tools_calls_and_usage():
     )
 
     result = asyncio.run(
-        run_chat(
-            "现在几点",
+        run_chat_messages(
+            (ChatMessage(ChatRole.USER, "现在几点"),),
             provider=provider,
             registry=create_default_registry(),
             trace_observer=recorder,

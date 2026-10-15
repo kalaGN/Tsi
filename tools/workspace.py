@@ -1162,26 +1162,6 @@ class UndoWorkspaceChangeTool:
         return change, diff
 
 
-def create_workspace_registry(
-    policy: WorkspacePolicy,
-    journal: WorkspaceChangeJournal | None = None,
-    skill_catalog: "SkillCatalog | None" = None,
-    install_skill_tool: "InstallSkillTool | None" = None,
-):
-    """创建兼容调用方使用的完整固定 Workspace 工具白名单。"""
-
-    from tools.registry import ToolRegistry
-
-    return ToolRegistry(
-        _create_workspace_tools(
-            policy,
-            journal=journal,
-            skill_catalog=skill_catalog,
-            install_skill_tool=install_skill_tool,
-        )
-    )
-
-
 def create_intent_workspace_registry(
     policy: WorkspacePolicy,
     journal: WorkspaceChangeJournal | None = None,
@@ -1265,28 +1245,6 @@ def _create_grouped_workspace_registry(
         tools,
         groups,
         preactivated_groups=preactivated_groups,
-    )
-
-
-def create_readonly_intent_workspace_registry(policy: WorkspacePolicy):
-    """为无审批界面创建只暴露时间和 Workspace 读取能力的请求级 Registry。"""
-
-    from tools.builtin import GetCurrentTimeTool
-    from tools.groups import GroupedToolRegistry
-    from tools.policy import allowed_tool_groups
-
-    tools = (
-        GetCurrentTimeTool(),
-        ListWorkspaceFilesTool(policy),
-        SearchWorkspaceTextTool(policy),
-        ReadWorkspaceFilesTool(policy),
-        ReadWorkspaceFileTool(policy),
-        GetWorkspaceGitStatusTool(policy),
-        GetWorkspaceGitDiffTool(policy),
-    )
-    return GroupedToolRegistry(
-        tools,
-        allowed_tool_groups({tool.definition.name for tool in tools}, entry="readonly"),
     )
 
 

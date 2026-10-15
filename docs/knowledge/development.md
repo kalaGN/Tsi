@@ -48,17 +48,6 @@ Pytest 在收集测试模块前把文件 Handler 固定到当日 `logs/tests/YYY
 
 未传 `--live` 时不能创建真实 Provider；真实密钥只从项目 `.env` 或已有环境变量读取，CLI 不接受密钥参数。`--trials` 范围为 1–20。真实评测会产生费用，且耗时、Token 只在 Case 明确配置预算时参与通过判定。
 
-可以使用另一供应商或模型为既有报告追加辅助语义评分：
-
-```bash
-.venv/bin/python -m app.evaluation judge \
-  --report evals/reports/<本次报告>.json \
-  --provider aliyun \
-  --model qwen3-max
-```
-
-Judge 不开放工具，输出到新的 `-judged.json/.md`，Token 与被测 Agent 分开记录。Judge 只能提供正确性、完整性和相关性辅助证据，不能覆盖审批绕过、路径越界等确定性安全失败。
-
 用例使用一行一个 JSON 对象的 JSONL 格式。Case 可声明回放步骤、临时普通文本文件、初始对话、偏好、审批结果，以及文本、上下文、工具、逐步可见工具、文件、错误和成本断言。加载器拒绝未知字段、危险路径、密钥和损坏的角色序列；报告不保存完整系统提示词，只保存角色、哈希和已脱敏的有限工具轨迹。
 
 ## 提交前检查

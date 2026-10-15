@@ -62,7 +62,7 @@ from tools import (
     ToolCall,
     ToolResult,
 )
-from tools.workspace import WorkspacePolicy, create_workspace_registry
+from tools.workspace import WorkspacePolicy, create_intent_workspace_registry
 from tools.skills import load_skill_catalog
 
 
@@ -694,7 +694,7 @@ def test_workspace_approval_modal_defaults_to_reject_and_supports_y(tmp_path):
         app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
-            workspace_registry=create_workspace_registry(WorkspacePolicy(tmp_path)),
+            workspace_registry=create_intent_workspace_registry(WorkspacePolicy(tmp_path)),
         )
         async with app.run_test() as pilot:
             prompt = app.query_one("#prompt", TextArea)
@@ -738,7 +738,7 @@ def test_skill_script_approval_shows_warning_command_and_execute_action():
         app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
-            workspace_registry=create_workspace_registry(
+            workspace_registry=create_intent_workspace_registry(
                 WorkspacePolicy(Path.cwd())
             ),
         )
@@ -791,7 +791,7 @@ def test_skill_install_approval_shows_source_target_and_install_action():
         app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
-            workspace_registry=create_workspace_registry(
+            workspace_registry=create_intent_workspace_registry(
                 WorkspacePolicy(Path.cwd())
             ),
         )
@@ -843,7 +843,7 @@ def test_git_approval_shows_operation_preview_and_network_risk():
         app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
-            workspace_registry=create_workspace_registry(
+            workspace_registry=create_intent_workspace_registry(
                 WorkspacePolicy(Path.cwd())
             ),
         )
@@ -896,7 +896,7 @@ def test_workspace_approval_modal_rejects_without_exiting_main_app(
         app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
-            workspace_registry=create_workspace_registry(WorkspacePolicy(tmp_path)),
+            workspace_registry=create_intent_workspace_registry(WorkspacePolicy(tmp_path)),
         )
         async with app.run_test() as pilot:
             app.query_one("#prompt", TextArea).load_text("修改")
@@ -939,7 +939,7 @@ def test_tui_reports_applied_paths_when_model_fails_after_write(tmp_path):
         app = make_app(
             chat_runner=fake_runner,
             runtime_info=DEEPSEEK_INFO,
-            workspace_registry=create_workspace_registry(WorkspacePolicy(tmp_path)),
+            workspace_registry=create_intent_workspace_registry(WorkspacePolicy(tmp_path)),
         )
         async with app.run_test() as pilot:
             app.query_one("#prompt", TextArea).load_text("修改")

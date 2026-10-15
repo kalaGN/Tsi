@@ -4,8 +4,9 @@ import pytest
 
 from app.evaluation.contracts import ReplayStep
 from app.evaluation.replay import ReplayProvider
-from app.runtime.chat import ChatRuntimeError, run_chat
+from app.runtime.chat import ChatRuntimeError, run_chat_messages
 from app.runtime.trace import RequestCompletedTraceEvent, RequestFailedTraceEvent, RequestStartedTraceEvent
+from app.services.llm.contracts import ChatMessage, ChatRole
 
 
 class Recorder:
@@ -20,7 +21,7 @@ def test_chat_runtime_emits_request_lifecycle():
     recorder = Recorder()
     provider = ReplayProvider(((ReplayStep("完成"),),))
 
-    result = asyncio.run(run_chat("开始", provider=provider, trace_observer=recorder))
+    result = asyncio.run(run_chat_messages((ChatMessage(ChatRole.USER, "开始"),), provider=provider, trace_observer=recorder))
 
     assert result.output_text == "完成"
     assert isinstance(recorder.events[0], RequestStartedTraceEvent)
@@ -37,8 +38,8 @@ def test_chat_runtime_emits_tool_limit_failure():
 
     with pytest.raises(ChatRuntimeError):
         asyncio.run(
-            run_chat(
-                "开始",
+            run_chat_messages(
+                (ChatMessage(ChatRole.USER, "开始"),),
                 provider=provider,
                 trace_observer=recorder,
                 tool_loop_limits=ToolLoopLimits(1, 1, 1),

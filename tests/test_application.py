@@ -17,7 +17,6 @@ def test_http_entrypoints_do_not_import_workspace_capabilities():
     )
 
     assert all("tools.workspace" not in source for source in sources)
-    assert all("create_workspace_registry" not in source for source in sources)
 
 
 def test_main_exports_application():

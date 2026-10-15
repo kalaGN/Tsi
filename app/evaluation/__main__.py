@@ -5,22 +5,18 @@ from __future__ import annotations
 import argparse
 import asyncio
 import sys
-from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
 
 from app.evaluation.contracts import EvaluationConfigError, load_suite
-from app.evaluation.llm_judge import JudgeUnavailableError, judge_report
 from app.evaluation.report import (
     compare_reports,
     comparison_markdown,
     load_report,
     write_report,
-    write_report_payload,
 )
 from app.evaluation.runner import run_suite
-from app.services.llm.factory import create_provider_for_model
 from app.services.llm.contracts import LlmProviderError
 
 
@@ -40,11 +36,6 @@ def build_parser() -> argparse.ArgumentParser:
     compare_parser.add_argument("--baseline", required=True, type=Path)
     compare_parser.add_argument("--candidate", required=True, type=Path)
 
-    judge_parser = subparsers.add_parser("judge", help="为报告追加独立模型评分")
-    judge_parser.add_argument("--report", required=True, type=Path)
-    judge_parser.add_argument("--provider", required=True, choices=("deepseek", "aliyun"))
-    judge_parser.add_argument("--model", required=True)
-    judge_parser.add_argument("--output-dir", type=Path)
     return parser
 
 
@@ -53,9 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "run":
             return _run(args)
-        if args.command == "compare":
-            return _compare(args)
-        return _judge(args)
+        return _compare(args)
     except EvaluationConfigError as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -99,26 +88,6 @@ def _compare(args: argparse.Namespace) -> int:
     if not result.comparable:
         return 2
     return 1 if result.regressed else 0
-
-
-def _judge(args: argparse.Namespace) -> int:
-    project_root = Path.cwd()
-    load_dotenv(project_root / ".env", override=False)
-    provider = create_provider_for_model(args.provider, args.model)
-    payload = load_report(args.report)
-    try:
-        judged, failures = asyncio.run(judge_report(payload, provider))
-    except JudgeUnavailableError as exc:
-        print(str(exc), file=sys.stderr)
-        return 3
-    output = args.output_dir or args.report.parent
-    timestamp = datetime.now().astimezone().strftime("%Y%m%d-%H%M%S")
-    stem = f"{timestamp}-{args.report.stem}-judged"
-    paths = write_report_payload(judged, output, stem)
-    print(f"Judge 完成，失败 {failures} 项")
-    print(f"JSON：{paths.json_path}")
-    print(f"Markdown：{paths.markdown_path}")
-    return 0
 
 
 def _all_live_trials_failed(report) -> bool:

@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from tools.contracts import ToolCall, ToolExecutionContext
+from tools.groups import ToolGroup
 from tools.project_checks import RunProjectCheckTool
 from tools.registry import ToolRegistry
 from tools.workspace import (
@@ -24,7 +25,6 @@ from tools.workspace import (
     WorkspacePolicy,
     create_intent_workspace_registry,
     create_web_intent_workspace_registry,
-    create_workspace_registry,
 )
 from tools import project_checks
 from tools import workspace as workspace_module
@@ -48,12 +48,10 @@ def execute(tool, arguments, approval=None):
     return json.loads(result.output), result
 
 
-def test_static_and_intent_workspace_factories_keep_distinct_visibility(tmp_path):
+def test_intent_workspace_factory_hides_tools_until_activation(tmp_path):
     policy = WorkspacePolicy(tmp_path)
-    static = create_workspace_registry(policy)
     intent = create_intent_workspace_registry(policy)
 
-    assert len(static.definitions) == 11
     assert tuple(item.name for item in intent.definitions) == (
         "activate_tool_groups",
     )
@@ -63,8 +61,9 @@ def test_static_and_intent_workspace_factories_keep_distinct_visibility(tmp_path
         "workspace_write",
         "git_write",
     ]
+    intent.activate((ToolGroup.WORKSPACE_WRITE,))
     delete_definition = next(
-        item for item in static.definitions
+        item for item in intent.definitions
         if item.name == "delete_workspace_file"
     )
     assert delete_definition.effect.value == "mutating"

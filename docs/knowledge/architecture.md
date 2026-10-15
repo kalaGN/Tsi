@@ -9,7 +9,7 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，提供持久
 - `main.py`：从 `app.application` 导出 FastAPI 应用。
 - `app/application.py`：创建 FastAPI、注册根路由和 Web UI Router，不再注册对话 API。
 - `app/observability/model_logging.py`：配置模型/HTTP/工具 JSON 日志、可选终端输出、本地转储和事件白名单。
-- `app/runtime/chat.py`：有序消息调用、单轮入口、默认工具 Registry、统一文本与本轮 Token 结果和安全错误语义。
+- `app/runtime/chat.py`：有序消息调用、默认工具 Registry、统一文本与本轮 Token 结果和安全错误语义。
 - `app/runtime/tool_loop.py`：默认/Workspace 循环预算、请求级审批上下文、串行工具编排、逐步骤 Token 聚合和结果观察回调。
 - `app/runtime/trace.py`：可选、Provider 中立的请求/模型步骤/工具/审批轨迹事件；无 Observer 时不改变 Runtime 行为。
 - `app/runtime/session.py`：串行化 TUI 发送，只提交 Provider 和持久化均成功的完整轮次。
@@ -56,7 +56,7 @@ Tsi 助手是一个基于 Python 3.11 的轻量模型调用项目，提供持久
 - `app/tui/styles/application.tcss`、`approval.tcss`：分别由 App 和审批 Screen 的 `CSS_PATH` 加载，维护布局与外观；Rich 消息卡片样式仍由消息渲染代码负责。
 - `app/tui/widgets.py`：为 RichLog 补齐鼠标选择坐标、选择高亮、可见文本复制及可选的双击单行复制，并为输入框补充 `Cmd+A` / `Ctrl+A` 全选。
 - `app/tui/state.py`：定义运行状态及结构化启动诊断，分别表达错误展示和请求阻断语义。
-- `app/evaluation/`：复用真实 Session 与工具链的本地评测系统，提供严格 JSONL、回放 Provider、隔离工作区、轨迹收集、确定性评分、报告、基线比较和可选 Judge。
+- `app/evaluation/`：复用真实 Session 与工具链的本地评测系统，提供严格 JSONL、回放 Provider、隔离工作区、轨迹收集、确定性评分、报告和基线比较。
 - `evals/cases/`、`evals/baselines/`：进入 Git 的评测用例和人工确认基线；`evals/reports/` 是忽略 Git 的本地产物。
 - `tests/test_llm_providers.py`：Provider、工厂和共享 HTTP Mock 测试。
 - `tests/test_chat_runtime.py`：Runtime 单元测试。
@@ -130,7 +130,7 @@ load JSONL Suite
 
 完整请求消息只在 Trial 内存中供 AGENTS、Skill 和记忆断言使用，报告仅保留角色、内容 SHA-256 和消息数量。工具参数与结果进入报告前按敏感字段、Bearer 文本、绝对路径和 32 KiB 上限脱敏。每个 Trial 的 Workspace 是工具唯一根目录，Session 文件位于其外的同一临时根；完成、失败和取消都清理。
 
-回放 Provider 实现现有 `LlmProvider`/`LlmTurn`，按 Case 声明返回真实 `ModelStep`，不进入生产 Provider Factory。真实模式只在 CLI 显式 `--live --provider --model` 时从 `.env` 创建现有 Provider。可选 Judge 再用一个无工具 Turn 读取安全报告数据，不能改变确定性 pass/fail。
+回放 Provider 实现现有 `LlmProvider`/`LlmTurn`，按 Case 声明返回真实 `ModelStep`，不进入生产 Provider Factory。真实模式只在 CLI 显式 `--live --provider --model` 时从 `.env` 创建现有 Provider。
 
 Harness 指纹包括 Git HEAD/dirty、AGENTS、项目 Skills、首步工具定义、MemoryPolicy 和 ToolLoopLimits。基线比较允许代码和 Harness 发生变化，但会明确提示指纹差异；运行模式以及真实 Provider/模型必须一致。
 
@@ -221,7 +221,7 @@ TUI 启动后，`/model` 只展示 `model-config.json` 中的候选；每家最�
 
 - Web 与 TUI 都只接触统一文本，原始 Provider JSON 只存在于 Provider 调用栈。
 - 所有请求统一通过 Provider Turn，不保留旧 `generate()` 或原始 ProviderResult 路径。
-- `create_default_registry` 注册 `get_current_time(timezone)` 和 `web_search(query, limit)`，当前只作为 Runtime 与评测的默认值；Web 的请求级 Registry 提供 `general`、`web_search`、`workspace_read`、`workspace_write`、`skills` 和 `skill_install`；TUI 提供相同的本地与 Skill 能力并增加 `git_write`，但不包含搜索组。Web 按项目路径缓存 `SkillRuntime`，路径变化时创建新快照；安装成功只发布给下一次请求。配置 MCP Server 时，两者可在请求开始时发现并冻结 `mcp` 组，外部工具逐次审批。内置工具仍使用显式白名单，不支持反射、动态 import 或模型指定任意命令。
+- `create_default_registry` 注册 `get_current_time(timezone)` 和 `web_search(query, limit)`，只作为未注入 Registry 的 Runtime 默认值；Web 的请求级 Registry 提供 `general`、`web_search`、`workspace_read`、`workspace_write`、`skills` 和 `skill_install`；TUI 提供相同的本地与 Skill 能力并增加 `git_write`，但不包含搜索组。Web 按项目路径缓存 `SkillRuntime`，路径变化时创建新快照；安装成功只发布给下一次请求。配置 MCP Server 时，两者可在请求开始时发现并冻结 `mcp` 组，外部工具逐次审批。内置工具仍使用显式白名单，不支持反射、动态 import 或模型指定任意命令。
 - Runtime 默认循环预算为 5 步、每步 4 次、总计 16 次；Web/TUI 最多 41 步、每步 4 次、总计 40 次，激活调用计入相同预算。普通参数/结果上限为 8/32 KiB，编辑参数为 64 KiB。
 - 写 Tool 必须先生成完整有界 Diff；Registry 没有审批回调、用户拒绝或内容并发变化时均不会执行。Web 决策只接受当前请求的随机审批 ID，取消、断流和结束都会使其失效。
 - Workspace 拒绝越界、符号链接、保护路径、二进制和超限文件；编辑只支持 create/replace。唯一删除入口 `delete_workspace_file` 仅处理一个经当前哈希确认、逐次审批且可撤销的文本文件；固定检查不接受额外 argv、cwd 或环境。

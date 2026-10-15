@@ -46,7 +46,7 @@ from app.services.llm.factory import (
 from app.services.llm import deepseek, http_client
 from app.services.llm.http_client import post_json, post_sse
 from tools.contracts import ToolDefinition, ToolResult
-from tools.workspace import WorkspacePolicy, create_workspace_registry
+from tools.workspace import WorkspacePolicy, create_intent_workspace_registry
 
 
 FAKE_API_KEY = "test-only-provider-key"
@@ -508,14 +508,15 @@ def test_aliyun_turn_declares_flat_tools_and_uses_array_input(monkeypatch):
         DeepSeekChatProvider(FAKE_API_KEY, "deepseek-v4-flash"),
     ),
 )
-def test_both_providers_send_all_workspace_schemas_without_host_metadata(
+def test_both_providers_send_activated_workspace_schemas_without_host_metadata(
     tmp_path,
     monkeypatch,
     provider,
 ):
     payloads = []
-    definitions = create_workspace_registry(
-        WorkspacePolicy(tmp_path)
+    definitions = create_intent_workspace_registry(
+        WorkspacePolicy(tmp_path),
+        preactivated_groups=("general", "workspace_read", "workspace_write", "git_write"),
     ).definitions
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -537,7 +538,8 @@ def test_both_providers_send_all_workspace_schemas_without_host_metadata(
     assert {item["name"] for item in declared} == {
         definition.name for definition in definitions
     }
-    assert len(declared) == 11
+    assert len(declared) == len(definitions)
+    assert "activate_tool_groups" in {item["name"] for item in declared}
     assert all(
         set(item) == {"name", "description", "parameters"}
         or set(item) == {"type", "name", "description", "parameters"}
@@ -629,7 +631,9 @@ def test_both_providers_accept_workspace_edit_arguments_above_eight_kib(
         )
 
     install_transport(monkeypatch, handler)
-    definitions = create_workspace_registry(WorkspacePolicy(tmp_path)).definitions
+    definitions = create_intent_workspace_registry(
+        WorkspacePolicy(tmp_path), preactivated_groups=("workspace_write",),
+    ).definitions
     step = asyncio.run(
         provider.create_turn(
             user_messages(),
@@ -743,7 +747,10 @@ def test_both_providers_complete_workspace_read_edit_check_loop(
         run_chat_messages(
             user_messages("修改并检查"),
             provider=provider,
-            registry=create_workspace_registry(WorkspacePolicy(tmp_path)),
+            registry=create_intent_workspace_registry(
+                WorkspacePolicy(tmp_path),
+                preactivated_groups=("general", "workspace_write"),
+            ),
             on_tool_approval=approve,
             tool_loop_limits=WORKSPACE_TOOL_LOOP_LIMITS,
         )

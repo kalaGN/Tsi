@@ -86,7 +86,7 @@ git diff --check
 - TUI 支持逐次审批的指定文件 Stage、中文 Commit 和当前分支既有上游 Push。
 - request ID 关联的结构化模型、HTTP 和工具日志。
 - 完整上游请求日志包含实际 system 消息；Web UI 与 TUI 都会加载启动目录的 `AGENTS.md`。
-- 默认无网络的 Agent 回放评测、显式真实模型评测、结构化轨迹、确定性评分、中文/JSON 报告、基线回归检测和可选独立 Judge。
+- 默认无网络的 Agent 回放评测、显式真实模型评测、结构化轨迹、确定性评分、中文/JSON 报告和基线回归检测。
 
 明确不支持：
 

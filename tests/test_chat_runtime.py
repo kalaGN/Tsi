@@ -13,7 +13,6 @@ from app.runtime.chat import (
     ChatErrorCode,
     ChatRuntimeError,
     get_chat_runtime_info,
-    run_chat,
     run_chat_messages,
 )
 from app.services.llm import http_client
@@ -100,12 +99,16 @@ class FakeTurn:
         return self.provider.result
 
 
-def test_run_chat_returns_normalized_provider_result():
+def user_messages(text):
+    return (ChatMessage(ChatRole.USER, text),)
+
+
+def test_chat_messages_returns_normalized_provider_result():
     provider = FakeProvider(
         result=ModelStep(upstream_status=201, output_text="hello", tool_calls=())
     )
 
-    result = asyncio.run(run_chat("hello", provider=provider))
+    result = asyncio.run(run_chat_messages(user_messages("hello"), provider=provider))
 
     assert provider.received_inputs == [
         (ChatMessage(ChatRole.USER, "hello"),)
@@ -123,7 +126,7 @@ def test_runtime_budget_uses_input_limit_not_total_window():
 
     provider = ReplayProvider(((ReplayStep("不能发送"),),))
     with pytest.raises(ChatRuntimeError) as captured:
-        asyncio.run(run_chat("中" * 5000, provider=provider, budget=ModelBudget(context_window_tokens=12800)))
+        asyncio.run(run_chat_messages(user_messages("中" * 5000), provider=provider, budget=ModelBudget(context_window_tokens=12800)))
     assert captured.value.code is ChatErrorCode.CONTEXT_LIMIT
     assert not provider.turns[0].received_results
 
@@ -150,11 +153,11 @@ def test_runtime_budget_allows_exact_limit_and_rejects_one_token_over(excess):
 
 def test_runtime_preserves_output_limit_finish_reason():
     provider = FakeProvider(result=ModelStep(200, "部分回答", (), finish_reason="output_limit"))
-    result = asyncio.run(run_chat("继续", provider=provider))
+    result = asyncio.run(run_chat_messages(user_messages("继续"), provider=provider))
     assert result.finish_reason == "output_limit"
 
 
-def test_run_chat_returns_aggregated_token_usage():
+def test_chat_messages_returns_aggregated_token_usage():
     provider = FakeProvider(
         result=ModelStep(
             200,
@@ -164,12 +167,12 @@ def test_run_chat_returns_aggregated_token_usage():
         )
     )
 
-    result = asyncio.run(run_chat("hello", provider=provider))
+    result = asyncio.run(run_chat_messages(user_messages("hello"), provider=provider))
 
     assert result.token_usage == TokenUsage(7, 2, 9)
 
 
-def test_run_chat_forwards_text_deltas_and_returns_complete_result():
+def test_chat_messages_forwards_text_deltas_and_returns_complete_result():
     provider = FakeProvider(
         result=ModelStep(200, "你好", ()),
         deltas=("你", "好"),
@@ -177,8 +180,8 @@ def test_run_chat_forwards_text_deltas_and_returns_complete_result():
     received = []
 
     result = asyncio.run(
-        run_chat(
-            "hello",
+        run_chat_messages(
+            user_messages("hello"),
             provider=provider,
             on_text_delta=received.append,
         )
@@ -188,7 +191,7 @@ def test_run_chat_forwards_text_deltas_and_returns_complete_result():
     assert result.output_text == "你好"
 
 
-def test_run_chat_logs_input_and_output_around_provider_call(monkeypatch):
+def test_chat_messages_logs_input_and_output_around_provider_call(monkeypatch):
     call_order = []
     captured_requests = []
     captured_responses = []
@@ -210,7 +213,7 @@ def test_run_chat_logs_input_and_output_around_provider_call(monkeypatch):
     monkeypatch.setattr(chat, "log_model_request", capture_log)
     monkeypatch.setattr(chat, "log_model_response", capture_response)
 
-    asyncio.run(run_chat("secret-input", provider=provider))
+    asyncio.run(run_chat_messages(user_messages("secret-input"), provider=provider))
 
     assert call_order == ["request_log", "provider", "response_log"]
     assert captured_requests == [
@@ -233,7 +236,7 @@ def test_run_chat_logs_input_and_output_around_provider_call(monkeypatch):
     ]
 
 
-def test_run_chat_logs_request_and_error_when_provider_fails(monkeypatch):
+def test_chat_messages_logs_request_and_error_when_provider_fails(monkeypatch):
     captured_requests = []
     captured_responses = []
     captured_errors = []
@@ -256,7 +259,7 @@ def test_run_chat_logs_request_and_error_when_provider_fails(monkeypatch):
     )
 
     with pytest.raises(ChatRuntimeError):
-        asyncio.run(run_chat("hello", provider=provider))
+        asyncio.run(run_chat_messages(user_messages("hello"), provider=provider))
 
     assert len(captured_requests) == 1
     assert captured_requests[0]["request_id"] == "d" * 32
@@ -276,7 +279,7 @@ def test_run_chat_logs_request_and_error_when_provider_fails(monkeypatch):
     ]
 
 
-def test_run_chat_error_log_keeps_bounded_raw_provider_response(monkeypatch):
+def test_chat_messages_error_log_keeps_bounded_raw_provider_response(monkeypatch):
     captured_errors = []
     provider_error = ProviderInvalidResponseError(
         "Upstream service returned an invalid response"
@@ -292,7 +295,7 @@ def test_run_chat_error_log_keeps_bounded_raw_provider_response(monkeypatch):
     )
 
     with pytest.raises(ChatRuntimeError):
-        asyncio.run(run_chat("hello", provider=provider))
+        asyncio.run(run_chat_messages(user_messages("hello"), provider=provider))
 
     assert captured_errors[0]["raw_response"] == "data: 原始事件\n\n"
     assert captured_errors[0]["raw_response_truncated"] is False
@@ -352,20 +355,6 @@ def test_runtime_prepends_system_prompt_without_changing_current_input_log(
     assert captured_requests[0]["input_chars"] == len("question")
 
 
-def test_run_chat_rejects_blank_input_without_calling_provider():
-    provider = FakeProvider(
-        result=ModelStep(200, "should not be returned", ())
-    )
-
-    with pytest.raises(ChatRuntimeError) as captured:
-        asyncio.run(run_chat("   \n", provider=provider))
-
-    assert provider.received_inputs == []
-    assert captured.value.code is ChatErrorCode.INVALID_INPUT
-    assert captured.value.user_message == "Input must not be blank"
-    assert captured.value.upstream_status is None
-
-
 @pytest.mark.parametrize(
     ("provider_error", "expected_code", "expected_message", "expected_status"),
     [
@@ -419,7 +408,7 @@ def test_run_chat_rejects_blank_input_without_calling_provider():
         ),
     ],
 )
-def test_run_chat_maps_provider_errors(
+def test_chat_messages_maps_provider_errors(
     provider_error,
     expected_code,
     expected_message,
@@ -428,14 +417,14 @@ def test_run_chat_maps_provider_errors(
     provider = FakeProvider(error=provider_error)
 
     with pytest.raises(ChatRuntimeError) as captured:
-        asyncio.run(run_chat("hello", provider=provider))
+        asyncio.run(run_chat_messages(user_messages("hello"), provider=provider))
 
     assert captured.value.code is expected_code
     assert captured.value.user_message == expected_message
     assert captured.value.upstream_status == expected_status
 
 
-def test_run_chat_maps_factory_configuration_error(monkeypatch):
+def test_chat_messages_maps_factory_configuration_error(monkeypatch):
     captured_requests = []
     captured_responses = []
 
@@ -455,7 +444,7 @@ def test_run_chat_maps_factory_configuration_error(monkeypatch):
     )
 
     with pytest.raises(ChatRuntimeError) as captured:
-        asyncio.run(run_chat("hello"))
+        asyncio.run(run_chat_messages(user_messages("hello")))
 
     assert captured.value.code is ChatErrorCode.CONFIGURATION
     assert captured.value.user_message == "Unsupported LLM provider configuration"
@@ -487,7 +476,7 @@ def test_runtime_info_maps_invalid_configuration(monkeypatch):
     assert captured.value.user_message == "Unsupported LLM provider configuration"
 
 
-def test_run_chat_emits_four_correlated_events_with_real_http_boundary(
+def test_chat_messages_emits_four_correlated_events_with_real_http_boundary(
     monkeypatch, tmp_path
 ):
     real_async_client = httpx.AsyncClient
@@ -511,7 +500,7 @@ def test_run_chat_emits_four_correlated_events_with_real_http_boundary(
 
     try:
         provider = DeepSeekChatProvider("test-only-key", "deepseek-v4-flash")
-        result = asyncio.run(run_chat("hello", provider=provider))
+        result = asyncio.run(run_chat_messages(user_messages("hello"), provider=provider))
     finally:
         for handler in list(logger.handlers):
             logger.removeHandler(handler)
@@ -538,7 +527,7 @@ def test_run_chat_emits_four_correlated_events_with_real_http_boundary(
         assert event["model"] == "deepseek-v4-flash"
 
 
-def test_run_chat_emits_correlated_events_for_complete_tool_loop(
+def test_chat_messages_emits_correlated_events_for_complete_tool_loop(
     monkeypatch,
     tmp_path,
 ):
@@ -593,8 +582,8 @@ def test_run_chat_emits_correlated_events_for_complete_tool_loop(
 
     try:
         result = asyncio.run(
-            run_chat(
-                "time?",
+            run_chat_messages(
+                user_messages("time?"),
                 provider=DeepSeekChatProvider("test-only-key"),
             )
         )

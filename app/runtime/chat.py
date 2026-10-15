@@ -118,41 +118,6 @@ ERROR_CODES = {
 }
 
 
-async def run_chat(
-    input_text: str,
-    provider: LlmProvider | None = None,
-    registry: ToolRuntime | None = None,
-    *,
-    on_text_delta: TextDeltaHandler | None = None,
-    on_text_reset: TextResetHandler | None = None,
-    on_tool_approval: ToolApprovalHandler | None = None,
-    on_tool_result: ToolResultHandler | None = None,
-    tool_loop_limits: ToolLoopLimits = DEFAULT_TOOL_LOOP_LIMITS,
-    trace_observer: TraceObserver | None = None,
-    budget: ModelBudget | None = None,
-) -> ChatResult:
-    """校验输入、调用所选 Provider，并统一外部异常语义。"""
-
-    if not isinstance(input_text, str) or not input_text.strip():
-        raise ChatRuntimeError(
-            ChatErrorCode.INVALID_INPUT,
-            "Input must not be blank",
-        )
-
-    return await run_chat_messages(
-        (ChatMessage(ChatRole.USER, input_text),),
-        provider=provider,
-        registry=registry,
-        on_text_delta=on_text_delta,
-        on_text_reset=on_text_reset,
-        on_tool_approval=on_tool_approval,
-        on_tool_result=on_tool_result,
-        tool_loop_limits=tool_loop_limits,
-        trace_observer=trace_observer,
-        budget=budget,
-    )
-
-
 @span_call
 async def run_chat_messages(
     messages: Sequence[ChatMessage],
